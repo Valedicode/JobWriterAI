@@ -60,3 +60,10 @@ backend/data/
 
 # local document
 docs/
+
+# Graphify
+graphify/
+graphify-out/
+
+# Impeccable
+.impeccable/
