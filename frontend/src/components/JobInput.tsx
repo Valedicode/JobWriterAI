@@ -32,27 +32,29 @@ export const JobInput = ({
         <div className="space-y-4">
           {/* URL Input */}
           <div className="relative">
-            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
+            <label htmlFor="job-url" className="mb-2 block text-sm font-medium text-ink">
               Job Posting URL (Optional)
             </label>
             <input
+              id="job-url"
               type="url"
               value={jobUrl}
               onChange={(e) => setJobUrl(e.target.value)}
               placeholder="https://example.com/job-posting"
-              className={`w-full rounded-xl border px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:bg-slate-800/30 dark:text-slate-100 dark:placeholder-slate-500 dark:focus:bg-slate-800 ${
+              aria-invalid={!!urlValidationError}
+              className={`w-full rounded-xl border bg-surface-sunken px-4 py-3 text-[16px] text-ink placeholder:text-ink-faint focus:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 sm:text-sm ${
                 urlValidationError
-                  ? 'border-red-300 bg-red-50/50 focus:border-red-500 dark:border-red-700 dark:bg-red-950/20 dark:focus:border-red-500'
-                  : 'border-slate-300 bg-slate-50/50 focus:border-indigo-500 focus:bg-white dark:border-slate-600 dark:focus:border-indigo-400'
+                  ? 'border-danger focus:border-danger'
+                  : 'border-border-strong focus:border-primary'
               }`}
             />
             {urlValidationError && (
-              <p className="mt-1.5 text-xs text-red-600 dark:text-red-400">
+              <p className="mt-1.5 text-meta text-danger-text">
                 {urlValidationError}
               </p>
             )}
             {!urlValidationError && jobUrl.trim() && (
-              <p className="mt-1.5 text-xs text-green-600 dark:text-green-400">
+              <p className="mt-1.5 text-meta text-success-text">
                 Valid URL
               </p>
             )}
@@ -60,25 +62,28 @@ export const JobInput = ({
 
           {/* Text Input */}
           <div className="relative">
-            <label className="mb-2 block text-sm font-medium text-slate-700 dark:text-slate-300">
+            <label htmlFor="job-text" className="mb-2 block text-sm font-medium text-ink">
               Job Description Text (Optional)
             </label>
             <textarea
+              id="job-text"
               value={jobText}
               onChange={(e) => setJobText(e.target.value)}
               placeholder="Paste the job description text here (minimum 50 characters)..."
-              className={`min-h-[200px] w-full resize-none rounded-xl border px-4 py-4 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 dark:bg-slate-800/30 dark:text-slate-100 dark:placeholder-slate-500 dark:focus:bg-slate-800 ${
+              aria-invalid={!!textValidationError}
+              maxLength={20000}
+              className={`min-h-[200px] w-full resize-none rounded-xl border bg-surface-sunken px-4 py-4 text-[16px] text-ink placeholder:text-ink-faint focus:bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 sm:text-sm ${
                 textValidationError
-                  ? 'border-red-300 bg-red-50/50 focus:border-red-500 dark:border-red-700 dark:bg-red-950/20 dark:focus:border-red-500'
-                  : 'border-slate-300 bg-slate-50/50 focus:border-indigo-500 focus:bg-white dark:border-slate-600 dark:focus:border-indigo-400'
+                  ? 'border-danger focus:border-danger'
+                  : 'border-border-strong focus:border-primary'
               }`}
             />
             <div className="mt-2 flex items-center justify-between">
-              <p className="text-xs text-slate-500 dark:text-slate-400">
+              <p className="text-meta tabular-nums text-ink-muted">
                 {textValidationError ? (
-                  <span className="text-red-600 dark:text-red-400">{textValidationError}</span>
+                  <span className="text-danger-text">{textValidationError}</span>
                 ) : jobText.trim().length > 0 ? (
-                  <span className={jobText.trim().length >= 50 ? 'text-green-600 dark:text-green-400' : 'text-slate-500 dark:text-slate-400'}>
+                  <span className={jobText.trim().length >= 50 ? 'text-success-text' : 'text-ink-muted'}>
                     {jobText.trim().length} characters
                   </span>
                 ) : (
@@ -86,7 +91,7 @@ export const JobInput = ({
                 )}
               </p>
               {jobText.trim().length >= 50 && (
-                <p className="text-xs text-green-600 dark:text-green-400">Valid</p>
+                <p className="text-meta text-success-text">Valid</p>
               )}
             </div>
           </div>
@@ -94,10 +99,10 @@ export const JobInput = ({
       ) : (
         <div className="space-y-4">
           {/* Success Message */}
-          <div className="rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-900/50 dark:bg-green-950/30">
+          <div role="status" className="rounded-lg border border-success-border bg-success-surface p-4">
             <div className="flex items-start gap-3">
               <svg
-                className="h-5 w-5 flex-shrink-0 text-green-600 dark:text-green-400"
+                className="h-5 w-5 flex-shrink-0 text-success-text"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -109,43 +114,45 @@ export const JobInput = ({
                   d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
               </svg>
-              <div className="flex-1">
-                <p className="font-medium text-green-700 dark:text-green-300">
+              <div className="min-w-0 flex-1">
+                <p className="font-medium text-success-text">
                   Job analyzed successfully!
                 </p>
-                <p className="mt-0.5 text-sm text-green-600 dark:text-green-400">
-                  {jobData.job_title} - {jobData.location}
+                <p className="mt-0.5 text-sm text-success-text [overflow-wrap:anywhere]">
+                  {[jobData.job_title, jobData.location].filter(Boolean).join(' — ') || 'Details below'}
                 </p>
               </div>
             </div>
           </div>
 
           {/* Job Details Preview */}
-          <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+          <div className="rounded-lg border border-border bg-surface-sunken p-4">
             <div className="space-y-2 text-sm">
-              <div>
-                <span className="font-medium text-slate-700 dark:text-slate-300">
+              <div className="[overflow-wrap:anywhere]">
+                <span className="font-medium text-ink">
                   Title:
                 </span>{' '}
-                <span className="text-slate-600 dark:text-slate-400">
-                  {jobData.job_title}
+                <span className="text-ink-muted">
+                  {jobData.job_title || '—'}
                 </span>
               </div>
-              <div>
-                <span className="font-medium text-slate-700 dark:text-slate-300">
+              <div className="[overflow-wrap:anywhere]">
+                <span className="font-medium text-ink">
                   Level:
                 </span>{' '}
-                <span className="text-slate-600 dark:text-slate-400">
-                  {jobData.job_level}
+                <span className="text-ink-muted">
+                  {jobData.job_level || '—'}
                 </span>
               </div>
-              <div>
-                <span className="font-medium text-slate-700 dark:text-slate-300">
+              <div className="[overflow-wrap:anywhere]">
+                <span className="font-medium text-ink">
                   Required Skills:
                 </span>{' '}
-                <span className="text-slate-600 dark:text-slate-400">
-                  {jobData.required_skills.slice(0, 3).join(', ')}
-                  {jobData.required_skills.length > 3 && '...'}
+                <span className="text-ink-muted">
+                  {(jobData.required_skills ?? []).length > 0
+                    ? (jobData.required_skills ?? []).slice(0, 3).join(', ') +
+                      ((jobData.required_skills ?? []).length > 3 ? '…' : '')
+                    : '—'}
                 </span>
               </div>
             </div>
@@ -153,7 +160,7 @@ export const JobInput = ({
 
           <button
             onClick={onClear}
-            className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+            className="w-full rounded-lg border border-border-strong bg-surface px-4 py-2.5 text-sm font-medium text-ink-muted transition-colors hover:bg-surface-sunken hover:text-ink"
           >
             Clear & Enter New Job
           </button>
@@ -162,10 +169,10 @@ export const JobInput = ({
 
       {/* Error Message */}
       {error && (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-900/50 dark:bg-red-950/30">
+        <div role="alert" className="mt-4 rounded-lg border border-danger-border bg-danger-surface p-4">
           <div className="flex items-start gap-3">
             <svg
-              className="h-5 w-5 flex-shrink-0 text-red-600 dark:text-red-400"
+              className="h-5 w-5 flex-shrink-0 text-danger-text"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -177,7 +184,7 @@ export const JobInput = ({
                 d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
               />
             </svg>
-            <p className="text-sm font-medium text-red-700 dark:text-red-400">{error}</p>
+            <p className="text-sm font-medium text-danger-text">{error}</p>
           </div>
         </div>
       )}

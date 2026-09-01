@@ -7,12 +7,12 @@ export const ThemeToggle = ({ isDark, toggleTheme }: ThemeToggleProps) => {
   return (
     <button
       onClick={toggleTheme}
-      className="group relative h-9 w-9 rounded-lg border border-slate-200 bg-slate-50 transition-all hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+      className="group relative h-9 w-9 rounded-lg border border-border bg-surface-sunken transition-colors hover:bg-surface"
       aria-label="Toggle theme"
     >
       {/* Sun Icon (visible in dark mode) */}
       <svg
-        className={`absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 text-slate-600 transition-all duration-300 dark:text-amber-400 ${
+        className={`absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 text-ink-muted transition-all duration-300 dark:text-primary ${
           isDark ? 'rotate-0 scale-100 opacity-100' : 'rotate-90 scale-0 opacity-0'
         }`}
         fill="none"
@@ -29,7 +29,7 @@ export const ThemeToggle = ({ isDark, toggleTheme }: ThemeToggleProps) => {
       
       {/* Moon Icon (visible in light mode) */}
       <svg
-        className={`absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 text-slate-600 transition-all duration-300 dark:text-slate-400 ${
+        className={`absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 text-ink-muted transition-all duration-300 ${
           isDark ? '-rotate-90 scale-0 opacity-0' : 'rotate-0 scale-100 opacity-100'
         }`}
         fill="none"

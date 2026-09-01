@@ -90,14 +90,14 @@ export const UploadSection = ({
     <div className="flex flex-1 flex-col items-center justify-start">
       {/* Hero Section */}
       <div className="w-full max-w-6xl px-6 py-12 text-center">
-        <h1 className="mb-6 text-4xl font-bold tracking-tight text-slate-900 dark:text-slate-100 sm:text-5xl lg:text-6xl">
+        <h1 className="mx-auto mb-6 max-w-[16ch] text-balance text-4xl font-bold tracking-display text-ink sm:text-5xl lg:text-6xl">
           {flowMode === 'cv_only'
             ? 'Improve Your CV with AI'
             : flowMode === 'job_tailoring'
               ? 'Create Tailored Job Applications with AI'
               : 'What would you like to do?'}
         </h1>
-        <p className="mx-auto mb-12 max-w-2xl text-lg text-slate-600 dark:text-slate-400 sm:text-xl">
+        <p className="mx-auto mb-12 max-w-[46ch] text-balance text-lede text-ink-muted">
           {flowMode === 'cv_only'
             ? 'Upload your resume for a structured quality review covering clarity, ATS readiness, quantified impact, and formatting'
             : flowMode === 'job_tailoring'
@@ -112,11 +112,11 @@ export const UploadSection = ({
               {/* Review my CV */}
               <button
                 onClick={() => onSetFlowMode('cv_only')}
-                className="group flex flex-col items-center rounded-2xl border-2 border-slate-200 bg-white p-8 text-left shadow-lg transition-all hover:border-indigo-400 hover:shadow-xl dark:border-slate-700 dark:bg-slate-800 dark:hover:border-indigo-500"
+                className="group flex flex-col items-center rounded-2xl border border-border bg-surface p-8 text-left shadow-lg shadow-black/5 transition-colors hover:border-primary hover:bg-primary-surface/40"
               >
-                <div className="mb-5 rounded-full bg-indigo-100 p-5 transition-colors group-hover:bg-indigo-200 dark:bg-indigo-900/30 dark:group-hover:bg-indigo-900/50">
+                <div className="mb-5 rounded-full bg-primary-surface p-5 transition-colors group-hover:bg-primary/25">
                   <svg
-                    className="h-10 w-10 text-indigo-600 dark:text-indigo-400"
+                    className="h-10 w-10 text-primary-text"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -129,10 +129,10 @@ export const UploadSection = ({
                     />
                   </svg>
                 </div>
-                <h2 className="mb-2 text-xl font-semibold text-slate-900 dark:text-slate-100">
+                <h2 className="mb-2 text-xl font-semibold tracking-title text-ink">
                   Review my CV
                 </h2>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
+                <p className="text-body text-ink-muted">
                   Get a structured quality review: clarity, ATS readiness, quantified impact, and formatting
                 </p>
               </button>
@@ -140,11 +140,11 @@ export const UploadSection = ({
               {/* Tailor to a job */}
               <button
                 onClick={() => onSetFlowMode('job_tailoring')}
-                className="group flex flex-col items-center rounded-2xl border-2 border-slate-200 bg-white p-8 text-left shadow-lg transition-all hover:border-indigo-400 hover:shadow-xl dark:border-slate-700 dark:bg-slate-800 dark:hover:border-indigo-500"
+                className="group flex flex-col items-center rounded-2xl border border-border bg-surface p-8 text-left shadow-lg shadow-black/5 transition-colors hover:border-primary hover:bg-primary-surface/40"
               >
-                <div className="mb-5 rounded-full bg-indigo-100 p-5 transition-colors group-hover:bg-indigo-200 dark:bg-indigo-900/30 dark:group-hover:bg-indigo-900/50">
+                <div className="mb-5 rounded-full bg-primary-surface p-5 transition-colors group-hover:bg-primary/25">
                   <svg
-                    className="h-10 w-10 text-indigo-600 dark:text-indigo-400"
+                    className="h-10 w-10 text-primary-text"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -157,10 +157,10 @@ export const UploadSection = ({
                     />
                   </svg>
                 </div>
-                <h2 className="mb-2 text-xl font-semibold text-slate-900 dark:text-slate-100">
+                <h2 className="mb-2 text-xl font-semibold tracking-title text-ink">
                   Tailor to a job
                 </h2>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
+                <p className="text-body text-ink-muted">
                   Match your CV to a specific job description and generate tailored application materials
                 </p>
               </button>
@@ -171,14 +171,14 @@ export const UploadSection = ({
                 onClick={() => setShowDiscoveryComingSoon(true)}
                 aria-disabled="true"
                 title="Coming soon"
-                className="group relative flex cursor-not-allowed flex-col items-center rounded-2xl border-2 border-dashed border-slate-300 bg-white/60 p-8 text-left opacity-70 shadow-sm transition-all hover:opacity-90 dark:border-slate-700 dark:bg-slate-800/40"
+                className="group relative flex cursor-not-allowed flex-col items-center rounded-2xl border border-dashed border-border-strong bg-surface/60 p-8 text-left opacity-80 shadow-sm transition-opacity hover:opacity-100"
               >
-                <span className="absolute right-4 top-4 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                <span className="absolute right-4 top-4 rounded-full bg-warning-surface px-2.5 py-0.5 text-meta font-medium text-warning-text">
                   Coming soon
                 </span>
-                <div className="mb-5 rounded-full bg-slate-100 p-5 dark:bg-slate-700/40">
+                <div className="mb-5 rounded-full bg-surface-sunken p-5">
                   <svg
-                    className="h-10 w-10 text-slate-500 dark:text-slate-400"
+                    className="h-10 w-10 text-ink-faint"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -191,10 +191,10 @@ export const UploadSection = ({
                     />
                   </svg>
                 </div>
-                <h2 className="mb-2 text-xl font-semibold text-slate-700 dark:text-slate-300">
+                <h2 className="mb-2 text-xl font-semibold tracking-title text-ink-muted">
                   Discover careers
                 </h2>
-                <p className="text-sm text-slate-500 dark:text-slate-400">
+                <p className="text-body text-ink-muted">
                   Explore roles, industries, and trajectories that fit your skills - phase 5/6
                 </p>
               </button>
@@ -203,7 +203,7 @@ export const UploadSection = ({
             {showDiscoveryComingSoon && (
               <div
                 role="status"
-                className="mx-auto mt-6 max-w-xl rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900 shadow-sm dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-200"
+                className="mx-auto mt-6 max-w-xl rounded-xl border border-warning-border bg-warning-surface p-4 text-sm text-warning-text shadow-sm"
               >
                 The career-discovery experience isn&rsquo;t available yet. It&rsquo;s wired into
                 the orchestrator as a placeholder so the real implementation can drop in
@@ -235,11 +235,11 @@ export const UploadSection = ({
           {/* Upload Cards Grid */}
           <div className={flowMode === 'cv_only' ? 'flex justify-center' : 'grid gap-8 lg:grid-cols-2'}>
             {/* Resume Upload Card */}
-            <div className={`rounded-2xl bg-white p-8 shadow-lg dark:bg-slate-800${flowMode === 'cv_only' ? ' w-full max-w-lg' : ''}`}>
+            <div className={`rounded-2xl border border-border bg-surface p-8 shadow-lg shadow-black/5${flowMode === 'cv_only' ? ' w-full max-w-lg' : ''}`}>
               <div className="mb-6 flex items-center justify-center">
-                <div className="rounded-full bg-indigo-100 p-6 dark:bg-indigo-900/30">
+                <div className="rounded-full bg-primary-surface p-6">
                   <svg
-                    className="h-16 w-16 text-indigo-600 dark:text-indigo-400"
+                    className="h-16 w-16 text-primary-text"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -253,10 +253,10 @@ export const UploadSection = ({
                   </svg>
                 </div>
               </div>
-              <h2 className="mb-3 text-2xl font-semibold text-slate-900 dark:text-slate-100">
+              <h2 className="mb-3 text-2xl font-semibold tracking-title text-ink">
                 Your Resume
               </h2>
-              <p className="mb-6 text-sm text-slate-600 dark:text-slate-400">
+              <p className="mb-6 text-body text-ink-muted">
                 Upload your current resume as a PDF file
               </p>
               <ResumeUpload
@@ -278,11 +278,11 @@ export const UploadSection = ({
             </div>
 
             {/* Job Description Card — only shown in job_tailoring flow */}
-            {flowMode === 'job_tailoring' && <div className="rounded-2xl bg-white p-8 shadow-lg dark:bg-slate-800">
+            {flowMode === 'job_tailoring' && <div className="rounded-2xl border border-border bg-surface p-8 shadow-lg shadow-black/5">
               <div className="mb-6 flex items-center justify-center">
-                <div className="rounded-full bg-indigo-100 p-6 dark:bg-indigo-900/30">
+                <div className="rounded-full bg-primary-surface p-6">
                   <svg
-                    className="h-16 w-16 text-indigo-600 dark:text-indigo-400"
+                    className="h-16 w-16 text-primary-text"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -297,14 +297,14 @@ export const UploadSection = ({
                 </div>
               </div>
               <div className="mb-3 flex items-center justify-center gap-2">
-                <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
+                <h2 className="text-2xl font-semibold tracking-title text-ink">
                   Job Description
                 </h2>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-400">
+                <span className="rounded-full bg-surface-sunken px-2.5 py-0.5 text-meta font-medium text-ink-muted">
                   Optional
                 </span>
               </div>
-              <p className="mb-6 text-sm text-slate-600 dark:text-slate-400">
+              <p className="mb-6 text-body text-ink-muted">
                 {jobSkipped 
                   ? 'Skipped - You can still improve your resume'
                   : 'Paste the job description or provide a URL'}
@@ -329,7 +329,7 @@ export const UploadSection = ({
                   {!jobData && !isJobProcessing && (
                     <button
                       onClick={onSkipJob}
-                      className="mt-4 w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                      className="mt-4 w-full rounded-lg border border-border-strong bg-surface px-4 py-2.5 text-sm font-medium text-ink-muted transition-colors hover:bg-surface-sunken hover:text-ink"
                     >
                       Skip Job Description
                     </button>
@@ -337,15 +337,15 @@ export const UploadSection = ({
                 </>
               ) : (
                 <div className="space-y-4">
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-center dark:border-slate-700 dark:bg-slate-800/50">
-                    <p className="mb-4 text-sm text-slate-600 dark:text-slate-400">
+                  <div className="rounded-lg border border-border bg-surface-sunken p-4 text-center">
+                    <p className="mb-4 text-body text-ink-muted">
                       Job description skipped. You can add it later in the chat.
                     </p>
                   </div>
                   {/* Undo Skip Button */}
                   <button
                     onClick={onUnskipJob}
-                    className="w-full rounded-lg border border-indigo-300 bg-indigo-50 px-4 py-3 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-100 dark:border-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+                    className="w-full rounded-lg border border-primary/40 bg-primary-surface px-4 py-3 text-sm font-medium text-primary-text transition-colors hover:bg-primary/20"
                   >
                     <span className="flex items-center justify-center gap-2">
                       <svg
@@ -375,7 +375,7 @@ export const UploadSection = ({
               <button
                 onClick={onStartAnalysis}
                 disabled={!canStartAnalysis || isUploading || isJobProcessing}
-                className="rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 px-8 py-4 text-lg font-semibold text-white shadow-lg transition-all hover:from-indigo-700 hover:to-indigo-800 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:from-indigo-600 disabled:hover:to-indigo-700 dark:from-indigo-500 dark:to-indigo-600 dark:hover:from-indigo-600 dark:hover:to-indigo-700"
+                className="rounded-xl bg-primary px-8 py-4 text-lg font-semibold text-primary-fg shadow-lg shadow-primary/25 transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary"
               >
                 {isUploading || isJobProcessing ? (
                   <span className="flex items-center gap-3">
@@ -420,7 +420,7 @@ export const UploadSection = ({
                 )}
               </button>
               
-              <p className="text-center text-sm text-slate-600 dark:text-slate-400">
+              <p className="text-center text-body text-ink-muted">
                 {flowMode === 'cv_only'
                   ? 'Review your CV for quality, clarity, and ATS readiness'
                   : (jobSkipped || !jobData

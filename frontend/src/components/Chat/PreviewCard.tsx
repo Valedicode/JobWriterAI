@@ -13,6 +13,9 @@ interface PreviewCardProps {
   gate: OrchestratorGatePayload;
 }
 
+/** Coerce a possibly-malformed backend field to a safe array. */
+const asArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+
 // --------------------------------------------------------------------------
 // Step-specific preview shapes. The orchestrator backend is the source of
 // truth; these are mirrors used only for rendering convenience.
@@ -62,7 +65,7 @@ interface CoverLetterPreview {
 
 const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
   <div className="mb-3 last:mb-0">
-    <h4 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+    <h4 className="mb-1 text-meta font-semibold uppercase tracking-[0.06em] text-ink-muted">
       {title}
     </h4>
     {children}
@@ -70,7 +73,7 @@ const Section = ({ title, children }: { title: string; children: React.ReactNode
 );
 
 const Pill = ({ children }: { children: React.ReactNode }) => (
-  <span className="inline-block rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-800 dark:bg-indigo-900/50 dark:text-indigo-200">
+  <span className="inline-block rounded-full bg-primary-surface px-2 py-0.5 text-label font-medium text-primary-text">
     {children}
   </span>
 );
@@ -79,24 +82,26 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
   const p = preview as ScorePreview;
   const score = typeof p.aggregate_score === 'number' ? p.aggregate_score : null;
   const level = p.level ?? 'unknown';
-  const dimensions = p.dimensions ?? [];
+  const dimensions = Array.isArray(p.dimensions) ? p.dimensions : [];
   const gap = p.gap_analysis ?? {};
+  const num = (v: unknown, digits = 2) =>
+    typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '—';
   return (
     <div>
       <Section title="Score">
-        <div className="text-2xl font-bold text-slate-900 dark:text-slate-50">
+        <div className="text-2xl font-bold tabular-nums tracking-title text-ink">
           {score !== null ? score.toFixed(2) : '—'}{' '}
-          <span className="ml-2 text-sm font-normal uppercase text-slate-500">{level}</span>
+          <span className="ml-2 text-label font-medium uppercase tracking-[0.04em] text-ink-muted [overflow-wrap:anywhere]">{level}</span>
         </div>
       </Section>
       {dimensions.length > 0 && (
         <Section title="Dimensions">
           <ul className="space-y-1 text-sm">
-            {dimensions.map((d) => (
-              <li key={d.name} className="flex justify-between font-mono">
-                <span>{d.name}</span>
-                <span className="text-slate-500">
-                  {d.score.toFixed(2)} × {Math.round((d.weight || 0) * 100)}%
+            {dimensions.map((d, i) => (
+              <li key={d?.name ?? i} className="flex justify-between gap-3">
+                <span className="min-w-0 truncate">{d?.name ?? '—'}</span>
+                <span className="shrink-0 tabular-nums text-ink-muted">
+                  {num(d?.score)} × {Math.round((Number(d?.weight) || 0) * 100)}%
                 </span>
               </li>
             ))}
@@ -104,7 +109,7 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
         </Section>
       )}
       <Section title="Gaps">
-        <div className="text-sm">
+        <div className="text-sm tabular-nums">
           Matched: {(gap.matched_skills || []).length} · Transferable:{' '}
           {(gap.transferable_skills || []).length} · Missing:{' '}
           {(gap.missing_skills || []).length}
@@ -112,7 +117,7 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
       </Section>
       {p.interpretation && (
         <Section title="Interpretation">
-          <p className="text-sm text-slate-700 dark:text-slate-300">{p.interpretation}</p>
+          <p className="text-body text-ink">{p.interpretation}</p>
         </Section>
       )}
     </div>
@@ -121,16 +126,16 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
 
 function ApproveSelection({ preview }: { preview: PreviewMap }) {
   const p = preview as SelectionPreview;
-  const bullets = p.selected_bullets ?? [];
-  const order = p.section_order ?? [];
-  const emphasis = p.sections_to_emphasize ?? [];
+  const bullets = asArray<NonNullable<SelectionPreview['selected_bullets']>[number]>(p.selected_bullets);
+  const order = asArray<string>(p.section_order);
+  const emphasis = asArray<string>(p.sections_to_emphasize);
   return (
     <div>
       {order.length > 0 && (
         <Section title="Proposed section order">
           <div className="flex flex-wrap gap-1">
-            {order.map((s) => (
-              <Pill key={s}>{s}</Pill>
+            {order.map((s, i) => (
+              <Pill key={i}>{s}</Pill>
             ))}
           </div>
         </Section>
@@ -138,25 +143,25 @@ function ApproveSelection({ preview }: { preview: PreviewMap }) {
       {emphasis.length > 0 && (
         <Section title="Emphasised">
           <div className="flex flex-wrap gap-1">
-            {emphasis.map((s) => (
-              <Pill key={s}>{s}</Pill>
+            {emphasis.map((s, i) => (
+              <Pill key={i}>{s}</Pill>
             ))}
           </div>
         </Section>
       )}
       {bullets.length > 0 && (
         <Section title={`Top bullets (${bullets.length})`}>
-          <ul className="space-y-2 text-sm">
+          <ul className="space-y-2">
             {bullets.slice(0, 8).map((b, i) => (
               <li
                 key={i}
-                className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-800"
+                className="rounded border border-border bg-surface-sunken p-2"
               >
-                <div className="text-xs uppercase tracking-wide text-slate-500">
-                  {b.section} · relevance{' '}
-                  {typeof b.relevance_score === 'number' ? b.relevance_score.toFixed(2) : '?'}
+                <div className="text-meta uppercase tracking-[0.06em] tabular-nums text-ink-muted">
+                  {b?.section ?? '—'} · relevance{' '}
+                  {typeof b?.relevance_score === 'number' ? b.relevance_score.toFixed(2) : '?'}
                 </div>
-                <div className="text-slate-800 dark:text-slate-100">{b.original_text}</div>
+                <div className="mt-0.5 text-body text-ink [overflow-wrap:anywhere]">{b?.original_text ?? ''}</div>
               </li>
             ))}
           </ul>
@@ -168,31 +173,35 @@ function ApproveSelection({ preview }: { preview: PreviewMap }) {
 
 function ApproveRewrite({ preview }: { preview: PreviewMap }) {
   const p = preview as RewritePreview;
-  const bullets = p.rewritten_bullets ?? [];
-  const keywords = p.keywords_inserted ?? [];
+  const bullets = asArray<NonNullable<RewritePreview['rewritten_bullets']>[number]>(p.rewritten_bullets);
+  const keywords = asArray<string>(p.keywords_inserted);
   return (
     <div>
       {keywords.length > 0 && (
         <Section title="Keywords woven in">
           <div className="flex flex-wrap gap-1">
-            {keywords.map((k) => (
-              <Pill key={k}>{k}</Pill>
+            {keywords.map((k, i) => (
+              <Pill key={i}>{k}</Pill>
             ))}
           </div>
         </Section>
       )}
       <Section title={`Rewrites (${bullets.length})`}>
-        <ul className="space-y-2 text-sm">
+        <ul className="space-y-2">
           {bullets.slice(0, 8).map((b, i) => (
             <li
               key={i}
-              className="rounded border border-slate-200 bg-slate-50 p-2 dark:border-slate-700 dark:bg-slate-800"
+              className="rounded border border-border bg-surface-sunken p-2"
             >
-              <div className="text-xs uppercase tracking-wide text-slate-500">
-                confidence {typeof b.confidence === 'number' ? b.confidence.toFixed(2) : '?'}
+              <div className="text-meta uppercase tracking-[0.06em] tabular-nums text-ink-muted">
+                confidence {typeof b?.confidence === 'number' ? b.confidence.toFixed(2) : '?'}
               </div>
-              <div className="text-slate-500 line-through">{b.original}</div>
-              <div className="mt-1 text-slate-800 dark:text-slate-100">{b.rewritten}</div>
+              <div className="mt-1 rounded bg-removed-surface px-1 text-body text-removed-text line-through decoration-1 [overflow-wrap:anywhere]">
+                {b?.original ?? ''}
+              </div>
+              <div className="mt-1 rounded bg-added-surface px-1 text-body text-added-text [overflow-wrap:anywhere]">
+                {b?.rewritten ?? ''}
+              </div>
             </li>
           ))}
         </ul>
@@ -214,19 +223,23 @@ function ApproveCoverLetter({ preview }: { preview: PreviewMap }) {
     <div>
       {p.betreff && (
         <Section title="Betreff">
-          <div className="text-sm font-semibold">{p.betreff}</div>
+          <div className="text-body font-semibold [overflow-wrap:anywhere]">{p.betreff}</div>
         </Section>
       )}
-      <Section title="Letter">
-        <div className="space-y-2 text-sm text-slate-800 dark:text-slate-100">
-          {paras.map((para, i) => (
-            <p key={i}>{para}</p>
-          ))}
-        </div>
-      </Section>
+      {paras.length > 0 ? (
+        <Section title="Letter">
+          <div className="max-w-[62ch] space-y-2.5 text-body text-ink [overflow-wrap:anywhere]">
+            {paras.map((para, i) => (
+              <p key={i}>{para}</p>
+            ))}
+          </div>
+        </Section>
+      ) : (
+        <p className="text-body text-ink-muted">Draft not available yet.</p>
+      )}
       {p.grussformel && (
         <Section title="Grußformel">
-          <div className="text-sm">{p.grussformel}</div>
+          <div className="text-body [overflow-wrap:anywhere]">{p.grussformel}</div>
         </Section>
       )}
     </div>
@@ -234,12 +247,18 @@ function ApproveCoverLetter({ preview }: { preview: PreviewMap }) {
 }
 
 function GenericJson({ preview }: { preview: PreviewMap }) {
-  if (!preview || Object.keys(preview).length === 0) {
-    return <p className="text-sm text-slate-500">No preview data for this gate.</p>;
+  if (!preview || typeof preview !== 'object' || Object.keys(preview).length === 0) {
+    return <p className="text-sm text-ink-muted">No preview data for this gate.</p>;
+  }
+  let json = '';
+  try {
+    json = JSON.stringify(preview, null, 2);
+  } catch {
+    return <p className="text-sm text-ink-muted">This preview couldn’t be displayed.</p>;
   }
   return (
-    <pre className="max-h-64 overflow-auto rounded bg-slate-50 p-2 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-      {JSON.stringify(preview, null, 2)}
+    <pre className="max-h-64 overflow-auto rounded bg-surface-sunken p-2 text-xs text-ink-muted">
+      {json}
     </pre>
   );
 }

@@ -25,12 +25,12 @@ export const InputGate = ({ gate, isLoading, onSubmit }: InputGateProps) => {
   };
 
   return (
-    <div className="mx-auto max-w-3xl rounded-xl border border-sky-200 bg-sky-50/50 p-4 shadow-sm dark:border-sky-900/50 dark:bg-sky-950/20">
+    <div className="mx-auto max-w-3xl rounded-xl border border-primary/30 bg-primary-surface/50 p-4 shadow-sm">
       <div className="mb-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+        <div className="text-xs font-semibold uppercase tracking-wide text-primary-text">
           Input needed · {gate.step}
         </div>
-        <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{gate.narration}</p>
+        <p className="mt-1 text-body text-ink [overflow-wrap:anywhere]">{gate.narration}</p>
       </div>
 
       <div className="space-y-2">
@@ -39,14 +39,15 @@ export const InputGate = ({ gate, isLoading, onSubmit }: InputGateProps) => {
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="Recipient name"
-          className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          className="w-full rounded border border-border-strong bg-surface px-3 py-2 text-[16px] text-ink placeholder:text-ink-faint sm:text-sm"
+          maxLength={200}
           disabled={isLoading}
         />
         <button
           type="button"
           onClick={handleSubmit}
           disabled={isLoading || !value.trim()}
-          className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-fg hover:bg-primary-hover disabled:opacity-50"
         >
           Continue
         </button>

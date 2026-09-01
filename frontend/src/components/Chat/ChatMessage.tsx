@@ -17,7 +17,7 @@ export const ChatMessage = ({ message, generatedFiles, isFadingOut = false }: Ch
       const h3Match = line.match(/^###\s+(.+)$/);
       if (h3Match) {
         return (
-          <h3 key={lineIndex} className="mt-4 mb-2 text-base font-semibold text-slate-900 dark:text-slate-100 first:mt-0">
+          <h3 key={lineIndex} className="mt-4 mb-2 text-base font-semibold text-ink first:mt-0">
             {h3Match[1]}
           </h3>
         );
@@ -27,7 +27,7 @@ export const ChatMessage = ({ message, generatedFiles, isFadingOut = false }: Ch
       const h2Match = line.match(/^##\s+(.+)$/);
       if (h2Match) {
         return (
-          <h2 key={lineIndex} className="mt-6 mb-3 text-lg font-bold text-slate-900 dark:text-slate-100 first:mt-0">
+          <h2 key={lineIndex} className="mt-6 mb-3 text-lg font-bold text-ink first:mt-0">
             {h2Match[1]}
           </h2>
         );
@@ -135,7 +135,7 @@ export const ChatMessage = ({ message, generatedFiles, isFadingOut = false }: Ch
               href={m.url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 underline"
+              className="text-primary-text underline underline-offset-2 [overflow-wrap:anywhere] hover:opacity-80"
             >
               {linkText}
             </a>
@@ -173,8 +173,8 @@ export const ChatMessage = ({ message, generatedFiles, isFadingOut = false }: Ch
       } ${isFadingOut ? 'opacity-0' : 'opacity-100 animate-fade-in'}`}
     >
       {message.role === 'assistant' && (
-        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-600 to-blue-600 dark:from-indigo-500 dark:to-blue-500">
-          <svg className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-fg">
+          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
           </svg>
         </div>
@@ -182,15 +182,15 @@ export const ChatMessage = ({ message, generatedFiles, isFadingOut = false }: Ch
       <div
         className={`max-w-[80%] rounded-2xl px-4 py-3 ${
           message.role === 'user'
-            ? 'bg-indigo-600 text-white dark:bg-indigo-500'
-            : 'bg-slate-100 text-slate-900 dark:bg-slate-700 dark:text-slate-100'
+            ? 'bg-primary text-primary-fg'
+            : 'bg-surface-sunken text-ink'
         }`}
       >
-        <div className="text-sm leading-relaxed whitespace-pre-wrap">
+        <div className="text-body whitespace-pre-wrap [overflow-wrap:anywhere]">
           {formatText(message.content)}
         </div>
         {message.role === 'assistant' && generatedFiles && generatedFiles.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-600">
+          <div className="mt-3 pt-3 border-t border-border">
             <div className="flex flex-wrap gap-4">
               {generatedFiles.map((file, index) => (
                 <DownloadButton key={index} file={file} />
@@ -200,8 +200,8 @@ export const ChatMessage = ({ message, generatedFiles, isFadingOut = false }: Ch
         )}
       </div>
       {message.role === 'user' && (
-        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-slate-200 dark:bg-slate-700">
-          <svg className="h-5 w-5 text-slate-600 dark:text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-surface-sunken">
+          <svg className="h-5 w-5 text-ink-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
           </svg>
         </div>

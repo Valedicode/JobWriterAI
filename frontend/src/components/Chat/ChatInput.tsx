@@ -226,7 +226,7 @@ export const ChatInput = ({
           return (
             <div
               key={index}
-              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-indigo-500 dark:bg-indigo-400"
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary"
               style={{
                 width: `${24 + index * 8}px`,
                 height: `${24 + index * 8}px`,
@@ -242,19 +242,19 @@ export const ChatInput = ({
   };
 
   return (
-    <div className="border-t border-slate-200 bg-slate-50/50 p-4 dark:border-slate-700 dark:bg-slate-900/50">
+    <div className="border-t border-border bg-surface-sunken p-4">
       <div className="mx-auto max-w-3xl">
 
         {/* Processing Indicator */}
         {isProcessing && (
-          <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50/50 p-4 dark:border-indigo-800 dark:bg-indigo-900/20">
+          <div role="status" className="mb-4 rounded-xl border border-border-strong bg-surface p-4">
             <div className="flex items-center gap-3">
-              <svg className="h-5 w-5 animate-spin text-indigo-600 dark:text-indigo-400" fill="none" viewBox="0 0 24 24">
+              <svg className="h-5 w-5 animate-spin text-primary" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
               </svg>
-              <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
-                Translating to English...
+              <span className="text-sm font-medium text-ink">
+                Translating to English…
               </span>
             </div>
           </div>
@@ -262,12 +262,12 @@ export const ChatInput = ({
 
         {/* Error Display */}
         {error && (
-          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950/20 dark:text-red-400">
+          <div role="alert" className="mb-4 rounded-xl border border-danger-border bg-danger-surface p-3 text-sm text-danger-text">
             {error}
           </div>
         )}
 
-        <div className="relative flex items-center rounded-2xl border border-slate-300 bg-slate-50 px-4 py-3 shadow-sm transition-all focus-within:border-indigo-500 focus-within:bg-white focus-within:shadow-md dark:border-slate-600 dark:bg-slate-700/50 dark:focus-within:border-indigo-500 dark:focus-within:bg-slate-700">
+        <div className="relative flex items-center rounded-2xl border border-border-strong bg-surface px-4 py-3 shadow-sm transition-colors focus-within:border-primary focus-within:shadow-md">
           {/* Text Input */}
           <textarea
             ref={textareaRef}
@@ -276,7 +276,8 @@ export const ChatInput = ({
             onKeyDown={onKeyDown}
             placeholder="Ask any question or use voice input"
             disabled={isRecording || isProcessing}
-            className="flex-1 resize-none border-0 bg-transparent text-base text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-0 disabled:opacity-50 dark:text-slate-100 dark:placeholder-slate-500"
+            maxLength={4000}
+            className="flex-1 resize-none border-0 bg-transparent text-base text-ink placeholder:text-ink-faint focus:outline-none focus:ring-0 disabled:opacity-50"
             rows={1}
             style={{ minHeight: '32px', maxHeight: '200px' }}
           />
@@ -285,24 +286,24 @@ export const ChatInput = ({
           <div className="ml-3 flex items-center gap-2">
             {/* Recording Timer (shown inline when recording) */}
             {isRecording && (
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-red-50 dark:bg-red-900/20">
-                <div className="h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse"></div>
-                <span className="text-xs font-mono font-medium text-red-600 dark:text-red-400">
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-danger-surface">
+                <div className="h-1.5 w-1.5 rounded-full bg-danger animate-pulse"></div>
+                <span className="font-mono text-meta font-medium tabular-nums text-danger-text">
                   {formatTime(recordingTime)}
                 </span>
               </div>
             )}
-            
+
             {/* Microphone/Stop Button with Animation */}
             <button
               onClick={isRecording ? stopRecording : startRecording}
               disabled={isProcessing}
-              className={`relative flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg transition-all ${
+              className={`relative flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg transition-colors ${
                 isRecording
-                  ? 'bg-red-600 text-white hover:bg-red-700 dark:bg-red-500 dark:hover:bg-red-600'
+                  ? 'bg-danger text-danger-fg hover:brightness-95'
                   : isProcessing
-                  ? 'opacity-50 cursor-not-allowed text-slate-400 dark:text-slate-500'
-                  : 'text-slate-400 hover:bg-slate-200 hover:text-slate-600 dark:text-slate-500 dark:hover:bg-slate-600 dark:hover:text-slate-300'
+                  ? 'opacity-50 cursor-not-allowed text-ink-faint'
+                  : 'text-ink-faint hover:bg-surface-sunken hover:text-ink'
               }`}
               aria-label={isRecording ? "Stop recording" : "Voice input"}
               title={isRecording ? "Click to stop and transcribe" : "Click to start voice recording"}
@@ -332,7 +333,7 @@ export const ChatInput = ({
             <button
               onClick={onSendMessage}
               disabled={!inputText.trim() || isLoading || isRecording || isProcessing}
-              className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-indigo-600 text-white transition-all hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-600 ${
+              className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-fg transition-transform hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50 ${
                 inputText.trim() && !isLoading && !isRecording && !isProcessing ? 'hover:scale-105' : ''
               }`}
               aria-label="Send message"
@@ -350,7 +351,7 @@ export const ChatInput = ({
             </button>
           </div>
         </div>
-        <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+        <p className="mt-2 text-meta text-ink-muted">
           Powered by AI. Your data is processed securely and privately.
         </p>
       </div>

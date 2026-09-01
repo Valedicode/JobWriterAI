@@ -56,7 +56,7 @@ export const DownloadButton = ({ file }: DownloadButtonProps) => {
       <button
         onClick={handleDownload}
         disabled={isDownloading}
-        className="group relative inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-all hover:bg-indigo-700 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-600 dark:focus:ring-offset-slate-800"
+        className="group relative inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-fg shadow-sm transition-colors hover:bg-primary-hover hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-surface disabled:cursor-not-allowed disabled:opacity-50"
       >
         {isDownloading ? (
           <>
@@ -77,12 +77,12 @@ export const DownloadButton = ({ file }: DownloadButtonProps) => {
       </button>
 
       {error && (
-        <div className="mt-2 text-xs text-red-600 dark:text-red-400">
+        <div role="alert" className="mt-2 text-meta text-danger-text">
           {error}
         </div>
       )}
 
-      <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+      <div className="mt-1.5 flex items-center gap-1.5 text-meta text-ink-muted">
         {getFileIcon()}
         <span className="truncate max-w-[200px]">{file.filename}</span>
       </div>

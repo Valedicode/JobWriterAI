@@ -27,12 +27,12 @@ export const ChoiceGate = ({ gate, isLoading, onSubmit }: ChoiceGateProps) => {
   const allowsReject = gate.allowed_actions.includes('reject');
 
   return (
-    <div className="mx-auto max-w-3xl rounded-xl border border-amber-200 bg-amber-50/50 p-4 shadow-sm dark:border-amber-900/50 dark:bg-amber-950/20">
+    <div className="mx-auto max-w-3xl rounded-xl border border-warning-border bg-warning-surface/60 p-4 shadow-sm">
       <div className="mb-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+        <div className="text-xs font-semibold uppercase tracking-wide text-warning-text">
           Pick one · {gate.step}
         </div>
-        <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{gate.narration}</p>
+        <p className="mt-1 text-body text-ink [overflow-wrap:anywhere]">{gate.narration}</p>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -42,7 +42,7 @@ export const ChoiceGate = ({ gate, isLoading, onSubmit }: ChoiceGateProps) => {
             type="button"
             onClick={() => onSubmit('choose', { choice: c })}
             disabled={isLoading}
-            className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-fg hover:bg-primary-hover disabled:opacity-50"
           >
             {PRETTY_LABELS[c] ?? c}
           </button>
@@ -52,7 +52,7 @@ export const ChoiceGate = ({ gate, isLoading, onSubmit }: ChoiceGateProps) => {
             type="button"
             onClick={() => onSubmit('reject')}
             disabled={isLoading}
-            className="rounded-md border border-rose-300 bg-white px-3 py-1.5 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-50 dark:border-rose-700 dark:bg-slate-900 dark:text-rose-300 dark:hover:bg-slate-800"
+            className="rounded-md border border-danger-border bg-surface px-3 py-1.5 text-sm font-medium text-danger-text hover:bg-danger-surface disabled:opacity-50"
           >
             Cancel
           </button>
