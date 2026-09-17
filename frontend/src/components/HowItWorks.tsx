@@ -52,8 +52,8 @@ export const HowItWorks = () => {
 
   return (
     <div className="rounded-2xl border border-border bg-surface p-8 shadow-lg shadow-black/5">
-      <h3 className="mb-8 text-center text-2xl font-semibold tracking-title text-ink">
-        How It Works
+      <h3 className="mb-8 text-center font-serif text-2xl font-normal tracking-title text-ink">
+        How it works
       </h3>
       <ol className="space-y-6">
         {steps.map((step) => {

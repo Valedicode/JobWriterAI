@@ -99,14 +99,6 @@ export default function Home() {
     }
   };
 
-  const handleSkipJob = () => {
-    setJobSkipped(true);
-  };
-
-  const handleUnskipJob = () => {
-    setJobSkipped(false);
-  };
-
   const analysisInFlight = useRef(false);
   const handleStartAnalysis = async () => {
     // Guard against a double-click firing two runs before React re-renders the
@@ -136,25 +128,23 @@ export default function Home() {
   // Determine if analysis can be started
   const canStartAnalysis = flowMode === 'cv_only'
     ? !!uploadedFile && !isUploading
-    : !!uploadedFile && !isUploading && (jobSkipped || isValidJobInput);
+    : !!uploadedFile && !isUploading && isValidJobInput;
   
   // Determine if both uploads are complete and analysis is done
-  const inputsReady = !!cvData && (flowMode === 'cv_only' || jobSkipped || !!jobData);
+  const inputsReady = !!cvData && (flowMode === 'cv_only' || !!jobData);
   
-  // Initialize Writer chat when CV and optional job data are ready (during "Prepare chat" phase)
+  // Initialize the orchestrator when CV (and job data, for tailoring) are ready.
   useEffect(() => {
-    if (!analysisStarted || !cvData || sessionId || isInitializing) return;
+    if (!analysisStarted || !cvData || sessionId || isInitializing || sessionError) return;
     if (flowMode === null) return;
-    
-    // cv_only: only CV needed; job_tailoring: need job skipped or job data ready
-    const readyToChat = flowMode === 'cv_only'
-      ? true
-      : (jobSkipped || !!jobData);
-    
+
+    // job_tailoring requires extracted job_data; skip is a switch to cv_review.
+    const readyToChat = flowMode === 'cv_only' || !!jobData;
+
     if (readyToChat) {
       initializeSession();
     }
-  }, [analysisStarted, cvData, jobData, jobSkipped, flowMode, sessionId, isInitializing, initializeSession]);
+  }, [analysisStarted, cvData, jobData, flowMode, sessionId, isInitializing, sessionError, initializeSession]);
 
   // Mark chat as ready when session initialization completes
   useEffect(() => {
@@ -243,18 +233,20 @@ export default function Home() {
           </div>
         )}
 
-        {/* Progress Breadcrumb */}
-        <div className="mb-6">
-          <ProgressBreadcrumb
-            resumeUploaded={!!uploadedFile}
-            jobUploaded={!!jobData}
-            jobSkipped={jobSkipped}
-            jobInputValid={isValidJobInput}
-            analysisStarted={analysisStarted}
-            isAnalyzing={isAnalyzing}
-            chatReady={chatReady}
-          />
-        </div>
+        {/* Progress Breadcrumb — hidden on the landing, before a flow is chosen */}
+        {(analysisStarted || flowMode !== null) && (
+          <div className="mb-6">
+            <ProgressBreadcrumb
+              resumeUploaded={!!uploadedFile}
+              jobUploaded={!!jobData}
+              jobSkipped={jobSkipped}
+              jobInputValid={isValidJobInput}
+              analysisStarted={analysisStarted}
+              isAnalyzing={isAnalyzing}
+              chatReady={chatReady}
+            />
+          </div>
+        )}
 
         {/* Conditional Content: Upload Section or Chat Interface */}
         <div className="flex flex-1 flex-col">
@@ -288,9 +280,7 @@ export default function Home() {
                 urlValidationError={urlValidationError}
                 textValidationError={textValidationError}
                 onJobClear={clearJob}
-                jobSkipped={jobSkipped}
-                onSkipJob={handleSkipJob}
-                onUnskipJob={handleUnskipJob}
+                onSkipJob={() => handleSetFlowMode('cv_only')}
                 onStartAnalysis={handleStartAnalysis}
                 analysisStarted={analysisStarted}
                 canStartAnalysis={canStartAnalysis}

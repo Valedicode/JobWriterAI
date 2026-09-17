@@ -63,8 +63,10 @@
  *   lede (18) hero subheads and section intros.
  * Display/title sizes stay on text-2xl…6xl, tightened via tracking-display/title. */
 @theme {
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+  --font-sans: var(--font-sans-user), ui-sans-serif, system-ui, -apple-system,
     "Segoe UI", Roboto, sans-serif;
+  --font-serif: var(--font-serif-user), ui-serif, Georgia, "Times New Roman",
+    serif;
   --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
 
   --text-meta: 0.75rem;
@@ -81,22 +83,22 @@
 }
 
 :root {
-  --canvas:          oklch(0.975 0.008 85);
-  --surface:         oklch(1 0 0);
-  --surface-sunken:  oklch(0.963 0.010 84);
+  --canvas:          oklch(0.974 0.010 88);
+  --surface:         oklch(0.995 0.003 88);
+  --surface-sunken:  oklch(0.901 0.017 82);
 
-  --ink:             oklch(0.245 0.012 64);
-  --ink-muted:       oklch(0.468 0.016 62);
-  --ink-faint:       oklch(0.598 0.014 62);
+  --ink:             oklch(0.255 0.009 65);
+  --ink-muted:       oklch(0.487 0.014 68);
+  --ink-faint:       oklch(0.596 0.013 70);
 
-  --border:          oklch(0.906 0.012 78);
-  --border-strong:   oklch(0.836 0.015 74);
+  --border:          oklch(0.893 0.014 84);
+  --border-strong:   oklch(0.826 0.021 84);
 
-  --primary:         oklch(0.720 0.128 76);
-  --primary-hover:   oklch(0.668 0.132 74);
-  --primary-fg:      oklch(0.245 0.012 64);
-  --primary-text:    oklch(0.520 0.118 70);
-  --primary-surface: oklch(0.957 0.033 82);
+  --primary:         oklch(0.585 0.128 40);
+  --primary-hover:   oklch(0.520 0.125 39);
+  --primary-fg:      oklch(0.968 0.010 60);
+  --primary-text:    oklch(0.475 0.130 40);
+  --primary-surface: oklch(0.918 0.030 48);
 
   --success:         oklch(0.512 0.128 150);
   --success-fg:      oklch(0.988 0.012 150);
@@ -121,7 +123,7 @@
   --removed-text:    oklch(0.505 0.150 27);
   --removed-surface: oklch(0.962 0.024 25);
 
-  --ring:            oklch(0.560 0.120 72);
+  --ring:            oklch(0.585 0.128 40);
 
   /* legacy aliases, kept so any stray reference still resolves */
   --background: var(--canvas);
@@ -129,22 +131,22 @@
 }
 
 .dark {
-  --canvas:          oklch(0.175 0.011 56);
-  --surface:         oklch(0.213 0.013 56);
-  --surface-sunken:  oklch(0.150 0.010 56);
+  --canvas:          oklch(0.178 0.008 60);
+  --surface:         oklch(0.228 0.009 60);
+  --surface-sunken:  oklch(0.152 0.007 60);
 
-  --ink:             oklch(0.928 0.012 82);
-  --ink-muted:       oklch(0.726 0.015 72);
-  --ink-faint:       oklch(0.640 0.014 68);
+  --ink:             oklch(0.925 0.012 85);
+  --ink-muted:       oklch(0.722 0.014 75);
+  --ink-faint:       oklch(0.598 0.013 72);
 
-  --border:          oklch(0.303 0.012 58);
-  --border-strong:   oklch(0.383 0.014 58);
+  --border:          oklch(0.318 0.010 62);
+  --border-strong:   oklch(0.390 0.012 62);
 
-  --primary:         oklch(0.762 0.128 80);
-  --primary-hover:   oklch(0.802 0.126 80);
-  --primary-fg:      oklch(0.195 0.010 56);
-  --primary-text:    oklch(0.796 0.120 80);
-  --primary-surface: oklch(0.283 0.052 74);
+  --primary:         oklch(0.660 0.128 44);
+  --primary-hover:   oklch(0.720 0.120 46);
+  --primary-fg:      oklch(0.180 0.010 50);
+  --primary-text:    oklch(0.780 0.095 46);
+  --primary-surface: oklch(0.290 0.050 42);
 
   --success:         oklch(0.680 0.130 150);
   --success-fg:      oklch(0.165 0.022 150);
@@ -169,7 +171,7 @@
   --removed-text:    oklch(0.740 0.150 27);
   --removed-surface: oklch(0.305 0.070 25);
 
-  --ring:            oklch(0.762 0.128 80);
+  --ring:            oklch(0.660 0.128 44);
 
   --background: var(--canvas);
   --foreground: var(--ink);
@@ -192,11 +194,17 @@
   body {
     background: var(--color-canvas);
     color: var(--color-ink);
-    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    font-family: var(--font-sans-user), ui-sans-serif, system-ui, -apple-system,
       "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  .font-serif,
+  h1.font-serif,
+  h2.font-serif {
+    font-feature-settings: "kern" 1, "liga" 1;
   }
 
   /* Browser surfaces themed from the palette */
@@ -249,6 +257,78 @@
   animation: fadeIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
+/* Landing hero: one authored entrance — headline column, then the gate card. */
+@keyframes heroRise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.hero-rise {
+  animation: heroRise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.hero-rise-delayed {
+  animation: heroRise 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.14s both;
+}
+
+/* A gate arrives: the pipeline stopped for a decision, so the stop is felt. */
+@keyframes gateIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.gate-in {
+  animation: gateIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Weighted factor bars fill from zero so the score reads as a quantity. */
+@keyframes growX {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.animate-grow-x {
+  transform-origin: left;
+  animation: growX 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Idle drift for the empty-state conversation vignette (unmounts once chat starts). */
+@keyframes floatIdle {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.float-idle {
+  animation: floatIdle 5s ease-in-out infinite;
+}
+
+.float-idle-slow {
+  animation: floatIdle 6.5s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* Kill large decorative motion — entrances, hover scale, smooth scroll, the
      theme cross-fade. Keep colour transitions (not vestibular) and
@@ -256,10 +336,17 @@
   html {
     scroll-behavior: auto;
   }
-  .animate-fade-in {
+  .animate-fade-in,
+  .hero-rise,
+  .hero-rise-delayed,
+  .gate-in,
+  .animate-grow-x,
+  .float-idle,
+  .float-idle-slow {
     animation: none;
   }
-  .hover\:scale-105:hover {
+  .hover\:scale-105:hover,
+  .hover\:-translate-y-0\.5:hover {
     transform: none;
   }
   body {
