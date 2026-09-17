@@ -51,16 +51,16 @@ export const HowItWorks = () => {
   };
 
   return (
-    <div className="rounded-2xl bg-white p-8 shadow-lg dark:bg-slate-800">
-      <h3 className="mb-8 text-center text-2xl font-semibold text-slate-900 dark:text-slate-100">
-        How It Works
+    <div className="rounded-2xl border border-border bg-surface p-8 shadow-lg shadow-black/5">
+      <h3 className="mb-8 text-center font-serif text-2xl font-normal tracking-title text-ink">
+        How it works
       </h3>
       <ol className="space-y-6">
         {steps.map((step) => {
           const isExpanded = expandedSteps.has(step.number);
           return (
             <li key={step.number} className="flex gap-5">
-              <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-indigo-600 text-lg font-semibold text-white shadow-sm dark:from-indigo-400 dark:to-indigo-500">
+              <span className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full bg-primary text-lg font-semibold tabular-nums text-primary-fg shadow-sm">
                 {step.number}
               </span>
               <div className="flex-1 pt-1">
@@ -68,11 +68,11 @@ export const HowItWorks = () => {
                   onClick={() => toggleStep(step.number)}
                   className="group flex w-full items-start justify-between gap-3 text-left transition-colors"
                 >
-                  <h4 className="text-lg font-semibold text-slate-900 transition-colors group-hover:text-indigo-600 dark:text-slate-100 dark:group-hover:text-indigo-400">
+                  <h4 className="text-lg font-semibold tracking-title text-ink transition-colors group-hover:text-primary-text">
                     {step.title}
                   </h4>
                   <svg
-                    className={`mt-1 h-5 w-5 flex-shrink-0 text-slate-400 transition-transform ${
+                    className={`mt-1 h-5 w-5 flex-shrink-0 text-ink-faint transition-transform ${
                       isExpanded ? 'rotate-180' : ''
                     }`}
                     fill="none"
@@ -88,7 +88,7 @@ export const HowItWorks = () => {
                   </svg>
                 </button>
                 {isExpanded && (
-                  <p className="mt-3 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+                  <p className="mt-3 max-w-[68ch] text-body text-ink-muted">
                     {step.description}
                   </p>
                 )}

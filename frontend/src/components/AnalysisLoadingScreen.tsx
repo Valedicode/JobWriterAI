@@ -14,7 +14,7 @@ const Step = ({ title, description, state, showConnector = false, nextStepSkippe
   const indicator = (() => {
     if (state === 'done') {
       return (
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-500 text-white dark:bg-green-400">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-success text-success-fg">
           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
           </svg>
@@ -24,7 +24,7 @@ const Step = ({ title, description, state, showConnector = false, nextStepSkippe
 
     if (state === 'skipped') {
       return (
-        <div className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full border border-border-strong bg-surface text-ink-muted">
           <span className="text-lg">–</span>
         </div>
       );
@@ -32,7 +32,7 @@ const Step = ({ title, description, state, showConnector = false, nextStepSkippe
 
     if (state === 'active') {
       return (
-        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-600 text-white dark:bg-indigo-500">
+        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary text-primary-fg">
           <svg className="h-5 w-5 animate-spin" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path
@@ -46,7 +46,7 @@ const Step = ({ title, description, state, showConnector = false, nextStepSkippe
     }
 
     return (
-      <div className="flex h-10 w-10 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-400 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-500">
+      <div className="flex h-10 w-10 items-center justify-center rounded-full border border-border-strong bg-surface text-ink-faint">
         <span className="text-sm font-semibold">•</span>
       </div>
     );
@@ -54,23 +54,18 @@ const Step = ({ title, description, state, showConnector = false, nextStepSkippe
 
   const titleClass =
     state === 'done'
-      ? 'text-slate-900 dark:text-slate-100'
+      ? 'text-ink'
       : state === 'active'
-        ? 'text-indigo-700 dark:text-indigo-300'
+        ? 'text-primary-text'
         : state === 'skipped'
-          ? 'text-slate-600 dark:text-slate-400'
-          : 'text-slate-500 dark:text-slate-500';
+          ? 'text-ink-muted'
+          : 'text-ink-muted';
 
-  const descClass =
-    state === 'active'
-      ? 'text-slate-600 dark:text-slate-300'
-      : 'text-slate-500 dark:text-slate-400';
+  const descClass = state === 'active' ? 'text-ink' : 'text-ink-muted';
 
   // Show connector if this step is done/skipped, OR if the next step is skipped (to show connection)
   const connectorVisible = state === 'done' || state === 'skipped' || nextStepSkipped;
-  const connectorColor = connectorVisible
-    ? 'bg-green-500 dark:bg-green-400'
-    : 'bg-slate-300 dark:bg-slate-600';
+  const connectorColor = connectorVisible ? 'bg-success' : 'bg-border-strong';
 
   return (
     <div className="relative">
@@ -85,8 +80,8 @@ const Step = ({ title, description, state, showConnector = false, nextStepSkippe
           )}
         </div>
         <div className="min-w-0 pt-0.5">
-          <div className={`text-base font-semibold ${titleClass}`}>{title}</div>
-          <div className={`mt-1 text-sm ${descClass}`}>{description}</div>
+          <div className={`font-semibold ${titleClass}`}>{title}</div>
+          <div className={`mt-0.5 text-label ${descClass}`}>{description}</div>
         </div>
       </div>
     </div>
@@ -125,9 +120,9 @@ export const AnalysisLoadingScreen = ({
   return (
     <div className="flex flex-1 items-center justify-center py-10">
       <div className="w-full max-w-3xl">
-        <div className="rounded-2xl bg-white p-10 shadow-lg dark:bg-slate-800">
+        <div className="rounded-2xl border border-border bg-surface p-10 shadow-lg shadow-black/5">
           <div className="mx-auto max-w-xl text-center">
-            <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300">
+            <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary-surface text-primary-text">
               <svg className="h-9 w-9 animate-spin" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
                 <path
@@ -137,10 +132,10 @@ export const AnalysisLoadingScreen = ({
                 />
               </svg>
             </div>
-            <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
+            <h2 className="text-2xl font-semibold tracking-title text-ink">
               {headline}
             </h2>
-            <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">{subheadline}</p>
+            <p className="mx-auto mt-2 max-w-[42ch] text-body text-ink-muted">{subheadline}</p>
           </div>
 
           <div className="mt-10 space-y-6">
@@ -175,7 +170,7 @@ export const AnalysisLoadingScreen = ({
             />
           </div>
 
-          <div className="mt-10 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900/20 dark:text-slate-400">
+          <div className="mt-10 rounded-xl border border-border bg-surface-sunken p-4 text-sm text-ink-muted">
             You can keep this tab open — we’ll continue automatically.
           </div>
         </div>

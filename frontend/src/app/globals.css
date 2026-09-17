@@ -2,42 +2,250 @@
 
 @custom-variant dark (.dark &);
 
+/* ------------------------------------------------------------------ *
+ *  JobWriterAI — "editorial ink & paper" semantic token system
+ *
+ *  Primitives are declared on :root (light) and .dark, so a theme
+ *  change remaps every semantic role at once. @theme inline exposes
+ *  them to Tailwind utilities (bg-canvas, text-ink-muted, border-border,
+ *  bg-primary, ring-ring, …).
+ * ------------------------------------------------------------------ */
+
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-surface-sunken: var(--surface-sunken);
+
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-fg: var(--primary-fg);
+  --color-primary-text: var(--primary-text);
+  --color-primary-surface: var(--primary-surface);
+
+  --color-success: var(--success);
+  --color-success-fg: var(--success-fg);
+  --color-success-text: var(--success-text);
+  --color-success-surface: var(--success-surface);
+  --color-success-border: var(--success-border);
+
+  --color-danger: var(--danger);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-text: var(--danger-text);
+  --color-danger-surface: var(--danger-surface);
+  --color-danger-border: var(--danger-border);
+
+  --color-warning: var(--warning);
+  --color-warning-fg: var(--warning-fg);
+  --color-warning-text: var(--warning-text);
+  --color-warning-surface: var(--warning-surface);
+  --color-warning-border: var(--warning-border);
+
+  --color-added-text: var(--added-text);
+  --color-added-surface: var(--added-surface);
+  --color-removed-text: var(--removed-text);
+  --color-removed-surface: var(--removed-surface);
+
+  --color-ring: var(--ring);
+}
+
+/* Non-inline so `var(--font-geist-sans/mono)` (set by next/font on <body>)
+ * resolves at use-site instead of being inlined away at build time. Also the
+ * named type role scale Tailwind's numeric sizes don't express:
+ *   meta (12) counts/badges · label (13) dense hints · sm (14) controls ·
+ *   body (15) the reading floor for prose, chat, gate narration ·
+ *   lede (18) hero subheads and section intros.
+ * Display/title sizes stay on text-2xl…6xl, tightened via tracking-display/title. */
 @theme {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-sans-user), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", Roboto, sans-serif;
+  --font-serif: var(--font-serif-user), ui-serif, Georgia, "Times New Roman",
+    serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+
+  --text-meta: 0.75rem;
+  --text-meta--line-height: 1.45;
+  --text-label: 0.8125rem;
+  --text-label--line-height: 1.5;
+  --text-body: 0.9375rem;
+  --text-body--line-height: 1.62;
+  --text-lede: 1.125rem;
+  --text-lede--line-height: 1.5;
+
+  --tracking-display: -0.021em;
+  --tracking-title: -0.014em;
 }
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+  --canvas:          oklch(0.974 0.010 88);
+  --surface:         oklch(0.995 0.003 88);
+  --surface-sunken:  oklch(0.901 0.017 82);
 
-@media (prefers-color-scheme: dark) {
-  :root:not(.light) {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --ink:             oklch(0.255 0.009 65);
+  --ink-muted:       oklch(0.487 0.014 68);
+  --ink-faint:       oklch(0.596 0.013 70);
+
+  --border:          oklch(0.893 0.014 84);
+  --border-strong:   oklch(0.826 0.021 84);
+
+  --primary:         oklch(0.585 0.128 40);
+  --primary-hover:   oklch(0.520 0.125 39);
+  --primary-fg:      oklch(0.968 0.010 60);
+  --primary-text:    oklch(0.475 0.130 40);
+  --primary-surface: oklch(0.918 0.030 48);
+
+  --success:         oklch(0.512 0.128 150);
+  --success-fg:      oklch(0.988 0.012 150);
+  --success-text:    oklch(0.470 0.110 150);
+  --success-surface: oklch(0.955 0.032 150);
+  --success-border:  oklch(0.848 0.062 150);
+
+  --danger:          oklch(0.535 0.190 27);
+  --danger-fg:       oklch(0.992 0.006 27);
+  --danger-text:     oklch(0.505 0.185 27);
+  --danger-surface:  oklch(0.960 0.028 25);
+  --danger-border:   oklch(0.858 0.075 25);
+
+  --warning:         oklch(0.750 0.140 66);
+  --warning-fg:      oklch(0.260 0.042 66);
+  --warning-text:    oklch(0.516 0.108 58);
+  --warning-surface: oklch(0.958 0.042 78);
+  --warning-border:  oklch(0.858 0.078 72);
+
+  --added-text:      oklch(0.472 0.110 150);
+  --added-surface:   oklch(0.955 0.032 150);
+  --removed-text:    oklch(0.505 0.150 27);
+  --removed-surface: oklch(0.962 0.024 25);
+
+  --ring:            oklch(0.585 0.128 40);
+
+  /* legacy aliases, kept so any stray reference still resolves */
+  --background: var(--canvas);
+  --foreground: var(--ink);
 }
 
 .dark {
-  --background: #0a0a0a;
-  --foreground: #ededed;
+  --canvas:          oklch(0.178 0.008 60);
+  --surface:         oklch(0.228 0.009 60);
+  --surface-sunken:  oklch(0.152 0.007 60);
+
+  --ink:             oklch(0.925 0.012 85);
+  --ink-muted:       oklch(0.722 0.014 75);
+  --ink-faint:       oklch(0.598 0.013 72);
+
+  --border:          oklch(0.318 0.010 62);
+  --border-strong:   oklch(0.390 0.012 62);
+
+  --primary:         oklch(0.660 0.128 44);
+  --primary-hover:   oklch(0.720 0.120 46);
+  --primary-fg:      oklch(0.180 0.010 50);
+  --primary-text:    oklch(0.780 0.095 46);
+  --primary-surface: oklch(0.290 0.050 42);
+
+  --success:         oklch(0.680 0.130 150);
+  --success-fg:      oklch(0.165 0.022 150);
+  --success-text:    oklch(0.762 0.130 150);
+  --success-surface: oklch(0.285 0.052 150);
+  --success-border:  oklch(0.410 0.070 150);
+
+  --danger:          oklch(0.632 0.180 27);
+  --danger-fg:       oklch(0.155 0.022 27);
+  --danger-text:     oklch(0.735 0.155 27);
+  --danger-surface:  oklch(0.305 0.078 25);
+  --danger-border:   oklch(0.445 0.115 25);
+
+  --warning:         oklch(0.792 0.140 72);
+  --warning-fg:      oklch(0.210 0.032 66);
+  --warning-text:    oklch(0.826 0.115 76);
+  --warning-surface: oklch(0.300 0.050 70);
+  --warning-border:  oklch(0.440 0.080 70);
+
+  --added-text:      oklch(0.762 0.130 150);
+  --added-surface:   oklch(0.285 0.052 150);
+  --removed-text:    oklch(0.740 0.150 27);
+  --removed-surface: oklch(0.305 0.070 25);
+
+  --ring:            oklch(0.660 0.128 44);
+
+  --background: var(--canvas);
+  --foreground: var(--ink);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-  transition: background-color 0.3s ease, color 0.3s ease;
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: var(--color-border);
+  }
+
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans-user), ui-sans-serif, system-ui, -apple-system,
+      "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    transition: background-color 0.3s ease, color 0.3s ease;
+  }
+
+  .font-serif,
+  h1.font-serif,
+  h2.font-serif {
+    font-feature-settings: "kern" 1, "liga" 1;
+  }
+
+  /* Browser surfaces themed from the palette */
+  ::selection {
+    background: color-mix(in oklab, var(--color-primary) 26%, transparent);
+    color: var(--color-ink);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 2px;
+    transition: none;
+  }
+
+  * {
+    scrollbar-color: var(--color-border-strong) transparent;
+    scrollbar-width: thin;
+  }
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border-radius: 9999px;
+    border: 3px solid var(--color-canvas);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-ink-faint);
+  }
 }
 
-/* Fade-in animation for chat interface */
+/* Entrance used by the chat + stage transitions */
 @keyframes fadeIn {
   from {
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(12px);
   }
   to {
     opacity: 1;
@@ -46,5 +254,102 @@ body {
 }
 
 .animate-fade-in {
-  animation: fadeIn 0.5s ease-in-out;
+  animation: fadeIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Landing hero: one authored entrance — headline column, then the gate card. */
+@keyframes heroRise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.hero-rise {
+  animation: heroRise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.hero-rise-delayed {
+  animation: heroRise 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.14s both;
+}
+
+/* A gate arrives: the pipeline stopped for a decision, so the stop is felt. */
+@keyframes gateIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.gate-in {
+  animation: gateIn 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Weighted factor bars fill from zero so the score reads as a quantity. */
+@keyframes growX {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.animate-grow-x {
+  transform-origin: left;
+  animation: growX 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* Idle drift for the empty-state conversation vignette (unmounts once chat starts). */
+@keyframes floatIdle {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+.float-idle {
+  animation: floatIdle 5s ease-in-out infinite;
+}
+
+.float-idle-slow {
+  animation: floatIdle 6.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Kill large decorative motion — entrances, hover scale, smooth scroll, the
+     theme cross-fade. Keep colour transitions (not vestibular) and
+     .animate-spin (a static spinner during a 30s+ wait reads as broken). */
+  html {
+    scroll-behavior: auto;
+  }
+  .animate-fade-in,
+  .hero-rise,
+  .hero-rise-delayed,
+  .gate-in,
+  .animate-grow-x,
+  .float-idle,
+  .float-idle-slow {
+    animation: none;
+  }
+  .hover\:scale-105:hover,
+  .hover\:-translate-y-0\.5:hover {
+    transform: none;
+  }
+  body {
+    transition: none;
+  }
 }

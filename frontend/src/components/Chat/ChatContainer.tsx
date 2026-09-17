@@ -5,6 +5,7 @@ import { EmptyState } from './EmptyState';
 import { ApprovalGate } from './ApprovalGate';
 import { ChoiceGate } from './ChoiceGate';
 import { InputGate } from './InputGate';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 interface ChatContainerProps {
   messages: Message[];
@@ -58,33 +59,41 @@ export const ChatContainer = ({
   }
 
   return (
-    <div className="flex flex-1 flex-col rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800 animate-fade-in">
+    <div className="flex flex-1 flex-col rounded-2xl border border-border bg-surface shadow-sm animate-fade-in">
       {/* Chat Messages Area */}
       <div className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-3xl">
-          <div className="space-y-4">
+          <div className="space-y-4" role="log" aria-live="polite" aria-label="Conversation">
             {messages.map((message) => (
-              <ChatMessage 
-                key={message.id} 
-                message={message}
-                generatedFiles={message.generatedFiles}
-                isFadingOut={fadingOutMessageId === message.id}
-              />
+              <ErrorBoundary
+                key={message.id}
+                fallback={
+                  <p className="text-sm text-ink-muted">
+                    (A message couldn’t be displayed.)
+                  </p>
+                }
+              >
+                <ChatMessage
+                  message={message}
+                  generatedFiles={message.generatedFiles}
+                  isFadingOut={fadingOutMessageId === message.id}
+                />
+              </ErrorBoundary>
             ))}
             
             {/* Loading indicator */}
             {isLoading && (
-              <div className="flex gap-4 justify-start">
-                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-600 to-blue-600 dark:from-indigo-500 dark:to-blue-500">
-                  <svg className="h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <div className="flex gap-4 justify-start" role="status" aria-label="Assistant is responding">
+                <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-fg">
+                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                   </svg>
                 </div>
-                <div className="rounded-2xl bg-slate-100 px-4 py-3 dark:bg-slate-700">
+                <div className="rounded-2xl bg-surface-sunken px-4 py-3">
                   <div className="flex gap-1">
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.3s]"></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-slate-400 [animation-delay:-0.15s]"></div>
-                    <div className="h-2 w-2 animate-bounce rounded-full bg-slate-400"></div>
+                    <div className="h-2 w-2 animate-pulse rounded-full bg-ink-faint [animation-delay:-0.3s]"></div>
+                    <div className="h-2 w-2 animate-pulse rounded-full bg-ink-faint [animation-delay:-0.15s]"></div>
+                    <div className="h-2 w-2 animate-pulse rounded-full bg-ink-faint"></div>
                   </div>
                 </div>
               </div>
@@ -96,7 +105,10 @@ export const ChatContainer = ({
 
       {/* Structured gate panel (orchestrator mode only) */}
       {pendingGate && onSubmitGateResolution && (
-        <div className="border-t border-slate-200 bg-slate-50 px-6 py-4 dark:border-slate-700 dark:bg-slate-900/40">
+        <div
+          key={pendingGate.step}
+          className="gate-in border-t border-border bg-surface-sunken px-6 py-4"
+        >
           {pendingGate.kind === 'choice' ? (
             <ChoiceGate
               gate={pendingGate}

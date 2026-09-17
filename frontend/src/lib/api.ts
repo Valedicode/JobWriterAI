@@ -48,40 +48,86 @@ class APIError extends Error {
   }
 }
 
+// Orchestrator turns can run 20-60s+ (LLM calls, LaTeX rendering). Give the
+// request a hard ceiling matching the Next proxy timeout so a hung backend
+// surfaces as a clear message instead of a spinner that never resolves.
+const DEFAULT_TIMEOUT_MS = 300_000;
+
+/** Map a status code to a message a user can act on. */
+function messageForStatus(status: number, fallback: string): string {
+  switch (status) {
+    case 400:
+      return fallback || 'The request was rejected. Please check your input and try again.';
+    case 401:
+    case 403:
+      return 'This session is no longer authorised. Refresh the page to start again.';
+    case 404:
+      return 'That session or resource was not found. It may have expired — refresh to start again.';
+    case 429:
+      return 'Too many requests right now. Wait a moment, then try again.';
+    default:
+      if (status >= 500) return 'The server ran into a problem. Please try again in a moment.';
+      return fallback || 'Something went wrong. Please try again.';
+  }
+}
+
 /**
- * Generic fetch wrapper with error handling
+ * Generic JSON fetch wrapper: timeout, status-aware messages, network fallback.
  */
 async function apiFetch<T>(
   endpoint: string,
-  options?: RequestInit
+  options?: RequestInit & { timeoutMs?: number }
 ): Promise<T> {
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...init } = options ?? {};
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-      ...options,
+      ...init,
+      signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        ...options?.headers,
+        ...init.headers,
       },
     });
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
+      const raw = errorData.detail || errorData.error || errorData.message || '';
       throw new APIError(
-        errorData.detail || errorData.error || 'API request failed',
+        messageForStatus(response.status, raw),
         response.status,
-        errorData.detail
+        raw || undefined
       );
     }
 
-    return await response.json();
+    return (await response.json()) as T;
   } catch (error) {
-    if (error instanceof APIError) {
-      throw error;
+    if (error instanceof APIError) throw error;
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new APIError(
+        'This is taking longer than expected. The request may still be processing — refresh the page to check your session.',
+        0,
+        'Request timeout'
+      );
     }
-    throw new APIError(
-      error instanceof Error ? error.message : 'Network error',
-      0
-    );
+    if (
+      error instanceof TypeError ||
+      (error instanceof Error &&
+        (error.message.includes('fetch') ||
+          error.message.includes('ECONNRESET') ||
+          error.message.includes('socket')))
+    ) {
+      throw new APIError(
+        'Cannot reach the server. Check your connection and make sure the backend is running, then try again.',
+        0,
+        'Network connection failed'
+      );
+    }
+    throw new APIError(error instanceof Error ? error.message : 'Network error', 0);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -516,7 +562,8 @@ export function isAPIError(error: unknown): error is APIError {
 
 export function getErrorMessage(error: unknown): string {
   if (isAPIError(error)) {
-    return error.detail || error.message;
+    // `message` is the user-facing string; `detail` is the raw backend text.
+    return error.message || error.detail || 'Something went wrong. Please try again.';
   }
   if (error instanceof Error) {
     return error.message;

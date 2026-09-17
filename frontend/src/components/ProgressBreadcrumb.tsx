@@ -58,24 +58,24 @@ export const ProgressBreadcrumb = ({
   const stages = allStages;
 
   return (
-    <div className="w-full">
-      <div className="flex items-center justify-center">
+    <div className="w-full overflow-x-auto">
+      <div className="flex min-w-max items-center justify-center px-2">
         {stages.map((stage, index) => (
-          <div key={stage.id} className="flex items-center">
+          <div key={stage.id} className="flex shrink-0 items-center">
             {/* Stage Circle */}
             <div className="flex items-center gap-3">
               <div
-                className={`flex h-10 w-10 items-center justify-center rounded-full border-2 transition-all ${
+                className={`flex h-10 w-10 items-center justify-center rounded-full border-2 transition-colors ${
                   stage.completed
-                    ? 'border-green-500 bg-green-500 dark:border-green-400 dark:bg-green-400'
+                    ? 'border-success bg-success'
                     : stage.current
-                      ? 'border-indigo-500 bg-indigo-500 dark:border-indigo-400 dark:bg-indigo-400'
-                      : 'border-slate-300 bg-white dark:border-slate-600 dark:bg-slate-800'
+                      ? 'border-primary bg-primary'
+                      : 'border-border-strong bg-surface'
                 }`}
               >
                 {stage.completed ? (
                   <svg
-                    className="h-5 w-5 text-white"
+                    className="h-5 w-5 text-success-fg"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -88,22 +88,22 @@ export const ProgressBreadcrumb = ({
                     />
                   </svg>
                 ) : stage.current ? (
-                  <div className="h-3 w-3 rounded-full bg-white"></div>
+                  <div className="h-3 w-3 rounded-full bg-primary-fg"></div>
                 ) : (
-                  <span className="text-sm font-medium text-slate-400 dark:text-slate-500">
+                  <span className="text-sm font-medium tabular-nums text-ink-faint">
                     {index + 1}
                   </span>
                 )}
               </div>
-              
+
               {/* Stage Label */}
               <span
                 className={`hidden text-sm font-medium transition-colors sm:block ${
                   stage.completed
-                    ? 'text-green-700 dark:text-green-400'
+                    ? 'text-success-text'
                     : stage.current
-                      ? 'text-indigo-700 dark:text-indigo-400'
-                      : 'text-slate-400 dark:text-slate-500'
+                      ? 'text-primary-text'
+                      : 'text-ink-faint'
                 }`}
               >
                 {stage.label}
@@ -114,9 +114,7 @@ export const ProgressBreadcrumb = ({
             {index < stages.length - 1 && (
               <div
                 className={`mx-2 h-0.5 w-8 transition-colors sm:mx-4 sm:w-16 ${
-                  stage.completed
-                    ? 'bg-green-500 dark:bg-green-400'
-                    : 'bg-slate-300 dark:bg-slate-600'
+                  stage.completed ? 'bg-success' : 'bg-border-strong'
                 }`}
               />
             )}

@@ -80,7 +80,6 @@ function flowFromMode(
 ): OrchestratorFlow {
   if (flowMode === 'cv_only') return 'cv_review';
   if (flowMode === 'job_tailoring') return 'job_tailoring';
-  // No explicit choice -> infer from presence of job data.
   return jobData ? 'job_tailoring' : 'cv_review';
 }
 
@@ -105,9 +104,13 @@ export const useOrchestratorChat = ({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const startInFlight = useRef(false);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const reduce =
+      typeof window !== 'undefined' &&
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    messagesEndRef.current?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth' });
   }, [messages]);
 
   useEffect(() => {
@@ -141,13 +144,19 @@ export const useOrchestratorChat = ({
   }, []);
 
   const initializeSession = useCallback(async () => {
-    if (sessionId || !cvData) return;
+    if (sessionId || !cvData || startInFlight.current) return;
 
+    const flow = flowFromMode(flowMode, jobData);
+    if (flow === 'job_tailoring' && !jobData) {
+      // Wait until job extraction finishes; calling /start now 400s.
+      return;
+    }
+
+    startInFlight.current = true;
     setIsInitializing(true);
     setSessionError(null);
 
     try {
-      const flow = flowFromMode(flowMode, jobData);
       const response = await orchestratorStart({
         flow,
         cv_data: cvData,
@@ -162,6 +171,7 @@ export const useOrchestratorChat = ({
       setSessionError(getErrorMessage(err));
       console.error('Orchestrator init error:', err);
     } finally {
+      startInFlight.current = false;
       setIsInitializing(false);
     }
   }, [sessionId, cvData, jobData, flowMode, applyResponse]);
@@ -284,6 +294,7 @@ export const useOrchestratorChat = ({
   }, []);
 
   const resetSession = useCallback(() => {
+    startInFlight.current = false;
     setSessionId(null);
     setMessages([]);
     setInputText('');

@@ -5,6 +5,7 @@
 
 import { useState } from 'react';
 import type { OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
+import { humanizeStep } from './gateFormat';
 
 interface InputGateProps {
   gate: OrchestratorGatePayload;
@@ -25,28 +26,37 @@ export const InputGate = ({ gate, isLoading, onSubmit }: InputGateProps) => {
   };
 
   return (
-    <div className="mx-auto max-w-3xl rounded-xl border border-sky-200 bg-sky-50/50 p-4 shadow-sm dark:border-sky-900/50 dark:bg-sky-950/20">
-      <div className="mb-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-sky-700 dark:text-sky-300">
-          Input needed · {gate.step}
-        </div>
-        <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{gate.narration}</p>
+    <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-primary-surface/25 p-4 shadow-sm sm:p-5">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="text-meta font-semibold uppercase tracking-[0.14em] text-primary-text">
+          Input needed
+        </span>
+        <span className="text-meta font-medium text-ink-faint">{humanizeStep(gate.step)}</span>
       </div>
 
-      <div className="space-y-2">
+      {gate.narration && (
+        <p className="mb-3 text-body text-ink [overflow-wrap:anywhere]">{gate.narration}</p>
+      )}
+
+      <div className="flex flex-col gap-2.5 sm:flex-row">
         <input
           type="text"
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') handleSubmit();
+          }}
           placeholder="Recipient name"
-          className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+          className="flex-1 rounded-full border border-border-strong bg-surface px-4 py-2 text-[16px] text-ink placeholder:text-ink-faint focus:border-primary focus:outline-none sm:text-sm"
+          maxLength={200}
           disabled={isLoading}
+          autoFocus
         />
         <button
           type="button"
           onClick={handleSubmit}
           disabled={isLoading || !value.trim()}
-          className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          className="rounded-full bg-primary px-5 py-2 text-sm font-medium text-primary-fg transition-colors hover:bg-primary-hover disabled:opacity-50"
         >
           Continue
         </button>
