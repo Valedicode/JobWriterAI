@@ -9,6 +9,7 @@
 import { useState } from 'react';
 import type { OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
 import { PreviewCard } from './PreviewCard';
+import { humanizeStep } from './gateFormat';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 interface ApprovalGateProps {
@@ -34,17 +35,15 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
   };
 
   return (
-    <div className="mx-auto max-w-3xl rounded-xl border border-primary/30 bg-primary-surface/50 p-4 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wide text-primary-text">
-            Approval needed · {gate.step}
-          </div>
-          <p className="mt-1 text-body text-ink [overflow-wrap:anywhere]">{gate.narration}</p>
-        </div>
+    <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-primary-surface/25 p-4 shadow-sm sm:p-5">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="text-meta font-semibold uppercase tracking-[0.14em] text-primary-text">
+          Approval needed
+        </span>
+        <span className="text-meta font-medium text-ink-faint">{humanizeStep(gate.step)}</span>
       </div>
 
-      <div className="mb-4 rounded-lg border border-border bg-surface p-3">
+      <div className="mb-4 rounded-xl border border-border bg-surface p-4">
         <ErrorBoundary
           fallback={
             <p className="text-sm text-ink-muted">
@@ -57,22 +56,23 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
       </div>
 
       {showEdit ? (
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="What should change? (e.g. 'Use stronger action verbs', 'Mention Kubernetes more')"
-            className="w-full rounded border border-border-strong bg-surface px-3 py-2 text-[16px] text-ink placeholder:text-ink-faint sm:text-sm"
+            placeholder="What should change? (e.g. “Use stronger action verbs”, “Mention Kubernetes more”)"
+            className="w-full rounded-xl border border-border-strong bg-surface px-3.5 py-2.5 text-[16px] text-ink placeholder:text-ink-faint focus:border-primary focus:outline-none sm:text-sm"
             rows={3}
             maxLength={4000}
             disabled={isLoading}
+            autoFocus
           />
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               type="button"
               onClick={handleEditSubmit}
               disabled={isLoading || !feedback.trim()}
-              className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-fg hover:bg-primary-hover disabled:opacity-50"
+              className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-fg transition hover:bg-primary-hover active:scale-[0.97] disabled:opacity-50"
             >
               Submit edit
             </button>
@@ -83,7 +83,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
                 setFeedback('');
               }}
               disabled={isLoading}
-              className="rounded-md border border-border-strong px-3 py-1.5 text-sm font-medium text-ink-muted hover:bg-surface-sunken hover:text-ink"
+              className="rounded-full border border-border-strong px-4 py-1.5 text-sm font-medium text-ink transition-colors hover:bg-surface-sunken disabled:opacity-50"
             >
               Cancel
             </button>
@@ -96,7 +96,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
               type="button"
               onClick={() => onSubmit('approve')}
               disabled={isLoading}
-              className="rounded-md bg-success px-3 py-1.5 text-sm font-medium text-success-fg hover:brightness-105 disabled:opacity-50"
+              className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-fg transition hover:bg-primary-hover active:scale-[0.97] disabled:opacity-50"
             >
               Approve
             </button>
@@ -106,7 +106,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
               type="button"
               onClick={() => setShowEdit(true)}
               disabled={isLoading}
-              className="rounded-md border border-primary/40 bg-surface px-3 py-1.5 text-sm font-medium text-primary-text hover:bg-primary-surface disabled:opacity-50"
+              className="rounded-full border border-border-strong px-4 py-1.5 text-sm font-medium text-ink transition-colors hover:bg-surface-sunken disabled:opacity-50"
             >
               Edit with feedback
             </button>
@@ -116,7 +116,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
               type="button"
               onClick={() => onSubmit('reject')}
               disabled={isLoading}
-              className="rounded-md border border-danger-border bg-surface px-3 py-1.5 text-sm font-medium text-danger-text hover:bg-danger-surface disabled:opacity-50"
+              className="rounded-full border border-border-strong px-4 py-1.5 text-sm font-medium text-ink-muted transition-colors hover:bg-surface-sunken hover:text-ink disabled:opacity-50"
             >
               Reject
             </button>

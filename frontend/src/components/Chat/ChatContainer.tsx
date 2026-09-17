@@ -59,7 +59,7 @@ export const ChatContainer = ({
   }
 
   return (
-    <div className="flex flex-1 flex-col rounded-xl border border-border bg-surface shadow-sm animate-fade-in">
+    <div className="flex flex-1 flex-col rounded-2xl border border-border bg-surface shadow-sm animate-fade-in">
       {/* Chat Messages Area */}
       <div className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-3xl">
@@ -105,7 +105,10 @@ export const ChatContainer = ({
 
       {/* Structured gate panel (orchestrator mode only) */}
       {pendingGate && onSubmitGateResolution && (
-        <div className="border-t border-border bg-surface-sunken px-6 py-4">
+        <div
+          key={pendingGate.step}
+          className="gate-in border-t border-border bg-surface-sunken px-6 py-4"
+        >
           {pendingGate.kind === 'choice' ? (
             <ChoiceGate
               gate={pendingGate}
