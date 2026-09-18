@@ -11,6 +11,7 @@ interface ChatInputProps {
   onInputChange: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   onSendMessage: () => void;
+  placeholder?: string;
 }
 
 export const ChatInput = ({
@@ -20,6 +21,7 @@ export const ChatInput = ({
   onInputChange,
   onKeyDown,
   onSendMessage,
+  placeholder = 'Ask any question or use voice input',
 }: ChatInputProps) => {
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -274,7 +276,7 @@ export const ChatInput = ({
             value={inputText}
             onChange={(e) => onInputChange(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Ask any question or use voice input"
+            placeholder={placeholder}
             disabled={isRecording || isProcessing}
             maxLength={4000}
             className="flex-1 resize-none border-0 bg-transparent text-base text-ink placeholder:text-ink-faint focus:outline-none focus:ring-0 disabled:opacity-50"
