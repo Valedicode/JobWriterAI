@@ -17,6 +17,7 @@ The node names below match the labels in the architecture mermaid diagram.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from typing import Any
@@ -118,137 +119,162 @@ def _required_skills(job_data: dict[str, Any] | None) -> list[str]:
     return [s for s in skills if isinstance(s, str)]
 
 
+# --------------------------------------------------------------------------- #
+# Bullet identity
+#
+# Every bullet-like string in the CV gets a stable id of the form
+# "<section>.<entry_idx>.<field>.<idx>" (or "summary" for the top-level
+# summary). The id survives selection -> rewrite -> merge so a rewrite is
+# matched to its source bullet even if the model's echoed `original` text
+# drifts slightly, and so the UI can address individual bullets for
+# accept/keep-original/custom decisions.
+#
+# Field coverage mirrors what `resume_adapter.build_harvard_sections` (the
+# LaTeX renderer's input) actually reads, so every id here is guaranteed to
+# land somewhere in the generated PDF.
+# --------------------------------------------------------------------------- #
+
+_BULLET_FIELDS_BY_SECTION: dict[str, tuple[str, ...]] = {
+    "experience": ("responsibilities",),
+    "projects": ("outcomes",),
+    "leadership_activities": ("highlights",),
+}
+_TEXT_FIELDS_BY_SECTION: dict[str, tuple[str, ...]] = {
+    "projects": ("description",),
+    "leadership_activities": ("description",),
+}
+
+
+def _normalize_bullet_text(text: str) -> str:
+    """Casefold, collapse whitespace, strip trailing punctuation - used as a
+    fallback match key when an id round-trip fails or the model paraphrases
+    the echoed original slightly."""
+    collapsed = re.sub(r"\s+", " ", text).strip()
+    return collapsed.rstrip(".,;: ").casefold()
+
+
+def _index_cv_bullets(cv_data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """
+    Build {bullet_id: {section, entry_idx, field, idx, text}} for every
+    bullet/description string in the CV, plus the top-level summary.
+    """
+    index: dict[str, dict[str, Any]] = {}
+    if not isinstance(cv_data, dict):
+        return index
+
+    for section, fields in _BULLET_FIELDS_BY_SECTION.items():
+        entries = cv_data.get(section)
+        if not isinstance(entries, list):
+            continue
+        for entry_idx, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            for field in fields:
+                values = entry.get(field)
+                if not isinstance(values, list):
+                    continue
+                for idx, text in enumerate(values):
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    bullet_id = f"{section}.{entry_idx}.{field}.{idx}"
+                    index[bullet_id] = {
+                        "section": section,
+                        "entry_idx": entry_idx,
+                        "field": field,
+                        "idx": idx,
+                        "text": text,
+                    }
+            for field in _TEXT_FIELDS_BY_SECTION.get(section, ()):
+                text = entry.get(field)
+                if isinstance(text, str) and text.strip():
+                    bullet_id = f"{section}.{entry_idx}.{field}"
+                    index[bullet_id] = {
+                        "section": section,
+                        "entry_idx": entry_idx,
+                        "field": field,
+                        "idx": None,
+                        "text": text,
+                    }
+
+    summary = cv_data.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        index["summary"] = {"section": "summary", "entry_idx": None, "field": "summary", "idx": None, "text": summary}
+
+    return index
+
+
+def _bullet_index_prompt_block(bullet_index: dict[str, dict[str, Any]]) -> str:
+    """Render the id index as a numbered `[id] text` list for LLM prompts."""
+    lines = [f"[{bullet_id}] {ref['text']}" for bullet_id, ref in bullet_index.items()]
+    return "\n".join(lines) if lines else "(no bullets found)"
+
+
+def _write_bullet_by_id(cv_data: dict[str, Any], bullet_id: str, new_text: str, bullet_index: dict[str, dict[str, Any]]) -> bool:
+    """Write ``new_text`` into ``cv_data`` at the location named by ``bullet_id``."""
+    ref = bullet_index.get(bullet_id)
+    if ref is None:
+        return False
+    section, entry_idx, field, idx = ref["section"], ref["entry_idx"], ref["field"], ref["idx"]
+    if section == "summary":
+        cv_data["summary"] = new_text
+        return True
+    entries = cv_data.get(section)
+    if not isinstance(entries, list) or entry_idx is None or entry_idx >= len(entries):
+        return False
+    entry = entries[entry_idx]
+    if not isinstance(entry, dict):
+        return False
+    if idx is None:
+        entry[field] = new_text
+        return True
+    values = entry.get(field)
+    if not isinstance(values, list) or idx >= len(values):
+        return False
+    values[idx] = new_text
+    return True
+
+
 def _merge_rewrites_into_cv(
     cv_data: dict[str, Any],
     rewritten_bullets: list[dict[str, Any]],
-) -> dict[str, Any]:
+    bullet_index: dict[str, dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     """
-    Apply ``rewritten`` text in place of ``original`` text wherever the
-    original appears as a bullet/description inside experience or projects.
+    Apply ``rewritten`` text in place of the source bullet.
 
-    Substring matching is exact-string only, mirroring how
-    ``rewrite_enhance_content`` echoes the original bullet back. If no match
-    is found the original is kept untouched - we never fabricate.
+    Matches by ``bullet_id`` against ``bullet_index`` first (robust to the
+    model paraphrasing the echoed ``original``), then falls back to
+    normalized-text matching against every bullet in the CV. If neither
+    match succeeds the rewrite is dropped - we never fabricate a location -
+    and its original text is returned in ``unplaced`` so the caller can warn.
     """
+    merged = copy.deepcopy(cv_data)
     if not rewritten_bullets:
-        return cv_data
+        return merged, []
 
-    replacements: dict[str, str] = {}
+    bullet_index = bullet_index or _index_cv_bullets(cv_data)
+    by_normalized: dict[str, str] = {}
+    for bullet_id, ref in bullet_index.items():
+        by_normalized[_normalize_bullet_text(ref["text"])] = bullet_id
+
+    unplaced: list[str] = []
     for entry in rewritten_bullets:
         if not isinstance(entry, dict):
             continue
         original = entry.get("original")
         rewritten = entry.get("rewritten")
-        if isinstance(original, str) and isinstance(rewritten, str) and original.strip():
-            replacements[original.strip()] = rewritten
+        bullet_id = entry.get("bullet_id")
+        if not isinstance(rewritten, str) or not rewritten.strip():
+            continue
 
-    if not replacements:
-        return cv_data
+        target_id = bullet_id if isinstance(bullet_id, str) and bullet_id in bullet_index else None
+        if target_id is None and isinstance(original, str):
+            target_id = by_normalized.get(_normalize_bullet_text(original))
 
-    def replace_text(value: str) -> str:
-        return replacements.get(value.strip(), value)
+        if target_id is None or not _write_bullet_by_id(merged, target_id, rewritten, bullet_index):
+            unplaced.append(original if isinstance(original, str) else rewritten)
 
-    def visit_section(section: Any) -> Any:
-        if not isinstance(section, list):
-            return section
-        new_section = []
-        for item in section:
-            if isinstance(item, str):
-                new_section.append(replace_text(item))
-            elif isinstance(item, dict):
-                new_item = dict(item)
-                for bullet_field in ("responsibilities", "outcomes", "achievements", "highlights"):
-                    val = new_item.get(bullet_field)
-                    if isinstance(val, list):
-                        new_item[bullet_field] = [
-                            replace_text(b) if isinstance(b, str) else b for b in val
-                        ]
-                for text_field in ("description", "summary"):
-                    val = new_item.get(text_field)
-                    if isinstance(val, str):
-                        new_item[text_field] = replace_text(val)
-                new_section.append(new_item)
-            else:
-                new_section.append(item)
-        return new_section
-
-    merged = dict(cv_data)
-    for key in ("experience", "projects", "leadership_activities"):
-        if key in merged:
-            merged[key] = visit_section(merged[key])
-    return merged
-
-
-def _build_tailoring_plan_from_artifacts(
-    compatibility_report: dict[str, Any] | None,
-    selected_content: dict[str, Any] | None,
-    rewritten_content: dict[str, Any] | None,
-    job_data: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """
-    Synthesise a minimal CVTailoringPlan from artifacts already in state.
-
-    ``generate_tailored_cv_html`` was designed for the old flow where a single
-    LLM call produced this plan; here we already have richer per-step outputs,
-    so we just project them into the legacy schema instead of doing another
-    LLM round-trip. Section order from selection is passed through to LaTeX export.
-    """
-    matching_skills: list[str] = []
-    if compatibility_report:
-        gap = compatibility_report.get("gap_analysis", {}) or {}
-        for sm in gap.get("matched_skills", []) or []:
-            name = sm.get("matched_with") or sm.get("required_skill")
-            if isinstance(name, str):
-                matching_skills.append(name)
-
-    keywords: list[str] = []
-    if rewritten_content:
-        for kw in rewritten_content.get("keywords_inserted", []) or []:
-            if isinstance(kw, str):
-                keywords.append(kw)
-    if not keywords:
-        keywords = _required_skills(job_data)
-
-    section_order: list[str] = []
-    sections_to_emphasize: list[str] = []
-    if selected_content:
-        section_order = list(selected_content.get("section_order", []) or [])
-        sections_to_emphasize = list(selected_content.get("sections_to_emphasize", []) or [])
-
-    matching_experiences: list[str] = []
-    relevant_projects: list[str] = []
-    if selected_content:
-        for sb in selected_content.get("selected_bullets", []) or []:
-            if not isinstance(sb, dict):
-                continue
-            section = (sb.get("section") or "").lower()
-            text = sb.get("original_text")
-            if not isinstance(text, str):
-                continue
-            if "project" in section:
-                relevant_projects.append(text)
-            else:
-                matching_experiences.append(text)
-
-    reasoning_parts = []
-    if compatibility_report:
-        score = compatibility_report.get("aggregate_score")
-        level = compatibility_report.get("level")
-        if score is not None and level:
-            reasoning_parts.append(f"Compatibility {level} ({score:.2f}).")
-    reasoning_parts.append("Plan synthesised from v2 compatibility report and selected/rewritten content.")
-
-    return {
-        "matching_experiences": matching_experiences,
-        "matching_skills": matching_skills,
-        "relevant_projects": relevant_projects,
-        "keywords_to_incorporate": keywords,
-        "reordering_suggestions": (
-            "Reorder sections as: " + ", ".join(section_order) if section_order else ""
-        ),
-        "emphasis_points": sections_to_emphasize,
-        "reasoning": " ".join(reasoning_parts).strip(),
-    }
+    return merged, unplaced
 
 
 def _file_record(filename: str, file_type: str) -> dict[str, str]:
@@ -287,7 +313,7 @@ def jt_entry(state: OrchestratorState) -> dict[str, Any]:
         "strategy, then walk you through bullet selection and rewriting "
         "with explicit approvals before any documents are generated."
     )
-    return _narrate({}, narration)
+    return _narrate({"bullet_index": _index_cv_bullets(cv_data)}, narration)
 
 
 # --------------------------------------------------------------------------- #
@@ -368,9 +394,29 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
     missing = gap.get("missing_skills", []) or []
     lines.append("")
     lines.append(f"Matched: {len(matched)} | Transferable: {len(transferable)} | Missing: {len(missing)}")
+    # Name the actual gaps instead of only a count - a bare "Missing: 3" tells
+    # the user nothing they can act on.
+    missing_names = [m.get("required_skill") for m in missing if isinstance(m, dict) and m.get("required_skill")]
+    if missing_names:
+        lines.append(f"Missing skills: {', '.join(missing_names)}")
+    transferable_bridges = [
+        f"{m.get('required_skill')} (via {m.get('matched_with')})"
+        for m in transferable
+        if isinstance(m, dict) and m.get("required_skill") and m.get("bridge_bullet")
+    ]
+    if transferable_bridges:
+        lines.append(f"Bridgeable via existing experience: {', '.join(transferable_bridges)}")
     if report.get("interpretation"):
         lines.append("")
         lines.append(report["interpretation"])
+    if missing_names and not transferable_bridges:
+        lines.append(
+            "\nNote: none of these gaps can be bridged from your current CV content - "
+            "the rewrite step can only rephrase what's already there, not invent missing "
+            "skills. If you have any real exposure to "
+            f"{', '.join(missing_names)} (a course, a side project, brief use on the job), "
+            "add it to your CV before this step so it can be surfaced."
+        )
 
     return _narrate({"compatibility_report": report}, "\n".join(lines))
 
@@ -446,14 +492,16 @@ def jt_step3_decide_strategy(state: OrchestratorState) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 def jt_step4_select_prioritize(state: OrchestratorState) -> dict[str, Any]:
-    cv_json = json.dumps(state.get("cv_data") or {})
+    cv_data = state.get("cv_data") or {}
     job_json = json.dumps(state.get("job_data") or {})
     strategy_json = json.dumps(state.get("tailoring_strategy") or {})
+    bullet_index = state.get("bullet_index") or _index_cv_bullets(cv_data)
 
     selected_json = select_prioritize_content.invoke({
-        "cv_json": cv_json,
+        "cv_json": json.dumps(cv_data),
         "job_json": job_json,
         "tailoring_strategy_json": strategy_json,
+        "bullet_index_block": _bullet_index_prompt_block(bullet_index),
     })
     selected = _safe_json_loads(selected_json, {
         "selected_bullets": [],
@@ -462,7 +510,33 @@ def jt_step4_select_prioritize(state: OrchestratorState) -> dict[str, Any]:
         "items_to_de_emphasize": [],
     })
 
+    # Drop bullets the model matched to an id that doesn't exist - never
+    # trust an echoed id blindly (guards against hallucinated ids).
     bullets = selected.get("selected_bullets", []) or []
+    for b in bullets:
+        if isinstance(b, dict) and isinstance(b.get("bullet_id"), str) and b["bullet_id"] not in bullet_index:
+            b["bullet_id"] = None
+
+    fallback_used = False
+    if not bullets and bullet_index:
+        # The model returned nothing to work with, despite the CV having
+        # content - a low-relevance CV/job pairing is not a reason to skip
+        # tailoring entirely. Fall back to the CV's own bullets so rewrite
+        # still has something real to work on, flagged with an honest
+        # low relevance score rather than a fabricated one.
+        fallback_used = True
+        bullets = [
+            {
+                "section": ref["section"],
+                "original_text": ref["text"],
+                "relevance_score": 0.1,
+                "reason": "Selection step returned nothing usable; included as a best-available fallback.",
+                "bullet_id": bullet_id,
+            }
+            for bullet_id, ref in list(bullet_index.items())[:5]
+        ]
+    selected["selected_bullets"] = bullets
+
     order = selected.get("section_order", []) or []
     lines = [
         "Selected content",
@@ -471,12 +545,37 @@ def jt_step4_select_prioritize(state: OrchestratorState) -> dict[str, Any]:
         f"Recommended section order: {', '.join(order) if order else '(unchanged)'}",
         f"Emphasised sections: {', '.join(selected.get('sections_to_emphasize', []) or []) or '(none)'}",
     ]
-    return _narrate({"selected_content": selected}, "\n".join(lines))
+    if fallback_used:
+        lines.append(
+            "\nNote: nothing in your CV closely matched this job, so I fell back to your CV's "
+            "own strongest bullets rather than returning nothing."
+        )
+    return _narrate({"selected_content": selected, "bullet_index": bullet_index}, "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- #
 # Gate: approve selection (HARD GATE - edit loops back to step 4)
 # --------------------------------------------------------------------------- #
+
+def _finalize_selection_decisions(
+    selected_bullets: list[dict[str, Any]],
+    decisions: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Apply per-bullet include/exclude decisions. Default: include (so a
+    plain Approve with no decisions keeps today's behaviour)."""
+    decisions = decisions or {}
+    kept: list[dict[str, Any]] = []
+    for b in selected_bullets:
+        if not isinstance(b, dict):
+            continue
+        bullet_id = b.get("bullet_id")
+        decision = decisions.get(bullet_id) if bullet_id else None
+        choice = getattr(decision, "choice", None) if decision else "include"
+        if choice == "exclude":
+            continue
+        kept.append(b)
+    return kept
+
 
 def jt_gate_approve_selection(state: OrchestratorState) -> Command:
     selected = state.get("selected_content") or {}
@@ -496,10 +595,18 @@ def jt_gate_approve_selection(state: OrchestratorState) -> Command:
     resolution = GateResolution.model_validate(raw)
 
     if resolution.action == "approve":
-        return Command(
-            update={"pending_gate": None},
-            goto=JT_STEP5_REWRITE,
-        )
+        selected_bullets = selected.get("selected_bullets", []) or []
+        finalized = _finalize_selection_decisions(selected_bullets, resolution.decisions)
+        excluded_count = len(selected_bullets) - len(finalized)
+        updated_selected = dict(selected)
+        updated_selected["selected_bullets"] = finalized
+        update: dict[str, Any] = {"pending_gate": None, "selected_content": updated_selected}
+        if excluded_count:
+            update = _narrate(
+                update,
+                f"Continuing with {len(finalized)} bullets ({excluded_count} excluded).",
+            )
+        return Command(update=update, goto=JT_STEP5_REWRITE)
     if resolution.action == "edit":
         # Merge feedback into strategy so the next pass of step 4 sees it.
         strategy = dict(state.get("tailoring_strategy") or {})
@@ -528,12 +635,14 @@ def jt_step5_rewrite_enhance(state: OrchestratorState) -> dict[str, Any]:
     job_json = json.dumps(state.get("job_data") or {})
     selected_json = json.dumps(state.get("selected_content") or {})
     strategy_json = json.dumps(state.get("tailoring_strategy") or {})
+    locked = state.get("locked_rewrites") or []
 
     rewritten_json = rewrite_enhance_content.invoke({
         "cv_json": cv_json,
         "job_json": job_json,
         "selected_content_json": selected_json,
         "tailoring_strategy_json": strategy_json,
+        "locked_bullets_json": json.dumps(locked),
     })
     rewritten = _safe_json_loads(rewritten_json, {
         "rewritten_bullets": [],
@@ -542,6 +651,27 @@ def jt_step5_rewrite_enhance(state: OrchestratorState) -> dict[str, Any]:
     })
 
     bullets = rewritten.get("rewritten_bullets", []) or []
+    selected_bullets = (state.get("selected_content") or {}).get("selected_bullets", []) or []
+    fallback_used = False
+    if not bullets and selected_bullets:
+        # The rewrite model returned nothing despite being given bullets to
+        # work with. Echo the selections back unchanged rather than silently
+        # producing a no-op tailoring pass - the user can still see and
+        # accept/edit them individually at the gate.
+        fallback_used = True
+        bullets = [
+            {
+                "original": sb.get("original_text", ""),
+                "rewritten": sb.get("original_text", ""),
+                "confidence": 0.0,
+                "keywords_added": [],
+                "bullet_id": sb.get("bullet_id"),
+            }
+            for sb in selected_bullets
+            if isinstance(sb, dict) and sb.get("original_text")
+        ]
+        rewritten["rewritten_bullets"] = bullets
+
     avg_conf = (
         sum(float(b.get("confidence", 0.0)) for b in bullets) / max(1, len(bullets))
         if bullets else 0.0
@@ -553,12 +683,76 @@ def jt_step5_rewrite_enhance(state: OrchestratorState) -> dict[str, Any]:
         f"Average rewrite confidence: {avg_conf:.2f}",
         f"Keywords woven in: {', '.join(rewritten.get('keywords_inserted', []) or []) or '(none)'}",
     ]
-    return _narrate({"rewritten_content": rewritten}, "\n".join(lines))
+    if fallback_used:
+        lines.append(
+            "\nNote: the rewrite step returned nothing usable, so the selected bullets are shown "
+            "unchanged below - review and edit them at the gate if you'd like different wording."
+        )
+    return _narrate({"rewritten_content": rewritten, "locked_rewrites": None}, "\n".join(lines))
 
 
 # --------------------------------------------------------------------------- #
 # Gate: approve rewrite (HARD GATE - edit loops back to step 5)
 # --------------------------------------------------------------------------- #
+
+def _finalize_rewrite_decisions(
+    rewritten_bullets: list[dict[str, Any]],
+    decisions: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """
+    Apply per-bullet accept/keep_original/custom decisions. Default: accept,
+    so a plain Approve with no decisions keeps today's behaviour of applying
+    every rewrite as-is.
+    """
+    decisions = decisions or {}
+    out: list[dict[str, Any]] = []
+    for b in rewritten_bullets:
+        if not isinstance(b, dict):
+            continue
+        bullet_id = b.get("bullet_id")
+        decision = decisions.get(bullet_id) if bullet_id else None
+        choice = getattr(decision, "choice", None) if decision else "accept"
+        if choice == "keep_original":
+            nb = dict(b)
+            nb["rewritten"] = b.get("original", "")
+            nb["keywords_added"] = []
+            out.append(nb)
+        elif choice == "custom" and getattr(decision, "text", None):
+            nb = dict(b)
+            nb["rewritten"] = decision.text
+            out.append(nb)
+        else:
+            out.append(b)
+    return out
+
+
+def _locked_bullets_for_edit(
+    rewritten_bullets: list[dict[str, Any]],
+    decisions: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """
+    For the edit path: only bullets with an EXPLICIT decision are locked and
+    echoed unchanged into the next rewrite pass. Bullets with no decision are
+    considered still in play and get regenerated with the new feedback.
+    """
+    decisions = decisions or {}
+    locked: list[dict[str, Any]] = []
+    for b in rewritten_bullets:
+        if not isinstance(b, dict):
+            continue
+        bullet_id = b.get("bullet_id")
+        decision = decisions.get(bullet_id) if bullet_id else None
+        if decision is None:
+            continue
+        choice = getattr(decision, "choice", None)
+        if choice == "keep_original":
+            locked.append({**b, "rewritten": b.get("original", ""), "keywords_added": []})
+        elif choice == "custom" and getattr(decision, "text", None):
+            locked.append({**b, "rewritten": decision.text})
+        elif choice == "accept":
+            locked.append(b)
+    return locked
+
 
 def jt_gate_approve_rewrite(state: OrchestratorState) -> Command:
     rewritten = state.get("rewritten_content") or {}
@@ -578,19 +772,29 @@ def jt_gate_approve_rewrite(state: OrchestratorState) -> Command:
     resolution = GateResolution.model_validate(raw)
 
     if resolution.action == "approve":
-        return Command(
-            update={"pending_gate": None},
-            goto=JT_STEP6_ASSEMBLE,
-        )
+        bullets = rewritten.get("rewritten_bullets", []) or []
+        finalized = _finalize_rewrite_decisions(bullets, resolution.decisions)
+        rejected_count = len(bullets) - len(finalized)
+        updated_rewritten = dict(rewritten)
+        updated_rewritten["rewritten_bullets"] = finalized
+        update: dict[str, Any] = {"pending_gate": None, "rewritten_content": updated_rewritten}
+        if rejected_count:
+            update = _narrate(update, f"Applying {len(finalized)} rewrites ({rejected_count} reverted to original).")
+        return Command(update=update, goto=JT_STEP6_ASSEMBLE)
     if resolution.action == "edit":
         strategy = dict(state.get("tailoring_strategy") or {})
         feedback_history = list(strategy.get("user_feedback", []) or [])
         feedback_history.append({"stage": "approve_rewrite", "text": resolution.feedback or ""})
         strategy["user_feedback"] = feedback_history
+        bullets = rewritten.get("rewritten_bullets", []) or []
+        locked = _locked_bullets_for_edit(bullets, resolution.decisions)
+        note = f"Re-running rewrite with your feedback: {resolution.feedback}"
+        if locked:
+            note += f" ({len(locked)} bullet(s) kept as-is.)"
         return Command(
             update=_narrate(
-                {"tailoring_strategy": strategy, "rewritten_content": None},
-                f"Re-running rewrite with your feedback: {resolution.feedback}",
+                {"tailoring_strategy": strategy, "rewritten_content": None, "locked_rewrites": locked},
+                note,
             ),
             goto=JT_STEP5_REWRITE,
         )
@@ -607,9 +811,19 @@ def jt_gate_approve_rewrite(state: OrchestratorState) -> Command:
 def jt_step6_assemble_cv(state: OrchestratorState) -> dict[str, Any]:
     cv_data = state.get("cv_data") or {}
     rewritten = state.get("rewritten_content") or {}
-    merged_cv = _merge_rewrites_into_cv(cv_data, rewritten.get("rewritten_bullets", []) or [])
+    bullet_index = state.get("bullet_index") or _index_cv_bullets(cv_data)
+    merged_cv, unplaced = _merge_rewrites_into_cv(
+        cv_data, rewritten.get("rewritten_bullets", []) or [], bullet_index
+    )
+
+    if rewritten.get("updated_summary"):
+        merged_cv["summary"] = rewritten["updated_summary"]
 
     narration = "Assembled the tailored CV. Generating PDF export."
+    if unplaced:
+        preview = "; ".join(t[:80] for t in unplaced[:3])
+        narration += f"\n\nNote: {len(unplaced)} rewrite(s) could not be matched to a CV bullet and were skipped: {preview}"
+
     return _narrate(
         {"cv_data": merged_cv},
         narration,

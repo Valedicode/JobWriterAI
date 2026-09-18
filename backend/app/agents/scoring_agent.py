@@ -522,6 +522,59 @@ Return a transferability assessment for each required skill.""")
 # Skill Matching Cascade
 # ============================================
 
+def _collapse_required_skill_groups(
+    matches: List[SkillMatch],
+    groups: List[List[str]],
+) -> List[SkillMatch]:
+    """
+    Collapse OR-alternative requirement groups into a single SkillMatch per
+    group, so a candidate who satisfies ANY ONE alternative isn't penalized
+    for lacking the others.
+
+    Without this, a posting phrased as "Java and WildFly/Quarkus/Spring
+    Boot" - which is really two requirements, Java and *any one* JVM
+    framework - gets flattened into four independent required skills, and a
+    candidate with Java + Spring Boot alone shows two "genuine gaps" (WildFly,
+    Quarkus) for a requirement they've fully satisfied.
+
+    Required matches not covered by any group pass through unchanged (a
+    posting is not required to group everything); preferred matches are
+    never touched, since grouping only applies to hard requirements.
+    """
+    if not groups:
+        return matches
+
+    by_name = {m.required_skill: m for m in matches if m.is_required}
+    grouped_names: set[str] = set()
+    collapsed: List[SkillMatch] = []
+
+    for group in groups:
+        group_matches = [by_name[name] for name in group if name in by_name]
+        if not group_matches:
+            continue
+        grouped_names.update(group)
+        if len(group_matches) == 1:
+            collapsed.append(group_matches[0])
+            continue
+
+        best = max(group_matches, key=lambda m: m.transferability)
+        label = " / ".join(group)
+        collapsed.append(best.model_copy(update={
+            "required_skill": label,
+            "rationale": (
+                f"Posting accepts any of {label} for this requirement; "
+                f"strongest match is '{best.matched_with}' for '{best.required_skill}'. "
+                if best.matched_with else
+                f"Posting accepts any of {label} for this requirement; none matched. "
+            ) + best.rationale,
+        }))
+
+    # Every match not swallowed into a group above - required-but-ungrouped
+    # skills, and all preferred skills - passes through untouched.
+    passthrough = [m for m in matches if not (m.is_required and m.required_skill in grouped_names)]
+    return passthrough + collapsed
+
+
 def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> List[SkillMatch]:
     """
     Resolve every required and preferred job skill against the candidate's CV
@@ -644,6 +697,19 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
                         bridge_bullet=None,
                         is_required=m.is_required,
                     )
+
+    # 5. Collapse OR-alternative requirement groups (see
+    # `required_skill_groups` on JobRequirements) AFTER every skill has been
+    # through the full cascade, so the group's representative is whichever
+    # alternative actually scored best - not an arbitrary pick made before
+    # the LLM had a chance to assess every option.
+    groups_raw = job_data.get("required_skill_groups") or []
+    normalized_groups = [
+        [str(s).strip() for s in g if s and str(s).strip()]
+        for g in groups_raw if isinstance(g, list) and g
+    ]
+    if normalized_groups:
+        matches = _collapse_required_skill_groups(matches, normalized_groups)
 
     return matches
 

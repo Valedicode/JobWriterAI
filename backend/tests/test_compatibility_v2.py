@@ -27,6 +27,9 @@ from app.agents.scoring_agent import (
     build_gap_analysis,
     # Internal function used by decide_tailoring_strategy fallback
     _calculate_compatibility_score_v2_internal,
+    # Internal helpers exercised directly for OR-alternative group tests
+    _collapse_required_skill_groups,
+    _score_hard_skills,
     # Constants
     MATCHED_THRESHOLD,
     TRANSFERABLE_THRESHOLD,
@@ -286,3 +289,132 @@ def test_writer_agent_scoring_tools_importable():
         if not (callable(attr) or hasattr(attr, "invoke") or hasattr(attr, "run")):
             missing.add(name)
     assert not missing, f"Missing tools in writer_agent module: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# OR-alternative requirement groups (required_skill_groups)
+#
+# Regression for a real posting phrased "Java and WildFly/Quarkus/Spring Boot
+# ... was Du noch nicht kennst, lernst Du bei uns" - a candidate with Java and
+# Spring Boot only (missing WildFly/Quarkus) fully satisfies this, but a flat
+# required_skills list scores it as two genuine gaps.
+# ---------------------------------------------------------------------------
+
+def _skill_match(name: str, kind: str, transferability: float, matched_with=None, is_required=True):
+    return SkillMatch(
+        required_skill=name,
+        matched_with=matched_with,
+        kind=kind,
+        transferability=transferability,
+        rationale=f"test fixture for {name}",
+        bridge_bullet=None,
+        is_required=is_required,
+    )
+
+
+def test_collapse_required_skill_groups_keeps_best_alternative_only():
+    matches = [
+        _skill_match("Java", "direct", 1.0, matched_with="Java"),
+        _skill_match("WildFly", "missing", 0.0),
+        _skill_match("Quarkus", "missing", 0.0),
+        _skill_match("Spring Boot", "direct", 1.0, matched_with="Spring Boot"),
+    ]
+    groups = [["Java"], ["WildFly", "Quarkus", "Spring Boot"]]
+
+    collapsed = _collapse_required_skill_groups(matches, groups)
+
+    # Two requirements in, two requirements out - not four.
+    assert len(collapsed) == 2
+    by_name = {m.required_skill: m for m in collapsed}
+    assert by_name["Java"].transferability == 1.0
+    # The JVM-framework group is represented by its best alternative
+    # (Spring Boot, matched), not diluted by the two missing ones.
+    jvm_group = by_name["WildFly / Quarkus / Spring Boot"]
+    assert jvm_group.kind == "direct"
+    assert jvm_group.transferability == 1.0
+    assert jvm_group.matched_with == "Spring Boot"
+
+
+def test_collapse_required_skill_groups_reports_missing_when_all_alternatives_missing():
+    """If genuinely none of the alternatives are covered, the group must
+    still show up as a real gap - collapsing must not manufacture a match."""
+    matches = [
+        _skill_match("Java", "direct", 1.0, matched_with="Java"),
+        _skill_match("WildFly", "missing", 0.0),
+        _skill_match("Quarkus", "missing", 0.0),
+        _skill_match("Spring Boot", "missing", 0.0),
+    ]
+    groups = [["Java"], ["WildFly", "Quarkus", "Spring Boot"]]
+
+    collapsed = _collapse_required_skill_groups(matches, groups)
+
+    by_name = {m.required_skill: m for m in collapsed}
+    assert len(collapsed) == 2
+    assert by_name["WildFly / Quarkus / Spring Boot"].kind == "missing"
+
+
+def test_collapse_required_skill_groups_leaves_ungrouped_required_skills_untouched():
+    matches = [
+        _skill_match("Java", "direct", 1.0, matched_with="Java"),
+        _skill_match("Docker", "missing", 0.0),
+    ]
+    # Only Java is covered by a group; Docker has no stated alternatives.
+    collapsed = _collapse_required_skill_groups(matches, [["Java"]])
+    by_name = {m.required_skill: m for m in collapsed}
+    assert "Docker" in by_name
+    assert by_name["Docker"].kind == "missing"
+
+
+def test_hard_skills_score_not_penalized_by_or_group_alternatives():
+    """The actual bug: without grouping, two 'missing' alternatives drag the
+    weighted hard-skills average down even though the requirement (any ONE
+    JVM framework) is fully satisfied by Spring Boot."""
+    ungrouped = [
+        _skill_match("Java", "direct", 1.0, matched_with="Java"),
+        _skill_match("WildFly", "missing", 0.0),
+        _skill_match("Quarkus", "missing", 0.0),
+        _skill_match("Spring Boot", "direct", 1.0, matched_with="Spring Boot"),
+    ]
+    grouped = _collapse_required_skill_groups(ungrouped, [["Java"], ["WildFly", "Quarkus", "Spring Boot"]])
+
+    ungrouped_score, _ = _score_hard_skills(ungrouped)
+    grouped_score, _ = _score_hard_skills(grouped)
+
+    assert ungrouped_score == pytest.approx(0.5)  # (1.0 + 0 + 0 + 1.0) / 4
+    assert grouped_score == pytest.approx(1.0)     # (1.0 + 1.0) / 2 - fully satisfied
+    assert grouped_score > ungrouped_score
+
+
+def test_match_skill_pairs_applies_required_skill_groups_end_to_end():
+    """Full match_skill_pairs cascade, with the embedding/LLM fallbacks
+    stubbed out so WildFly/Quarkus deterministically stay 'missing' pre-group
+    -collapse, proving the collapse happens on real cascade output too."""
+    cv = {
+        **MINIMAL_CV,
+        "skills": ["Java", "Spring Boot"],
+        "experience": [
+            {
+                "position": "Backend Engineer",
+                "company": "Acme Corp",
+                "responsibilities": ["Built services with Java and Spring Boot"],
+            }
+        ],
+    }
+    job = {
+        **MINIMAL_JOB,
+        "required_skills": ["Java", "WildFly", "Quarkus", "Spring Boot"],
+        "required_skill_groups": [["Java"], ["WildFly", "Quarkus", "Spring Boot"]],
+        "preferred_skills": [],
+    }
+
+    with patch("app.agents.scoring_agent._embedding_transferability", return_value=None), \
+         patch("app.agents.scoring_agent._assess_transferability_llm", return_value={}):
+        raw = match_skill_pairs.invoke({"cv_json": json.dumps(cv), "job_json": json.dumps(job)})
+
+    matches = json.loads(raw)
+    assert len(matches) == 2
+    by_name = {m["required_skill"]: m for m in matches}
+    assert by_name["Java"]["kind"] == "direct"
+    jvm_group = by_name["WildFly / Quarkus / Spring Boot"]
+    assert jvm_group["kind"] == "direct"
+    assert jvm_group["matched_with"] == "Spring Boot"
