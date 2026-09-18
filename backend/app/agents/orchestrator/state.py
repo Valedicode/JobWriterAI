@@ -78,11 +78,13 @@ class OrchestratorState(TypedDict, total=False):
     company_data: dict[str, Any] | None
 
     # --- job-tailoring artifacts -------------------------------------------
+    bullet_index: dict[str, Any]
     job_summary: dict[str, Any] | None
     compatibility_report: dict[str, Any] | None
     tailoring_strategy: dict[str, Any] | None
     selected_content: dict[str, Any] | None
     rewritten_content: dict[str, Any] | None
+    locked_rewrites: list[dict[str, Any]] | None
     cover_letter_content: dict[str, Any] | None
     cover_letter_language: CoverLetterLanguage | None
     cover_letter_recipient: str | None
@@ -112,6 +114,7 @@ def empty_state(flow: FlowName, cv_data: dict[str, Any], **extras: Any) -> Orche
         "job_data": extras.get("job_data"),
         "company_data": extras.get("company_data"),
         "review_outputs": {},
+        "bullet_index": {},
         "generated_files": [],
         "messages": [],
         "last_narration": "",

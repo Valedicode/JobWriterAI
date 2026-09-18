@@ -19,10 +19,12 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
+from langchain_core.messages import AIMessage
 from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
 from app.agents.orchestrator import GateResolution, build_graph
+from app.agents.orchestrator.chat_agent import interpret_chat
 from app.models.schemas import (
     GeneratedFile,
     OrchestratorGatePayload,
@@ -95,23 +97,43 @@ def _snapshot_response(
     *,
     session_id: str,
     invoke_result: dict[str, Any],
+    messages_before: int = 0,
 ) -> OrchestratorResponse:
-    """Build an OrchestratorResponse from a graph.invoke() return value."""
+    """
+    Build an OrchestratorResponse from a graph.invoke() return value.
+
+    ``messages_before`` is the length of ``state.messages`` immediately
+    before this invoke() call. Every AIMessage appended after that point -
+    i.e. every step narration produced while resolving this request, not
+    just the last one - is surfaced as ``narrations`` so the chat shows the
+    full sequence (job summary, score, strategy, ...) instead of only the
+    text attached to whichever gate the run stopped on.
+    """
     graph = _get_graph()
     snapshot = graph.get_state(_thread_config(session_id))
     state_values = snapshot.values if snapshot else {}
 
     gate = _pending_gate_from_invoke_result(invoke_result)
     files = _files_from_state(state_values)
+
+    all_messages = state_values.get("messages", []) or []
+    new_messages = all_messages[messages_before:]
+    narrations = [m.content for m in new_messages if isinstance(m, AIMessage) and m.content]
+
+    # The gate's own narration is rendered inside the gate panel, not as a
+    # separate chat bubble - gate nodes never call `_narrate`, so it is not
+    # already in `narrations`. For a finished run (no gate), fall back to
+    # `last_narration` if nothing was captured (e.g. an empty new-session run).
     narration = (
         gate.narration if gate is not None
-        else state_values.get("last_narration", "")
+        else (narrations[-1] if narrations else state_values.get("last_narration", ""))
     )
 
     return OrchestratorResponse(
         success=True,
         session_id=session_id,
         narration=narration,
+        narrations=narrations,
         pending_gate=gate,
         generated_files=files,
         done=gate is None,
@@ -154,6 +176,7 @@ async def orchestrator_start(
         "job_data": request.job_data,
         "company_data": request.company_data,
         "review_outputs": {},
+        "bullet_index": {},
         "generated_files": [],
         "messages": [],
         "last_narration": "",
@@ -170,7 +193,7 @@ async def orchestrator_start(
             detail=f"Graph raised an unhandled interrupt: {exc}",
         ) from exc
 
-    return _snapshot_response(session_id=session_id, invoke_result=result)
+    return _snapshot_response(session_id=session_id, invoke_result=result, messages_before=0)
 
 
 # --------------------------------------------------------------------------- #
@@ -220,6 +243,7 @@ async def orchestrator_message(
                 detail=f"Invalid gate resolution: {exc}",
             ) from exc
 
+        messages_before = len(snapshot.values.get("messages") or [])
         try:
             result = graph.invoke(Command(resume=internal.model_dump()), config=config)
         except GraphInterrupt as exc:
@@ -228,7 +252,9 @@ async def orchestrator_message(
                 detail=f"Graph raised an unhandled interrupt: {exc}",
             ) from exc
 
-        return _snapshot_response(session_id=request.session_id, invoke_result=result)
+        return _snapshot_response(
+            session_id=request.session_id, invoke_result=result, messages_before=messages_before
+        )
 
     # kind == "chat"
     if not (request.text and request.text.strip()):
@@ -238,41 +264,34 @@ async def orchestrator_message(
         )
 
     pending = _pending_gate_from_snapshot(snapshot)
+    turn = interpret_chat(text=request.text.strip(), gate=pending, state=snapshot.values)
 
-    if pending is None:
-        # Nothing to resume - the run already reached END.
+    if turn.action is None:
+        # Pure Q&A / small talk - answer without touching the graph. The gate
+        # (if any) stays exactly as it was.
         return OrchestratorResponse(
             success=True,
             session_id=request.session_id,
-            narration="This session has already finished. Start a new session to continue.",
-            pending_gate=None,
-            generated_files=_files_from_state(snapshot.values),
-            done=True,
-            message="ok",
-        )
-
-    if "edit" not in pending.allowed_actions:
-        # This gate only supports approve/reject/choose - free text can't be
-        # folded in automatically, so surface the allowed actions instead.
-        actions = " / ".join(pending.allowed_actions)
-        return OrchestratorResponse(
-            success=True,
-            session_id=request.session_id,
-            narration=(
-                f"This step doesn't accept free-form notes - please use one of the "
-                f"available actions instead ({actions})."
-            ),
+            narration=turn.reply,
+            narrations=[turn.reply],
             pending_gate=pending,
             generated_files=_files_from_state(snapshot.values),
-            done=False,
+            done=pending is None,
             message="ok",
         )
 
-    # Treat the free-text message as edit feedback for the currently pending
-    # gate, so users can just type what they want changed instead of clicking
-    # "Edit" first.
+    # The chat model decided this message maps to a concrete gate action.
+    # Resume the graph with it and prepend the conversational reply.
     try:
-        internal = GateResolution.model_validate({"action": "edit", "feedback": request.text.strip()})
+        internal = GateResolution.model_validate(turn.action.model_dump())
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Chat produced an invalid gate resolution: {exc}",
+        ) from exc
+
+    messages_before = len(snapshot.values.get("messages") or [])
+    try:
         result = graph.invoke(Command(resume=internal.model_dump()), config=config)
     except GraphInterrupt as exc:
         raise HTTPException(
@@ -280,7 +299,12 @@ async def orchestrator_message(
             detail=f"Graph raised an unhandled interrupt: {exc}",
         ) from exc
 
-    return _snapshot_response(session_id=request.session_id, invoke_result=result)
+    response = _snapshot_response(
+        session_id=request.session_id, invoke_result=result, messages_before=messages_before
+    )
+    if turn.reply:
+        response.narrations = [turn.reply, *response.narrations]
+    return response
 
 
 # --------------------------------------------------------------------------- #
