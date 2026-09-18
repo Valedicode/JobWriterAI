@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react';
-import type { OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
+import type { BulletDecision, OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
 import { PreviewCard } from './PreviewCard';
 import { humanizeStep } from './gateFormat';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
@@ -17,21 +17,45 @@ interface ApprovalGateProps {
   isLoading: boolean;
   onSubmit: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string }
+    opts?: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> }
   ) => void | Promise<void>;
 }
 
 export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) => {
   const [showEdit, setShowEdit] = useState(false);
   const [feedback, setFeedback] = useState('');
+  // Per-bullet decisions for approve_selection / approve_rewrite, keyed by
+  // bullet_id. Only overrides from the default (include / accept) are
+  // stored, so a plain Approve with no interaction sends an empty map and
+  // behaves exactly as before this feature existed.
+  const [decisions, setDecisions] = useState<Record<string, BulletDecision>>({});
 
   const allows = (a: OrchestratorGateAction) => gate.allowed_actions.includes(a);
+  const decisionCount = Object.keys(decisions).length;
+
+  const handleDecisionChange = (bulletId: string, decision: BulletDecision | null) => {
+    setDecisions((prev) => {
+      const next = { ...prev };
+      if (decision === null) {
+        delete next[bulletId];
+      } else {
+        next[bulletId] = decision;
+      }
+      return next;
+    });
+  };
 
   const handleEditSubmit = async () => {
     if (!feedback.trim()) return;
-    await onSubmit('edit', { feedback: feedback.trim() });
+    await onSubmit('edit', { feedback: feedback.trim(), decisions });
     setShowEdit(false);
     setFeedback('');
+    setDecisions({});
+  };
+
+  const handleApprove = async () => {
+    await onSubmit('approve', { decisions });
+    setDecisions({});
   };
 
   return (
@@ -51,7 +75,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
             </p>
           }
         >
-          <PreviewCard gate={gate} />
+          <PreviewCard gate={gate} decisions={decisions} onDecisionChange={handleDecisionChange} />
         </ErrorBoundary>
       </div>
 
@@ -67,6 +91,12 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
             disabled={isLoading}
             autoFocus
           />
+          {decisionCount > 0 && gate.step === 'approve_rewrite' && (
+            <p className="text-meta text-ink-faint">
+              {decisionCount} bullet{decisionCount === 1 ? '' : 's'} marked above will be kept as-is; only the
+              rest are re-run with your feedback.
+            </p>
+          )}
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -94,11 +124,11 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
           {allows('approve') && (
             <button
               type="button"
-              onClick={() => onSubmit('approve')}
+              onClick={handleApprove}
               disabled={isLoading}
               className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-fg transition hover:bg-primary-hover active:scale-[0.97] disabled:opacity-50"
             >
-              Approve
+              {decisionCount > 0 ? `Apply (${decisionCount} customized)` : 'Approve'}
             </button>
           )}
           {allows('edit') && (
