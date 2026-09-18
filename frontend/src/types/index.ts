@@ -312,10 +312,19 @@ export interface OrchestratorGatePayload {
   choices?: string[] | null;
 }
 
+export type BulletDecisionChoice = 'accept' | 'keep_original' | 'custom' | 'include' | 'exclude';
+
+export interface BulletDecision {
+  choice: BulletDecisionChoice;
+  text?: string | null;
+}
+
 export interface OrchestratorGateResolution {
   action: OrchestratorGateAction;
   feedback?: string;
   choice?: string;
+  /** Per-bullet decisions keyed by bullet_id, for approve_selection / approve_rewrite gates. */
+  decisions?: Record<string, BulletDecision>;
 }
 
 export interface OrchestratorStartRequest {
@@ -336,6 +345,8 @@ export interface OrchestratorResponse {
   success: boolean;
   session_id: string;
   narration: string;
+  /** Every assistant narration produced since the previous response, in order. */
+  narrations?: string[];
   pending_gate: OrchestratorGatePayload | null;
   generated_files: DownloadableFile[];
   done: boolean;

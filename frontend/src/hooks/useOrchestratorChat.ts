@@ -22,6 +22,7 @@ import {
   orchestratorStart,
 } from '@/lib/api';
 import type {
+  BulletDecision,
   DownloadableFile,
   JobRequirements,
   Message,
@@ -68,7 +69,7 @@ interface UseOrchestratorChatReturn {
   handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   submitGateResolution: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string }
+    opts?: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> }
   ) => Promise<void>;
   clearError: () => void;
   resetSession: () => void;
@@ -121,21 +122,36 @@ export const useOrchestratorChat = ({
   }, [inputText]);
 
   // Helper: fold an OrchestratorResponse into local state.
+  //
+  // `narrations` carries every step narration produced while resolving this
+  // request (job summary, score, strategy, ...), not just the text attached
+  // to whichever gate the run stopped on. Each entry becomes its own chat
+  // bubble, in order, so multi-step turns no longer read as a single
+  // truncated reply. Older/malformed responses without `narrations` fall
+  // back to the single `narration` field.
   const applyResponse = useCallback((response: OrchestratorResponse) => {
     setSessionId(response.session_id);
-    if (response.narration) {
+    const narrations =
+      response.narrations && response.narrations.length > 0
+        ? response.narrations
+        : response.narration
+          ? [response.narration]
+          : [];
+    if (narrations.length > 0) {
       setMessages((prev) => [
         ...prev,
-        {
-          id: `assistant-${Date.now()}-${prev.length}`,
-          role: 'assistant',
-          content: response.narration,
+        ...narrations.map((content, i) => ({
+          id: `assistant-${Date.now()}-${prev.length}-${i}`,
+          role: 'assistant' as const,
+          content,
           timestamp: new Date(),
           generatedFiles:
-            response.generated_files && response.generated_files.length > 0
+            i === narrations.length - 1 &&
+            response.generated_files &&
+            response.generated_files.length > 0
               ? response.generated_files
               : null,
-        },
+        })),
       ]);
     }
     setPendingGate(response.pending_gate ?? null);
@@ -179,7 +195,7 @@ export const useOrchestratorChat = ({
   const submitGateResolution = useCallback(
     async (
       action: OrchestratorGateAction,
-      opts: { feedback?: string; choice?: string } = {}
+      opts: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> } = {}
     ) => {
       if (!sessionId || isLoading) return;
 
@@ -187,6 +203,9 @@ export const useOrchestratorChat = ({
         action,
         ...(opts.feedback ? { feedback: opts.feedback } : {}),
         ...(opts.choice ? { choice: opts.choice } : {}),
+        ...(opts.decisions && Object.keys(opts.decisions).length > 0
+          ? { decisions: opts.decisions }
+          : {}),
       };
 
       // Echo a user-side message describing the action so the transcript

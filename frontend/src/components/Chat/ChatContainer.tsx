@@ -1,4 +1,4 @@
-import { Message, OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
+import { BulletDecision, Message, OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { EmptyState } from './EmptyState';
@@ -25,7 +25,7 @@ interface ChatContainerProps {
   pendingGate?: OrchestratorGatePayload | null;
   onSubmitGateResolution?: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string }
+    opts?: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> }
   ) => void | Promise<void>;
 }
 
@@ -139,6 +139,11 @@ export const ChatContainer = ({
         onInputChange={onInputChange}
         onKeyDown={onKeyDown}
         onSendMessage={onSendMessage}
+        placeholder={
+          pendingGate
+            ? 'Ask about this step, or tell me what to change'
+            : 'Ask any question or use voice input'
+        }
       />
     </div>
   );
