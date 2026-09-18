@@ -1,0 +1,11 @@
+# Distillation project deps. Install on top of backend/requirements.txt (labeling reuses app code).
+# Local (Windows): install into the `jobwriterai` conda env straight from PyPI (its torch wheel is CPU-only).
+# Don't use the download.pytorch.org index: it downgrades typing_extensions and breaks pydantic.
+# Kaggle images ship torch preinstalled.
+torch>=2.3
+transformers>=4.46
+peft>=0.13
+trl>=0.12
+accelerate>=1.0
+datasets>=3.0
+bitsandbytes>=0.44; platform_system == "Linux"
