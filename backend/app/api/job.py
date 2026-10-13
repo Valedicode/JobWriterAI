@@ -6,6 +6,7 @@ Provides endpoints for job posting extraction (URL/text) and company research.
 
 from fastapi import APIRouter, HTTPException, status
 import json
+import logging
 
 from app.models.schemas import (
     JobURLRequest,
@@ -23,6 +24,7 @@ from app.agents.job_agent import (
 )
 
 router = APIRouter(prefix="/api/job", tags=["Job Agent"])
+logger = logging.getLogger(__name__)
 
 
 @router.post(
@@ -78,12 +80,15 @@ async def extract_job_from_url(request: JobURLRequest):
             message=f"Job posting extracted successfully from {len(request.urls)} URL(s)."
         )
         
+    except HTTPException:
+        raise
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to parse job data: {str(e)}"
         )
     except Exception as e:
+        logger.exception("Job extract/url failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error extracting job from URL: {str(e)}"
