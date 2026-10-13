@@ -720,3 +720,51 @@ def test_report_names_learnable_skills_and_does_not_count_them_covered():
     assert "learnable from adjacent experience: WildFly / Quarkus / Spring Boot (via Django)" in report.interpretation
     hard = next(d for d in report.dimensions if d.name == "hard_skills")
     assert "1 learnable" in hard.rationale
+
+
+# ---------------------------------------------------------------------------
+# Unclear eligibility is an open question, not a penalty (H4)
+# ---------------------------------------------------------------------------
+
+from app.agents.scoring_agent import _score_eligibility  # noqa: E402
+from app.models.schemas import EligibilityCheck  # noqa: E402
+
+
+def _elig(requirement: str, status: str) -> EligibilityCheck:
+    return EligibilityCheck(requirement=requirement, kind="language", status=status)
+
+
+def test_score_eligibility_ignores_unclear_requirements():
+    score, rationale = _score_eligibility([_elig("German (C1)", "met"), _elig("English (fluent)", "unclear")])
+    assert score == pytest.approx(1.0)
+    assert "Not scored until confirmed: English (fluent)" in rationale
+
+    score, _ = _score_eligibility([_elig("German (C1)", "unmet"), _elig("English (fluent)", "unclear")])
+    assert score == pytest.approx(0.0)
+
+    score, rationale = _score_eligibility([_elig("German (C1)", "unclear")])
+    assert score is None
+    assert "German (C1)" in rationale
+    assert _score_eligibility([])[0] is None
+
+
+def test_cv_without_languages_section_is_not_penalised():
+    no_lang_cv = {**STUDENT_CV, "languages": []}
+    no_lang_job = {**STUDENT_JOB, "education_requirements": []}
+    without_reqs = {**no_lang_job, "required_languages": []}
+
+    def _report(cv, job):
+        with patch("app.agents.scoring_agent.get_embeddings", return_value=[[1.0] + [0.0] * 1535]), \
+             patch("app.agents.scoring_agent._embedding_transferability", return_value=None), \
+             patch("app.agents.scoring_agent._assess_transferability_llm", return_value={}):
+            return CompatibilityReport.model_validate_json(
+                calculate_compatibility_score_v2.invoke({"cv_json": json.dumps(cv), "job_json": json.dumps(job)})
+            )
+
+    silent = _report(no_lang_cv, no_lang_job)
+    baseline = _report(no_lang_cv, without_reqs)
+    assert "eligibility" not in {d.name for d in silent.dimensions}
+    assert silent.aggregate_score == pytest.approx(baseline.aggregate_score)
+    assert {c.status for c in silent.gap_analysis.eligibility} == {"unclear"}
+    assert "not scored until you confirm: German (C1), English (fluent)" in silent.interpretation
+    assert not silent.warnings

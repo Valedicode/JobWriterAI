@@ -297,9 +297,10 @@ PREFERRED_SKILL_WEIGHT_BY_LEVEL: Dict[str, float] = {
 # candidate who has it.
 REQUIRED_COVERAGE_HEADROOM = 0.15
 
-# Eligibility item scores by status; 'unclear' (CV has no information) is
-# discounted but not treated as a miss.
-ELIGIBILITY_STATUS_SCORE: Dict[str, float] = {"met": 1.0, "unclear": 0.7, "unmet": 0.0}
+# Eligibility item scores by status. 'unclear' (the CV has no information) is
+# not scored at all: discounting it lowered the score for something the CV
+# simply doesn't say, so it is reported as an open question instead.
+ELIGIBILITY_STATUS_SCORE: Dict[str, float] = {"met": 1.0, "unmet": 0.0}
 
 # Raw cosine between two long-text embeddings rarely leaves [0.25, 0.80] for
 # text-embedding-3-small; stretch that band onto [0, 1] so domain fit moves
@@ -1203,18 +1204,26 @@ def _check_eligibility(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Lis
     return checks
 
 
-def _score_eligibility(checks: List[EligibilityCheck]) -> Tuple[float, str]:
-    if not checks:
-        return 1.0, "Posting states no language or education requirements."
-    score = sum(ELIGIBILITY_STATUS_SCORE[c.status] for c in checks) / len(checks)
-    met = [c.requirement for c in checks if c.status == "met"]
+def _score_eligibility(checks: List[EligibilityCheck]) -> Tuple[Optional[float], str]:
+    """
+    Score over the requirements the CV lets us decide. Returns a None score
+    when nothing is decidable (no requirements, or all unclear), and the
+    caller then leaves the dimension out of the weighted sum.
+    """
     unclear = [c.requirement for c in checks if c.status == "unclear"]
-    unmet = [c.requirement for c in checks if c.status == "unmet"]
-    parts = [f"{len(met)} of {len(checks)} requirements met."]
+    decided = [c for c in checks if c.status != "unclear"]
+    if not decided:
+        if not checks:
+            return None, "Posting states no language or education requirements."
+        return None, f"Not scored until confirmed (the CV says nothing about): {', '.join(unclear)}."
+    score = sum(ELIGIBILITY_STATUS_SCORE[c.status] for c in decided) / len(decided)
+    met = [c.requirement for c in decided if c.status == "met"]
+    unmet = [c.requirement for c in decided if c.status == "unmet"]
+    parts = [f"{len(met)} of {len(decided)} checked requirements met."]
     if unmet:
         parts.append(f"Unmet: {', '.join(unmet)}.")
     if unclear:
-        parts.append(f"Unclear from CV: {', '.join(unclear)}.")
+        parts.append(f"Not scored until confirmed: {', '.join(unclear)}.")
     return score, " ".join(parts)
 
 
@@ -1533,14 +1542,11 @@ def _score_ats_keywords(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tu
 def _calculate_compatibility_score_v2_internal(
     cv_data: Dict[str, Any], job_data: Dict[str, Any]
 ) -> CompatibilityReport:
-    warnings: List[str] = []
-
     matches = _match_skill_pairs_internal(cv_data, job_data)
     eligibility = _check_eligibility(cv_data, job_data)
     job_level = str(job_data.get("job_level") or job_data.get("level") or job_data.get("job_title") or "")
 
     hard_score, hard_rationale = _score_hard_skills(matches, job_level)
-    elig_score, elig_rationale = _score_eligibility(eligibility)
     exp_score, exp_rationale = _score_experience(cv_data, job_data)
     sen_score, sen_rationale = _score_seniority(cv_data, job_data)
     dom_score, dom_rationale = _score_domain(cv_data, job_data)
@@ -1549,13 +1555,6 @@ def _calculate_compatibility_score_v2_internal(
     dimensions = [
         DimensionScore(name="hard_skills", score=hard_score,
                        weight=COMPATIBILITY_WEIGHTS["hard_skills"], rationale=hard_rationale),
-    ]
-    # Only weigh eligibility when the posting actually states such
-    # requirements; otherwise the dimension would be a free 1.0 for everyone.
-    if eligibility:
-        dimensions.append(DimensionScore(name="eligibility", score=elig_score,
-                                         weight=COMPATIBILITY_WEIGHTS["eligibility"], rationale=elig_rationale))
-    dimensions.extend([
         DimensionScore(name="experience", score=exp_score,
                        weight=COMPATIBILITY_WEIGHTS["experience"], rationale=exp_rationale),
         DimensionScore(name="seniority", score=sen_score,
@@ -1564,12 +1563,37 @@ def _calculate_compatibility_score_v2_internal(
                        weight=COMPATIBILITY_WEIGHTS["domain"], rationale=dom_rationale),
         DimensionScore(name="ats_keywords", score=ats_score,
                        weight=COMPATIBILITY_WEIGHTS["ats_keywords"], rationale=ats_rationale),
-    ])
+    ]
+    gap = _build_gap_analysis_internal(matches, cv_data, job_data, eligibility)
+    return _finish_report(dimensions, eligibility, gap)
 
-    weight_total = sum(d.weight for d in dimensions) or 1.0
-    aggregate = sum(d.score * d.weight for d in dimensions) / weight_total
-    aggregate = max(0.0, min(1.0, aggregate))
 
+def _finish_report(
+    dimensions: List[DimensionScore],
+    eligibility: List[EligibilityCheck],
+    gap: GapAnalysis,
+    warnings: Optional[List[str]] = None,
+) -> CompatibilityReport:
+    """
+    Aggregate, level, eligibility cap and interpretation from the skill/
+    experience/seniority/domain/ATS dimensions plus the eligibility checks.
+
+    Shared by the full scorer and by rescore_eligibility, which swaps in new
+    eligibility checks (after the user answered questions) without re-running
+    the embedding and LLM parts of scoring.
+    """
+    warnings = list(warnings or [])
+    dims = [d for d in dimensions if d.name != "eligibility"]
+    # Weigh eligibility only when the posting states such requirements and
+    # the CV lets us decide at least one; otherwise it would be a free 1.0
+    # (no requirements) or a penalty for silence (all unclear).
+    elig_score, elig_rationale = _score_eligibility(eligibility)
+    if elig_score is not None:
+        dims.insert(1, DimensionScore(name="eligibility", score=elig_score,
+                                      weight=COMPATIBILITY_WEIGHTS["eligibility"], rationale=elig_rationale))
+
+    weight_total = sum(d.weight for d in dims) or 1.0
+    aggregate = max(0.0, min(1.0, sum(d.score * d.weight for d in dims) / weight_total))
     level = _band_for_score(aggregate)
 
     # A stated must-have the CV positively fails (wrong field of study, missing
@@ -1583,15 +1607,23 @@ def _calculate_compatibility_score_v2_internal(
             + ", ".join(c.requirement for c in unmet) + "."
         )
 
-    gap = _build_gap_analysis_internal(matches, cv_data, job_data, eligibility)
-
-    interpretation = _interpret_report(level, hard_score, exp_score, sen_score, dom_score, ats_score, gap)
+    gap = gap.model_copy(update={"eligibility": list(eligibility)})
+    scores = {d.name: d.score for d in dims}
+    interpretation = _interpret_report(
+        level,
+        scores.get("hard_skills", 1.0),
+        scores.get("experience", 1.0),
+        scores.get("seniority", 1.0),
+        scores.get("domain", 1.0),
+        scores.get("ats_keywords", 1.0),
+        gap,
+    )
 
     return CompatibilityReport(
         aggregate_score=round(aggregate, 4),
         level=level,
         interpretation=interpretation,
-        dimensions=dimensions,
+        dimensions=dims,
         gap_analysis=gap,
         warnings=warnings,
     )
@@ -1632,7 +1664,7 @@ def _interpret_report(
     if unmet:
         parts.append(f"Eligibility not met: {', '.join(unmet)}.")
     if unclear:
-        parts.append(f"Eligibility unclear from the CV: {', '.join(unclear)}.")
+        parts.append(f"Not on the CV, so not scored until you confirm: {', '.join(unclear)}.")
     if hard < 0.5:
         parts.append("Hard-skill coverage is the main weakness.")
     if exp < 0.5:

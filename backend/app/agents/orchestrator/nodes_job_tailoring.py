@@ -474,8 +474,9 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
     if unclear:
         lines.append(
             "\nYour CV gives no information on: "
-            f"{', '.join(str(u) for u in unclear if u)}. If you meet these, add them to the CV "
-            "(a Languages section, an 'Expected' graduation date) so the score reflects it."
+            f"{', '.join(str(u) for u in unclear if u)}. These are left out of the score until "
+            "confirmed. If you meet them, add them to the CV (a Languages section, an 'Expected' "
+            "graduation date)."
         )
 
     return _narrate({"compatibility_report": report}, "\n".join(lines))
