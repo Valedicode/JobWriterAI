@@ -11,6 +11,7 @@ const STEP_LABELS: Record<string, string> = {
   cover_letter_language: 'Cover letter language',
   cover_letter_recipient: 'Cover letter recipient',
   approve_cover_letter: 'Cover letter',
+  step_failed: 'Step failed',
   cv_review_header: 'Header',
   cv_review_education: 'Education',
   cv_review_experience: 'Experience',

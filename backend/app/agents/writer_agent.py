@@ -678,6 +678,30 @@ def decide_tailoring_strategy(compatibility_score_json: str, cv_json: str, job_j
 
     return json.dumps(_build_directives_from_report(report), indent=2)
 
+
+def _format_directives(directives: List[Any]) -> str:
+    """
+    Render step 3's directives as one readable line each for a prompt.
+
+    decide_tailoring_strategy emits dicts ({"type": ..., "guidance": ...}). A
+    bare "\\n".join() on them raised TypeError before the LLM was ever called,
+    and the tools' blanket except turned that into an empty result.
+    """
+    lines: List[str] = []
+    for directive in directives or []:
+        if isinstance(directive, dict):
+            details = "; ".join(
+                f"{key}: {', '.join(str(v) for v in value) if isinstance(value, list) else value}"
+                for key, value in directive.items()
+                if key != "type" and value not in (None, "", [])
+            )
+            kind = directive.get("type", "directive")
+            lines.append(f"- {kind}: {details}" if details else f"- {kind}")
+        elif directive:
+            lines.append(f"- {directive}")
+    return "\n".join(lines) if lines else "None provided."
+
+
 @tool
 def select_prioritize_content(
     cv_json: str,
@@ -704,7 +728,7 @@ def select_prioritize_content(
     try:
         strategy_data = json.loads(tailoring_strategy_json)
         focus_areas: List[str] = strategy_data.get("focus_areas", [])
-        directives: List[str] = strategy_data.get("directives", [])
+        directives: List[Dict[str, Any]] = strategy_data.get("directives", [])
 
         llm = chat_openai_mini(temperature=0)
         structured_llm = llm.with_structured_output(SelectedContent)
@@ -746,7 +770,7 @@ def select_prioritize_content(
             "job": job_json,
             "bullet_index": bullet_index_block or "(not provided)",
             "focus": ", ".join(focus_areas),
-            "directives": "\n".join(directives) if directives else "None provided."
+            "directives": _format_directives(directives),
         })
         return result.model_dump_json()
 
@@ -787,7 +811,7 @@ def rewrite_enhance_content(
     """
     try:
         strategy_data = json.loads(tailoring_strategy_json)
-        directives: List[str] = strategy_data.get("directives", [])
+        directives: List[Dict[str, Any]] = strategy_data.get("directives", [])
         try:
             locked_bullets = json.loads(locked_bullets_json) or []
         except json.JSONDecodeError:
@@ -838,7 +862,7 @@ def rewrite_enhance_content(
             "job": job_json,
             "selected": selected_content_json,
             "locked": json.dumps(locked_bullets) if locked_bullets else "(none)",
-            "directives": "\n".join(directives) if directives else "None provided."
+            "directives": _format_directives(directives),
         })
 
         # Belt-and-braces: force locked bullets back into the result verbatim

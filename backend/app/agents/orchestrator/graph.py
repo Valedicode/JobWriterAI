@@ -65,6 +65,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_GATE_COVER_LETTER_RECIPIENT,
     JT_STEP_SET_COVER_LETTER_RECIPIENT,
     JT_GATE_PRESENT_SCORE,
+    JT_GATE_STEP_FAILED,
     JT_STEP1_SUMMARIZE,
     JT_STEP2_COMPATIBILITY,
     JT_STEP3_STRATEGY,
@@ -81,6 +82,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     jt_gate_cover_letter,
     jt_gate_cover_letter_recipient,
     jt_gate_present_score,
+    jt_gate_step_failed,
     jt_step1_summarize_job,
     jt_step2_compute_compatibility,
     jt_step3_decide_strategy,
@@ -91,6 +93,8 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     jt_step8_cover_letter_content,
     jt_step9_cover_letter_files,
     jt_step_set_cover_letter_recipient,
+    route_after_rewrite,
+    route_after_select,
 )
 from app.agents.orchestrator.state import OrchestratorState
 from app.services.graph_checkpointer import get_checkpointer
@@ -163,6 +167,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node(JT_GATE_APPROVE_REWRITE, jt_gate_approve_rewrite)
     graph.add_node(JT_GATE_COVER_LETTER, jt_gate_cover_letter)
     graph.add_node(JT_GATE_APPROVE_COVER_LETTER, jt_gate_approve_cover_letter)
+    graph.add_node(JT_GATE_STEP_FAILED, jt_gate_step_failed)
 
     # --- entry routing -------------------------------------------------------
     graph.add_conditional_edges(
@@ -181,9 +186,20 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_edge(JT_STEP2_COMPATIBILITY, JT_GATE_PRESENT_SCORE)
     # JT_GATE_PRESENT_SCORE returns Command(goto=JT_STEP3_STRATEGY or END)
     graph.add_edge(JT_STEP3_STRATEGY, JT_STEP4_SELECT)
-    graph.add_edge(JT_STEP4_SELECT, JT_GATE_APPROVE_SELECTION)
+    # Steps 4 and 5 go to their review gate, or to JT_GATE_STEP_FAILED when
+    # their tool reported an error. That gate returns Command(goto=<failed
+    # step> | END), so a retry passes through the review gate again.
+    graph.add_conditional_edges(
+        JT_STEP4_SELECT,
+        route_after_select,
+        {JT_GATE_APPROVE_SELECTION: JT_GATE_APPROVE_SELECTION, JT_GATE_STEP_FAILED: JT_GATE_STEP_FAILED},
+    )
     # JT_GATE_APPROVE_SELECTION returns Command(goto=JT_STEP5_REWRITE | JT_STEP4_SELECT | END)
-    graph.add_edge(JT_STEP5_REWRITE, JT_GATE_APPROVE_REWRITE)
+    graph.add_conditional_edges(
+        JT_STEP5_REWRITE,
+        route_after_rewrite,
+        {JT_GATE_APPROVE_REWRITE: JT_GATE_APPROVE_REWRITE, JT_GATE_STEP_FAILED: JT_GATE_STEP_FAILED},
+    )
     # JT_GATE_APPROVE_REWRITE returns Command(goto=JT_STEP6_ASSEMBLE | JT_STEP5_REWRITE | END)
     graph.add_edge(JT_STEP6_ASSEMBLE, JT_STEP7_GENERATE_CV_FILES)
     graph.add_edge(JT_STEP7_GENERATE_CV_FILES, JT_GATE_COVER_LETTER)
