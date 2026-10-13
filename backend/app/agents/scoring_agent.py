@@ -607,9 +607,11 @@ def _technical_skill_lists(job_data: Dict[str, Any]) -> Tuple[List[str], List[st
 
     required = [s for s in _clean(job_data.get("required_skills") or job_data.get("skills"))
                 if _eligibility_kind(s) is None]
-    preferred = [s for s in _clean(job_data.get("preferred_skills"))
+    # Skills the employer will teach used to be extracted as preferred; they
+    # still score as nice-to-haves until the scorer gives them their own role.
+    preferred = [s for s in _clean(job_data.get("preferred_skills")) + _clean(job_data.get("learnable_skills"))
                  if _eligibility_kind(s) is None]
-    return required, preferred
+    return required, list(dict.fromkeys(preferred))
 
 
 def _collapse_required_skill_groups(

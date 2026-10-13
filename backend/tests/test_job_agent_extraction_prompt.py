@@ -74,3 +74,22 @@ def test_both_extraction_tools_share_the_same_prompt():
     text_source = inspect.getsource(job_agent.retrieve_text.func)
     assert "_JOB_EXTRACTION_SYSTEM_PROMPT" in web_source
     assert "_JOB_EXTRACTION_SYSTEM_PROMPT" in text_source
+
+
+def test_prompt_separates_learnable_from_preferred():
+    prompt = _JOB_EXTRACTION_SYSTEM_PROMPT
+    assert "`learnable_skills`" in prompt
+    assert "exactly one of" in prompt
+
+
+def test_prompt_asks_for_stated_knockouts_only():
+    prompt = _JOB_EXTRACTION_SYSTEM_PROMPT
+    for field in ("work_mode", "location_constraint", "hours_per_week", "start_date", "work_permit"):
+        assert f"`{field}`" in prompt
+    assert "rather than guess" in prompt
+
+
+def test_prompt_asks_for_posting_language_and_country():
+    prompt = _JOB_EXTRACTION_SYSTEM_PROMPT
+    assert "`posting_language`" in prompt and "ISO 639-1" in prompt
+    assert "`country`" in prompt and "ISO 3166-1" in prompt

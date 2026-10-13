@@ -79,25 +79,27 @@ around it? Only the first is a hard requirement. Phrasing patterns that mean \
       needed with X", "we'll get you up to speed on X".\
    b. Candidate's willingness/enthusiasm is what's asked for, not possession: \
       "eager to learn Java", "excited to work with X", "willingness to learn \
-      X", "curiosity for X", "you enjoy picking up new tools like X", \
-      "interest in X is a plus". These are asking for an attitude, not \
-      proof of the skill - the skill named is a bonus if already held, never \
-      a day-one must-have.\
+      X", "curiosity for X", "you enjoy picking up new tools like X". These \
+      are asking for an attitude, not proof of the skill - the skill named \
+      is a bonus if already held, never a day-one must-have.\
    c. Explicit softeners anywhere near a skill: "nice to have", "a plus", \
-      "bonus", "ideally", "would be great if", "no experience necessary".\
-   Any skill whose sentence matches (a), (b), or (c) belongs in \
-   `preferred_skills`, not `required_skills` / `required_skill_groups` - even \
-   when it's named in the same sentence, or the same skill/framework list, as \
-   a genuinely required skill. Conversely, do not soften a skill that IS \
-   stated as a firm possession requirement ("must have X", "several years of \
-   X", "solid experience with X", "proficiency in X") just because a nearby, \
-   different skill happens to be phrased optionally.
+      "bonus", "ideally", "would be great if", "interest in X is a plus".\
+   A skill whose sentence matches (a) or (b) belongs in `learnable_skills`; \
+   one matching (c) belongs in `preferred_skills`. Neither goes into \
+   `required_skills` / `required_skill_groups` - even when it's named in the \
+   same sentence, or the same skill/framework list, as a genuinely required \
+   skill. When a sentence matches both (a)/(b) and (c), use \
+   `learnable_skills`. Conversely, do not soften a skill that IS stated as a \
+   firm possession requirement ("must have X", "several years of X", "solid \
+   experience with X", "proficiency in X") just because a nearby, different \
+   skill happens to be phrased optionally.
 3. Only skills the sentence asserts the candidate must already possess on \
-day one belong in `required_skills` / `required_skill_groups`. Everything \
-else - nice-to-haves, bonus skills, trainable skills, "eager to learn" \
-skills - belongs in `preferred_skills`. When genuinely unsure after reading \
-the sentence's intent, prefer `preferred_skills` - overstating a requirement \
-does more damage to a fair compatibility score than understating one.
+day one belong in `required_skills` / `required_skill_groups`. Trainable and \
+"eager to learn" skills belong in `learnable_skills`; nice-to-haves and \
+bonus skills belong in `preferred_skills`. List each skill in exactly one of \
+the three. When genuinely unsure whether a skill is required, prefer \
+`preferred_skills` - overstating a requirement does more damage to a fair \
+compatibility score than understating one.
 4. Job-position framing: read the exact title and how the role is described \
 (Werkstudent / working student, intern, junior, mid, senior, lead). The same \
 technology list is not the same bar on a student posting as on a Senior \
@@ -113,6 +115,16 @@ requirements ("enrolled student in Computer Science or a related field", \
 "Bachelor's in Engineering", "eingeschriebene/r Student/in der Informatik") \
 into `education_requirements`. Never list a language, a degree, or "student" \
 in `required_skills`, `preferred_skills`, or `required_skill_groups`.
+6. Knockout conditions: fill `work_mode` (onsite, hybrid or remote), \
+`location_constraint` (where the candidate must live or be allowed to work, \
+not the office address), `hours_per_week`, `start_date` and `work_permit` \
+only when the posting states them; copy the stated value ("16-20", "ab \
+sofort", "EU work permit required"). Leave a field empty rather than guess - \
+an invented knockout rules out candidates the employer would accept.
+7. Set `posting_language` to the ISO 639-1 code of the language the posting \
+is written in ("de", "en"), and `country` to the ISO 3166-1 alpha-2 code of \
+the country the job is in ("DE", "AT", "CH") when the location makes it \
+clear; otherwise leave `country` empty.
 
 If the posting names a contact person, hiring manager, or recruiter to \
 address applications to, capture their name in recipient_name; otherwise \
