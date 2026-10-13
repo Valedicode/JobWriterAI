@@ -15,6 +15,7 @@ removed: per-step prompts now live next to their nodes in
 
 import json
 import re
+import uuid
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -24,6 +25,7 @@ from app.agents.writer_agent import (
     generate_cover_letter_pdf,
     generate_cv_pdf,
 )
+from app.services.file_store import get_file_store
 from app.services.latex_renderer import extract_recipient_name
 from app.models.schemas import (
     CoverLetterContent,
@@ -150,11 +152,15 @@ def generate_cv(request: GenerateTailoredCVRequest):
         from app.services.latex_renderer import render_cv_tex
         latex_preview = render_cv_tex(request.cv_data, section_order=section_order)
 
+        # Each call gets its own random folder, like an orchestrator session,
+        # so the download URL can't be guessed from the applicant's name.
+        output_id = str(uuid.uuid4())
         pdf_result = generate_cv_pdf.invoke({
             "cv_json": cv_json,
             "output_filename": request.output_filename,
             "applicant_name": applicant_name,
             "section_order_json": json.dumps(section_order),
+            "output_dir": str(get_file_store().session_dir(output_id)),
         })
 
         if "Error" in pdf_result:
@@ -164,7 +170,7 @@ def generate_cv(request: GenerateTailoredCVRequest):
             )
 
         match = re.search(r"The file '([^']+)' is ready for download", pdf_result)
-        pdf_path = match.group(1) if match else None
+        pdf_path = get_file_store().download_url(output_id, match.group(1)) if match else None
 
         return GenerateTailoredCVResponse(
             success=True,
@@ -247,6 +253,7 @@ def generate_cover_letter(request: GenerateCoverLetterRequest):
                 ),
             )
 
+        output_id = str(uuid.uuid4())
         pdf_result = generate_cover_letter_pdf.invoke({
             "content_json": content_json,
             "output_filename": request.output_filename,
@@ -255,6 +262,7 @@ def generate_cover_letter(request: GenerateCoverLetterRequest):
             "recipient_info": recipient_info,
             "cv_json": cv_json,
             "job_json": job_json,
+            "output_dir": str(get_file_store().session_dir(output_id)),
         })
 
         if "Error" in pdf_result:
@@ -264,7 +272,7 @@ def generate_cover_letter(request: GenerateCoverLetterRequest):
             )
 
         match = re.search(r"The file '([^']+)' is ready for download", pdf_result)
-        pdf_path = match.group(1) if match else None
+        pdf_path = get_file_store().download_url(output_id, match.group(1)) if match else None
 
         return GenerateCoverLetterResponse(
             success=True,
