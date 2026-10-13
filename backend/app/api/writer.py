@@ -51,7 +51,7 @@ router = APIRouter(prefix="/api/writer", tags=["Writer Agent"])
     summary="Analyze CV-Job Alignment",
     description="Analyze how well a CV matches job requirements and create a tailoring plan."
 )
-async def analyze_alignment(request: CVJobAlignmentRequest):
+def analyze_alignment(request: CVJobAlignmentRequest):
     """
     Analyze CV-job alignment and create a tailoring plan.
 
@@ -115,7 +115,7 @@ async def analyze_alignment(request: CVJobAlignmentRequest):
     summary="Generate Tailored CV",
     description="Generate a tailored CV PDF from a CV + tailoring plan pair."
 )
-async def generate_cv(request: GenerateTailoredCVRequest):
+def generate_cv(request: GenerateTailoredCVRequest):
     """Deterministic CV PDF generation. The orchestrator uses the underlying
     @tool functions directly; this REST endpoint stays for external callers."""
     try:
@@ -192,7 +192,7 @@ async def generate_cv(request: GenerateTailoredCVRequest):
     summary="Generate Cover Letter",
     description="Generate a tailored cover-letter PDF from CV + job + optional company info."
 )
-async def generate_cover_letter(request: GenerateCoverLetterRequest):
+def generate_cover_letter(request: GenerateCoverLetterRequest):
     """Deterministic cover-letter PDF generation."""
     try:
         try:

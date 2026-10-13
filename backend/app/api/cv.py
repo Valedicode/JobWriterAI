@@ -5,6 +5,7 @@ Provides endpoints for CV extraction, ambiguity identification, and clarificatio
 """
 
 from fastapi import APIRouter, HTTPException, status, UploadFile, File
+from fastapi.concurrency import run_in_threadpool
 from pathlib import Path
 import json
 import logging
@@ -122,11 +123,13 @@ async def upload_cv(file: UploadFile = File(...)):
         
         # Extract CV information from memory
         try:
-            cv_data_json = extract_resume_info.invoke({"pdf_bytes": pdf_bytes})
+            # PDF parsing and the LLM calls are blocking; run them off the
+            # event loop so other requests keep being served meanwhile.
+            cv_data_json = await run_in_threadpool(extract_resume_info.invoke, {"pdf_bytes": pdf_bytes})
             cv_data_dict = json.loads(cv_data_json)
-            
+
             # Check for ambiguities
-            questions_text = identify_ambiguities.invoke({"resume_json": cv_data_json})
+            questions_text = await run_in_threadpool(identify_ambiguities.invoke, {"resume_json": cv_data_json})
             
             # Determine if clarification is needed
             needs_clarification = "no questions" not in questions_text.lower()
@@ -183,7 +186,7 @@ async def upload_cv(file: UploadFile = File(...)):
     summary="Extract CV Information",
     description="Extract structured information from a PDF resume file. Returns the data and any clarifying questions if ambiguities are found."
 )
-async def extract_cv(request: CVUploadRequest):
+def extract_cv(request: CVUploadRequest):
     """
     Extract CV information from PDF.
     
@@ -267,7 +270,7 @@ async def extract_cv(request: CVUploadRequest):
     summary="Update CV with Clarifications",
     description="Update the extracted CV data based on user's answers to clarifying questions."
 )
-async def clarify_cv(request: CVClarificationRequest):
+def clarify_cv(request: CVClarificationRequest):
     """
     Update CV data with user's clarification answers.
     

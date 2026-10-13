@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
     summary="Extract Job from URL",
     description="Extract structured job requirements from one or more job posting URLs."
 )
-async def extract_job_from_url(request: JobURLRequest):
+def extract_job_from_url(request: JobURLRequest):
     """
     Extract job requirements from URL(s).
     
@@ -101,7 +101,7 @@ async def extract_job_from_url(request: JobURLRequest):
     summary="Extract Job from Text",
     description="Extract structured job requirements from pasted job description text."
 )
-async def extract_job_from_text(request: JobTextRequest):
+def extract_job_from_text(request: JobTextRequest):
     """
     Extract job requirements from raw text.
     
@@ -156,7 +156,7 @@ async def extract_job_from_text(request: JobTextRequest):
     summary="Research Company Information",
     description="Search the web for company information including values, culture, mission, and recent news."
 )
-async def research_company(request: CompanyResearchRequest):
+def research_company(request: CompanyResearchRequest):
     """
     Research company information using web search.
     
