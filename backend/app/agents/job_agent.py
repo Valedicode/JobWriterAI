@@ -104,6 +104,15 @@ technology list is not the same bar on a student posting as on a Senior \
 Engineer posting. Do not inflate a junior/student role's listed stack into \
 hard day-one must-haves; do not drop a senior role's stated must-haves \
 because those tools also appear on junior postings.
+5. Languages and education are eligibility requirements, not skills. Put \
+spoken-language requirements (with the stated level, e.g. "German (C1)", \
+"English (fluent)", "Deutsch verhandlungssicher") into `required_languages` \
+only when the posting requires them; a language that is merely "a plus" is \
+not required and goes nowhere. Put degree, field-of-study, and enrollment \
+requirements ("enrolled student in Computer Science or a related field", \
+"Bachelor's in Engineering", "eingeschriebene/r Student/in der Informatik") \
+into `education_requirements`. Never list a language, a degree, or "student" \
+in `required_skills`, `preferred_skills`, or `required_skill_groups`.
 
 If the posting names a contact person, hiring manager, or recruiter to \
 address applications to, capture their name in recipient_name; otherwise \

@@ -418,3 +418,215 @@ def test_match_skill_pairs_applies_required_skill_groups_end_to_end():
     jvm_group = by_name["WildFly / Quarkus / Spring Boot"]
     assert jvm_group["kind"] == "direct"
     assert jvm_group["matched_with"] == "Spring Boot"
+
+
+# ---------------------------------------------------------------------------
+# Required vs preferred asymmetry, eligibility, and matching edge cases
+#
+# Regressions for a Werkstudent posting (German + English + enrolled CS
+# student = must-have; Java/Spring/Quarkus/WildFly = strongly preferred).
+# Before these fixes: nice-to-haves were averaged in as near-penalties, the
+# language / enrollment must-haves were never scored, project technologies
+# were invisible to matching, and "C++" / "Node.js" could not be found in
+# free text.
+# ---------------------------------------------------------------------------
+
+from app.agents.scoring_agent import (  # noqa: E402
+    _check_eligibility,
+    _detect_direct_match,
+    _estimate_candidate_years,
+    _level_bucket,
+    _score_ats_keywords,
+    _seniority_to_score,
+)
+
+STUDENT_CV = {
+    **MINIMAL_CV,
+    "skills": ["Python", "Git"],
+    "education": [
+        {
+            "institution": "RWTH Aachen",
+            "degree": "B.Sc. Computer Science",
+            "dates": "Expected: September 2027",
+        }
+    ],
+    "experience": [],
+    "projects": [
+        {
+            "name": "Campus API",
+            "description": "REST backend for a student club",
+            "technologies": ["Java", "Spring Boot"],
+            "outcomes": ["Deployed with Docker"],
+        }
+    ],
+    "languages": [
+        {"language": "German", "fluency": "native"},
+        {"language": "English", "fluency": "C1"},
+    ],
+}
+
+STUDENT_JOB = {
+    **MINIMAL_JOB,
+    "job_title": "Werkstudent Software Engineering (m/w/d)",
+    "job_level": "Werkstudent",
+    "required_skills": ["Java"],
+    "preferred_skills": ["Spring Boot", "Quarkus", "WildFly", "Kubernetes", "Kafka", "Terraform"],
+    "required_languages": ["German (C1)", "English (fluent)"],
+    "education_requirements": ["Enrolled student in Computer Science or a related field"],
+    "years_experience": None,
+}
+
+
+def test_hard_skills_missing_must_have_is_not_rescued_by_nice_to_haves():
+    """Missing the single required skill must score far below having it,
+    regardless of how many nice-to-haves the candidate collects."""
+    missing_java = [_skill_match("Java", "missing", 0.0)] + [
+        _skill_match(f"pref{i}", "direct", 1.0, matched_with=f"pref{i}", is_required=False) for i in range(5)
+    ]
+    has_java = [_skill_match("Java", "direct", 1.0, matched_with="Java")] + [
+        _skill_match(f"pref{i}", "missing", 0.0, is_required=False) for i in range(6)
+    ]
+    missing_score, _ = _score_hard_skills(missing_java, "Werkstudent")
+    has_score, rationale = _score_hard_skills(has_java, "Werkstudent")
+
+    assert missing_score <= 0.2
+    assert has_score >= 0.8
+    assert "student-level" in rationale
+
+
+def test_hard_skills_preferred_weight_scales_with_level():
+    """The same nice-to-have gaps cost a senior applicant more than a student."""
+    matches = [_skill_match("Java", "direct", 1.0, matched_with="Java")] + [
+        _skill_match(f"pref{i}", "missing", 0.0, is_required=False) for i in range(4)
+    ]
+    student, _ = _score_hard_skills(matches, "Werkstudent")
+    senior, _ = _score_hard_skills(matches, "Senior Engineer")
+    assert student > senior
+    assert _level_bucket("Werkstudent (m/w/d)") == "student"
+    assert _level_bucket("Senior Backend Engineer") == "senior"
+    assert _level_bucket("") == "mid"
+
+
+def test_direct_match_reads_project_technologies_and_symbol_names():
+    cv = {
+        **MINIMAL_CV,
+        "skills": ["Python"],
+        "experience": [
+            {"position": "Developer", "company": "X", "responsibilities": ["Built tooling in C++ and Node.js"]}
+        ],
+        "projects": [{"name": "P", "description": "app", "technologies": ["Java", "Spring Boot"]}],
+    }
+    assert _detect_direct_match("Java", cv) is not None
+    assert _detect_direct_match("Spring Boot", cv) is not None
+    assert _detect_direct_match("C++", cv) is not None
+    assert _detect_direct_match("Node.js", cv) is not None
+    # "java" must not match inside "javascript", "c" must not match inside "c++"
+    js_only = {**MINIMAL_CV, "skills": ["JavaScript"], "experience": [], "projects": []}
+    cpp_only = {**MINIMAL_CV, "skills": ["C++"], "experience": [], "projects": []}
+    assert _detect_direct_match("Java", js_only) is None
+    assert _detect_direct_match("C", cpp_only) is None
+
+
+def test_eligibility_checks_languages_and_enrollment():
+    checks = {c.requirement: c for c in _check_eligibility(STUDENT_CV, STUDENT_JOB)}
+    assert checks["German (C1)"].status == "met"
+    assert checks["English (fluent)"].status == "met"
+    assert checks["Enrolled student in Computer Science or a related field"].status == "met"
+
+    # Level below requirement is unmet; a missing languages section is unclear, not unmet.
+    b1_cv = {**STUDENT_CV, "languages": [{"language": "German", "fluency": "B1"}]}
+    b1 = {c.requirement: c for c in _check_eligibility(b1_cv, STUDENT_JOB)}
+    assert b1["German (C1)"].status == "unmet"
+    assert b1["English (fluent)"].status == "unmet"
+
+    no_lang = {c.requirement: c for c in _check_eligibility({**STUDENT_CV, "languages": []}, STUDENT_JOB)}
+    assert no_lang["German (C1)"].status == "unclear"
+
+    wrong_field = {
+        **STUDENT_CV,
+        "education": [{"degree": "B.A. History", "institution": "Uni", "dates": "Expected: 2027"}],
+    }
+    wf = {c.requirement: c for c in _check_eligibility(wrong_field, STUDENT_JOB)}
+    assert wf["Enrolled student in Computer Science or a related field"].status == "unmet"
+
+
+def test_misfiled_language_in_required_skills_is_routed_to_eligibility():
+    """If extraction drops "German" into required_skills it must not become an
+    unbridgeable "missing" technical skill."""
+    job = {**STUDENT_JOB, "required_skills": ["Java", "German"], "required_languages": []}
+    with patch("app.agents.scoring_agent._embedding_transferability", return_value=None), \
+         patch("app.agents.scoring_agent._assess_transferability_llm", return_value={}):
+        matches = json.loads(match_skill_pairs.invoke({"cv_json": json.dumps(STUDENT_CV), "job_json": json.dumps(job)}))
+    assert [m["required_skill"] for m in matches if m["is_required"]] == ["Java"]
+    checks = _check_eligibility(STUDENT_CV, job)
+    assert any(c.kind == "language" and c.status == "met" for c in checks)
+
+
+def test_v2_report_for_student_posting_end_to_end():
+    # Embedding fallback stubbed out: the fake embedding is identical for every
+    # text, which would otherwise make every nice-to-have "transferable".
+    with patch("app.agents.scoring_agent.get_embeddings", return_value=[[1.0] + [0.0] * 1535]), \
+         patch("app.agents.scoring_agent._embedding_transferability", return_value=None), \
+         patch("app.agents.scoring_agent._assess_transferability_llm", return_value={}):
+        raw = calculate_compatibility_score_v2.invoke({
+            "cv_json": json.dumps(STUDENT_CV),
+            "job_json": json.dumps(STUDENT_JOB),
+        })
+    report = CompatibilityReport.model_validate_json(raw)
+    dims = {d.name: d for d in report.dimensions}
+    assert "eligibility" in dims and dims["eligibility"].score == pytest.approx(1.0)
+    assert dims["hard_skills"].score >= 0.8  # Java found in project technologies; nice-to-haves barely count
+    assert report.level in ("high", "excellent")
+    assert not report.warnings
+    # Missing nice-to-haves are named as such, not as required gaps
+    assert "Genuine gaps on required skills" not in report.interpretation
+    assert "Nice-to-haves not on the CV" in report.interpretation
+    assert len(report.gap_analysis.eligibility) == 3
+
+
+def test_v2_unmet_eligibility_caps_level_and_warns():
+    cv = {**STUDENT_CV, "languages": [{"language": "English", "fluency": "C1"}]}
+    with patch("app.agents.scoring_agent.get_embeddings", return_value=[[1.0] + [0.0] * 1535]), \
+         patch("app.agents.scoring_agent._assess_transferability_llm", return_value={}):
+        raw = calculate_compatibility_score_v2.invoke({"cv_json": json.dumps(cv), "job_json": json.dumps(STUDENT_JOB)})
+    report = CompatibilityReport.model_validate_json(raw)
+    assert report.level in ("low", "medium")
+    assert any("German (C1)" in w for w in report.warnings)
+    assert "Eligibility not met: German (C1)" in report.interpretation
+
+
+def test_eligibility_dimension_omitted_when_posting_states_none():
+    with patch("app.agents.scoring_agent.get_embeddings", return_value=[[1.0] + [0.0] * 1535]):
+        raw = calculate_compatibility_score_v2.invoke({"cv_json": json.dumps(MINIMAL_CV), "job_json": json.dumps(MINIMAL_JOB)})
+    report = CompatibilityReport.model_validate_json(raw)
+    assert "eligibility" not in {d.name for d in report.dimensions}
+
+
+def test_seniority_uses_whole_words_and_knows_students():
+    assert _seniority_to_score("Internal Tools Developer") is None
+    assert _seniority_to_score("Software Engineering Intern") == 0
+    assert _seniority_to_score("Werkstudent Backend") == 0
+    assert _seniority_to_score("Team Leadership Coach") is None
+    assert _seniority_to_score("Senior Staff Engineer") == 5
+
+
+def test_candidate_years_ignores_unrelated_numbers_and_merges_overlaps():
+    cv = {
+        **MINIMAL_CV,
+        "experience": [
+            {"position": "Dev", "company": "A", "duration": "2020 - 2023",
+             "responsibilities": ["Maintained a 10 years old codebase"]},
+            {"position": "Dev", "company": "B", "duration": "2022 - 2024", "responsibilities": []},
+        ],
+    }
+    assert _estimate_candidate_years(cv) == pytest.approx(4.0)  # 2020-2024 merged, not 3 + 2
+    explicit = {**MINIMAL_CV, "experience": [{"position": "Dev", "company": "A",
+                                                "responsibilities": ["5+ years of professional experience"]}]}
+    assert _estimate_candidate_years(explicit) == pytest.approx(5.0)
+
+
+def test_ats_score_is_verbatim_term_coverage():
+    score, rationale = _score_ats_keywords(STUDENT_CV, STUDENT_JOB)
+    # Java + Spring Boot present verbatim; Quarkus, WildFly, Kubernetes, Kafka, Terraform absent
+    assert score == pytest.approx(2 / 7)
+    assert "Quarkus" in rationale

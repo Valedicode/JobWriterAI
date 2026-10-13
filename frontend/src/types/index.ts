@@ -47,6 +47,11 @@ export interface LeadershipEntry {
   highlights?: string[];
 }
 
+export interface LanguageEntry {
+  language: string;
+  fluency?: string;
+}
+
 export interface ResumeInfo {
   name: string;
   email: string;
@@ -61,6 +66,7 @@ export interface ResumeInfo {
   experience: ExperienceEntry[];
   projects?: ProjectEntry[];
   leadership_activities?: LeadershipEntry[];
+  languages?: LanguageEntry[];
 }
 
 export interface CVExtractionResponse {

@@ -389,33 +389,59 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
         dw = dim.get("weight", 0.0)
         lines.append(f"{name} ({int(round(dw * 100))}%): {ds:.2f}")
     gap = report.get("gap_analysis", {}) or {}
-    matched = gap.get("matched_skills", []) or []
-    transferable = gap.get("transferable_skills", []) or []
-    missing = gap.get("missing_skills", []) or []
+    matched = [m for m in (gap.get("matched_skills") or []) if isinstance(m, dict)]
+    transferable = [m for m in (gap.get("transferable_skills") or []) if isinstance(m, dict)]
+    missing = [m for m in (gap.get("missing_skills") or []) if isinstance(m, dict)]
     lines.append("")
     lines.append(f"Matched: {len(matched)} | Transferable: {len(transferable)} | Missing: {len(missing)}")
-    # Name the actual gaps instead of only a count - a bare "Missing: 3" tells
-    # the user nothing they can act on.
-    missing_names = [m.get("required_skill") for m in missing if isinstance(m, dict) and m.get("required_skill")]
-    if missing_names:
-        lines.append(f"Missing skills: {', '.join(missing_names)}")
+    # Name the actual gaps instead of only a count, and keep must-haves apart
+    # from nice-to-haves: a missing required skill is a real gap, a missing
+    # preferred one on a student posting is expected.
+    missing_required = [m["required_skill"] for m in missing if m.get("required_skill") and m.get("is_required", True)]
+    missing_preferred = [m["required_skill"] for m in missing if m.get("required_skill") and not m.get("is_required", True)]
+    if missing_required:
+        lines.append(f"Missing required skills: {', '.join(missing_required)}")
+    if missing_preferred:
+        lines.append(f"Missing nice-to-haves: {', '.join(missing_preferred)}")
     transferable_bridges = [
         f"{m.get('required_skill')} (via {m.get('matched_with')})"
         for m in transferable
-        if isinstance(m, dict) and m.get("required_skill") and m.get("bridge_bullet")
+        if m.get("required_skill") and m.get("bridge_bullet")
     ]
     if transferable_bridges:
         lines.append(f"Bridgeable via existing experience: {', '.join(transferable_bridges)}")
+
+    eligibility = [e for e in (gap.get("eligibility") or []) if isinstance(e, dict)]
+    if eligibility:
+        lines.append("")
+        lines.append("Eligibility (languages, degree, enrollment):")
+        status_label = {"met": "met", "unclear": "unclear", "unmet": "NOT met"}
+        for e in eligibility:
+            label = status_label.get(e.get("status"), e.get("status", "?"))
+            rationale = e.get("rationale") or ""
+            lines.append(f"- {e.get('requirement')}: {label}" + (f" - {rationale}" if rationale else ""))
+
+    for w in report.get("warnings") or []:
+        if isinstance(w, str) and w:
+            lines.append("")
+            lines.append(w)
     if report.get("interpretation"):
         lines.append("")
         lines.append(report["interpretation"])
-    if missing_names and not transferable_bridges:
+    if missing_required and not transferable_bridges:
         lines.append(
-            "\nNote: none of these gaps can be bridged from your current CV content - "
-            "the rewrite step can only rephrase what's already there, not invent missing "
-            "skills. If you have any real exposure to "
-            f"{', '.join(missing_names)} (a course, a side project, brief use on the job), "
+            "\nNote: none of these required-skill gaps can be bridged from your current CV "
+            "content - the rewrite step can only rephrase what's already there, not invent "
+            "missing skills. If you have any real exposure to "
+            f"{', '.join(missing_required)} (a course, a side project, brief use on the job), "
             "add it to your CV before this step so it can be surfaced."
+        )
+    unclear = [e.get("requirement") for e in eligibility if e.get("status") == "unclear"]
+    if unclear:
+        lines.append(
+            "\nYour CV gives no information on: "
+            f"{', '.join(str(u) for u in unclear if u)}. If you meet these, add them to the CV "
+            "(a Languages section, an 'Expected' graduation date) so the score reflects it."
         )
 
     return _narrate({"compatibility_report": report}, "\n".join(lines))
@@ -437,6 +463,7 @@ def jt_gate_present_score(state: OrchestratorState) -> Command:
             "dimensions": report.get("dimensions", []),
             "gap_analysis": report.get("gap_analysis", {}),
             "interpretation": report.get("interpretation", ""),
+            "warnings": report.get("warnings", []),
         },
         allowed_actions=["approve", "reject"],
     ).model_dump()

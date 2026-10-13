@@ -132,17 +132,43 @@ const ToggleButton = ({
 // Job-tailoring step shapes (bespoke)
 // --------------------------------------------------------------------------
 
+interface ScoreSkillMatch {
+  required_skill?: string;
+  matched_with?: string | null;
+  is_required?: boolean;
+}
+
+interface ScoreEligibility {
+  requirement?: string;
+  kind?: string;
+  status?: 'met' | 'unclear' | 'unmet' | string;
+  rationale?: string;
+}
+
 interface ScorePreview {
   aggregate_score?: number;
   level?: string;
   dimensions?: Array<{ name: string; score: number; weight: number }>;
   gap_analysis?: {
-    matched_skills?: unknown[];
-    transferable_skills?: unknown[];
-    missing_skills?: unknown[];
+    matched_skills?: ScoreSkillMatch[];
+    transferable_skills?: ScoreSkillMatch[];
+    missing_skills?: ScoreSkillMatch[];
+    eligibility?: ScoreEligibility[];
   };
   interpretation?: string;
+  warnings?: string[];
 }
+
+const skillNames = (items: unknown, required: boolean) =>
+  asArray<ScoreSkillMatch>(items)
+    .filter((m) => m && m.required_skill && (m.is_required ?? true) === required)
+    .map((m) => m.required_skill as string);
+
+const eligibilityTone: Record<string, string> = {
+  met: 'bg-success-surface text-success-text border-success-border',
+  unmet: 'bg-warning-surface text-warning-text border-warning-border',
+  unclear: 'bg-surface-sunken text-ink-muted border-border',
+};
 
 function PresentScore({ preview }: { preview: PreviewMap }) {
   const p = preview as ScorePreview;
@@ -150,6 +176,10 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
   const level = p.level ?? 'unknown';
   const dimensions = Array.isArray(p.dimensions) ? p.dimensions : [];
   const gap = p.gap_analysis ?? {};
+  const missingRequired = skillNames(gap.missing_skills, true);
+  const missingPreferred = skillNames(gap.missing_skills, false);
+  const eligibility = asArray<ScoreEligibility>(gap.eligibility).filter((e) => e && e.requirement);
+  const warnings = asArray<string>(p.warnings).filter((w) => typeof w === 'string' && w);
   return (
     <div>
       <Section title="Score">
@@ -197,7 +227,47 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
           <span>Transferable {(gap.transferable_skills || []).length}</span>
           <span>Missing {(gap.missing_skills || []).length}</span>
         </div>
+        {missingRequired.length > 0 && (
+          <p className="mt-2 text-sm text-ink [overflow-wrap:anywhere]">
+            <span className="font-medium">Missing required:</span> {missingRequired.join(', ')}
+          </p>
+        )}
+        {missingPreferred.length > 0 && (
+          <p className="mt-1 text-sm text-ink-muted [overflow-wrap:anywhere]">
+            <span className="font-medium">Missing nice-to-haves:</span> {missingPreferred.join(', ')}
+          </p>
+        )}
       </Section>
+      {eligibility.length > 0 && (
+        <Section title="Eligibility">
+          <ul className="space-y-1.5">
+            {eligibility.map((e, i) => {
+              const status = String(e.status ?? 'unclear');
+              const tone = eligibilityTone[status] ?? eligibilityTone.unclear;
+              return (
+                <li key={`${e.requirement}-${i}`} className="flex items-start gap-2 text-sm">
+                  <span
+                    className={`mt-0.5 inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-label font-medium capitalize ${tone}`}
+                  >
+                    {status === 'unmet' ? 'not met' : status}
+                  </span>
+                  <span className="min-w-0 text-ink [overflow-wrap:anywhere]">
+                    {e.requirement}
+                    {e.rationale ? (
+                      <span className="block text-ink-muted">{e.rationale}</span>
+                    ) : null}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </Section>
+      )}
+      {warnings.length > 0 && (
+        <Section title="Note">
+          <Bullets items={warnings} />
+        </Section>
+      )}
       {p.interpretation && (
         <Section title="Interpretation">
           <p className="text-body text-ink [overflow-wrap:anywhere]">{p.interpretation}</p>

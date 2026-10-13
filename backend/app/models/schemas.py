@@ -86,6 +86,17 @@ class ProjectEntry(BaseModel):
     outcomes: List[str] = Field(default_factory=list, description="Outcomes or achievements")
 
 
+class LanguageEntry(BaseModel):
+    """One spoken language with its stated proficiency."""
+    model_config = ConfigDict(extra="forbid")
+
+    language: str = Field(description="Language name, e.g. 'German' or 'English'")
+    fluency: Optional[str] = Field(
+        default=None,
+        description="Proficiency as written, e.g. 'native', 'C1', 'fluent', 'business fluent'",
+    )
+
+
 class ResumeInfo(BaseModel):
     """Structured resume information extracted from CV."""
     model_config = ConfigDict(extra="forbid")
@@ -126,6 +137,10 @@ class ResumeInfo(BaseModel):
     leadership_activities: Optional[List[LeadershipEntry]] = Field(
         default=[],
         description="Leadership roles, extracurricular activities, volunteer work, or other relevant activities"
+    )
+    languages: List[LanguageEntry] = Field(
+        default_factory=list,
+        description="Spoken languages with proficiency, one entry per language (e.g. German native, English C1)",
     )
 
 
@@ -196,6 +211,22 @@ class JobRequirements(BaseModel):
         ),
     )
     preferred_skills: List[str] = Field(default=[], description="Preferred skills")
+    required_languages: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Spoken languages the posting requires, with level when stated, e.g. "
+            "['German (C1)', 'English (fluent)']. Never put languages into "
+            "required_skills; they are eligibility requirements, not technical skills."
+        ),
+    )
+    education_requirements: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Degree, field-of-study, or enrollment requirements, one per entry, e.g. "
+            "['Enrolled student in Computer Science or related field', "
+            "\"Bachelor's degree in Engineering\"]. Never put these into required_skills."
+        ),
+    )
     years_experience: Optional[int] = Field(default=None, description="Years of experience required")
     employment_type: str = Field(description="Employment type (Full-time, Contract, etc.)")
     location: str = Field(description="Job location")
@@ -316,6 +347,20 @@ class DimensionScore(BaseModel):
     rationale: str = Field(default="", description="Short explanation of how the score was reached")
 
 
+class EligibilityCheck(BaseModel):
+    """A non-technical must-have (language, degree, enrollment) checked against the CV."""
+    requirement: str = Field(description="Requirement text as extracted from the posting")
+    kind: Literal["language", "education"] = Field(description="What kind of requirement this is")
+    status: Literal["met", "unclear", "unmet"] = Field(
+        description=(
+            "met: the CV satisfies it; unclear: the CV has no information to decide "
+            "(e.g. no languages section); unmet: the CV has the information and it falls short"
+        )
+    )
+    matched_with: Optional[str] = Field(default=None, description="CV entry that satisfied the requirement, if any")
+    rationale: str = Field(default="", description="Short explanation of the status")
+
+
 class GapAnalysis(BaseModel):
     """Bucketed view of where the candidate matches, can stretch, or falls short."""
     matched_skills: List[SkillMatch] = Field(
@@ -333,6 +378,10 @@ class GapAnalysis(BaseModel):
     over_qualified_signals: List[str] = Field(
         default_factory=list,
         description="Senior signals on the CV not requested by the job (LLM-flagged)"
+    )
+    eligibility: List[EligibilityCheck] = Field(
+        default_factory=list,
+        description="Language, degree, and enrollment requirements checked against the CV",
     )
 
 

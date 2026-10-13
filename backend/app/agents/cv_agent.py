@@ -89,7 +89,9 @@ def extract_resume_info(pdf_path: str = "", pdf_bytes: bytes = b"") -> str:
          "(as written, e.g. 'Expected: September 2027'), grade if stated, and any awards/details. "
          "For experience: include the location of each role if stated. "
          "For leadership roles, extracurricular activities, and volunteer work: one leadership_activities "
-         "entry per activity with role, organization, location, dates, a short description, and impact bullets."),
+         "entry per activity with role, organization, location, dates, a short description, and impact bullets. "
+         "For spoken languages: one languages entry per language with the stated fluency "
+         "(e.g. language='German', fluency='native'); do not put spoken languages into skills."),
         ("user", "{text}")
     ])
 
