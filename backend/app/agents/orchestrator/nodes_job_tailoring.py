@@ -416,9 +416,13 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
     gap = report.get("gap_analysis", {}) or {}
     matched = [m for m in (gap.get("matched_skills") or []) if isinstance(m, dict)]
     transferable = [m for m in (gap.get("transferable_skills") or []) if isinstance(m, dict)]
+    learnable = [m for m in (gap.get("learnable_skills") or []) if isinstance(m, dict)]
     missing = [m for m in (gap.get("missing_skills") or []) if isinstance(m, dict)]
     lines.append("")
-    lines.append(f"Matched: {len(matched)} | Transferable: {len(transferable)} | Missing: {len(missing)}")
+    lines.append(
+        f"Matched: {len(matched)} | Transferable: {len(transferable)} | "
+        f"Learnable: {len(learnable)} | Missing: {len(missing)}"
+    )
     # Name the actual gaps instead of only a count, and keep must-haves apart
     # from nice-to-haves: a missing required skill is a real gap, a missing
     # preferred one on a student posting is expected.
@@ -428,13 +432,17 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
         lines.append(f"Missing required skills: {', '.join(missing_required)}")
     if missing_preferred:
         lines.append(f"Missing nice-to-haves: {', '.join(missing_preferred)}")
-    transferable_bridges = [
-        f"{m.get('required_skill')} (via {m.get('matched_with')})"
-        for m in transferable
-        if m.get("required_skill") and m.get("bridge_bullet")
-    ]
-    if transferable_bridges:
-        lines.append(f"Bridgeable via existing experience: {', '.join(transferable_bridges)}")
+    def _via(items: list[dict[str, Any]]) -> list[str]:
+        return [
+            f"{m['required_skill']} (via {m['matched_with']})" if m.get("matched_with") else m["required_skill"]
+            for m in items
+            if m.get("required_skill")
+        ]
+
+    if transferable:
+        lines.append(f"Covered via a closely related skill: {', '.join(_via(transferable))}")
+    if learnable:
+        lines.append(f"Not on your CV, but learnable from adjacent experience: {', '.join(_via(learnable))}")
 
     eligibility = [e for e in (gap.get("eligibility") or []) if isinstance(e, dict)]
     if eligibility:
@@ -453,13 +461,14 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
     if report.get("interpretation"):
         lines.append("")
         lines.append(report["interpretation"])
-    if missing_required and not transferable_bridges:
+    gaps_required = missing_required + [
+        m["required_skill"] for m in learnable if m.get("required_skill") and m.get("is_required", True)
+    ]
+    if gaps_required:
         lines.append(
-            "\nNote: none of these required-skill gaps can be bridged from your current CV "
-            "content - the rewrite step can only rephrase what's already there, not invent "
-            "missing skills. If you have any real exposure to "
-            f"{', '.join(missing_required)} (a course, a side project, brief use on the job), "
-            "add it to your CV before this step so it can be surfaced."
+            "\nNote: the rewrite step only rephrases what's already on your CV; it will not add "
+            f"{', '.join(gaps_required)}. If you have any real exposure to them (a course, a side "
+            "project, brief use on the job), add it to your CV before this step so it can be surfaced."
         )
     unclear = [e.get("requirement") for e in eligibility if e.get("status") == "unclear"]
     if unclear:

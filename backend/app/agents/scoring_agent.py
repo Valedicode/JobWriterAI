@@ -30,7 +30,7 @@ from functools import lru_cache
 import json
 import re
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Literal, Optional, Tuple
 
 import numpy as np
 from rank_bm25 import BM25Okapi
@@ -487,22 +487,37 @@ def _embedding_transferability(
 # LLM Transferability Assessment
 # ============================================
 
+TransferVerdict = Literal["same_family", "adjacent", "distant", "none"]
+
+# The judge names a category; the score comes from this table, not from the
+# model. A free 0-1 number put the judge's "adjacent" band (0.55-0.75) right
+# on TRANSFERABLE_THRESHOLD, so any adjacent skill - Spring Boot via Django -
+# counted as covered. Only same_family clears the threshold; adjacent is a
+# learnable gap with partial credit.
+VERDICT_SCORES: Dict[str, Tuple[str, float]] = {
+    "same_family": ("transferable", 0.80),
+    "adjacent": ("learnable", 0.45),
+    "distant": ("missing", 0.25),
+    "none": ("missing", 0.0),
+}
+
+
 class _LLMTransferabilityItem(BaseModel):
     """Schema for a single LLM-judged transferability assessment."""
     required_skill: str = Field(description="The required skill being assessed")
     best_candidate_skill: Optional[str] = Field(
         default=None,
-        description="Best candidate skill that could bridge to the required skill, if any"
+        description="Best candidate skill that relates to the required skill, if any"
     )
-    transferability: float = Field(
-        ge=0.0, le=1.0,
-        description="0-1 score for how well candidate skills cover this requirement"
+    verdict: TransferVerdict = Field(
+        description=(
+            "same_family: interchangeable tools of one kind (React/Vue, Postgres/MySQL); "
+            "adjacent: related but a different paradigm or ecosystem, real learning needed "
+            "(Django -> Spring Boot, Python -> Go); distant: same broad field only; "
+            "none: unrelated or nothing on the CV"
+        )
     )
-    rationale: str = Field(description="Short explanation of the transferability judgment")
-    bridge_bullet: Optional[str] = Field(
-        default=None,
-        description="Suggested resume bullet phrasing that surfaces the bridge skill (only when transferability >= 0.55)"
-    )
+    rationale: str = Field(description="Short explanation of the judgment")
 
 
 class _LLMTransferabilityBatch(BaseModel):
@@ -531,30 +546,30 @@ def _assess_transferability_llm(
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a senior staff engineer and technical recruiter.
 
-For each required skill, decide how well the candidate's declared skills and
-experience cover it. Think in terms of underlying paradigms and learning curve,
-not surface keywords:
+For each required skill, decide how the candidate's declared skills and
+experience relate to it. Think in terms of underlying paradigms and learning
+curve, not surface keywords, and pick exactly one verdict:
 
-- Frameworks in the same family (e.g. React/Vue/Angular, PyTorch/TensorFlow,
-  Postgres/MySQL) are highly transferable - rate 0.80-0.92.
-- Cross-paradigm but adjacent (e.g. Java -> Kotlin, Python -> Ruby,
-  REST -> GraphQL) - rate 0.55-0.75.
-- Same general domain but meaningful learning curve (e.g. frontend -> backend
-  in same language) - rate 0.35-0.55.
-- Genuinely missing or unrelated - rate 0.0-0.30.
+- same_family: the candidate holds an interchangeable tool of the same kind,
+  productive within days (React <-> Vue, PyTorch <-> TensorFlow,
+  Postgres <-> MySQL).
+- adjacent: related, but a different paradigm, language, or ecosystem; real
+  learning is needed (Django -> Spring Boot, Python -> Go, REST -> GraphQL,
+  Java -> Kotlin).
+- distant: only the same broad field (frontend -> embedded, data analysis ->
+  backend APIs).
+- none: unrelated, or the CV shows nothing relevant.
 
-Score 1.0 only if the candidate already lists the exact skill.
+The candidate does not hold the required skill itself; skills they list
+verbatim were matched before this step. When in doubt between two verdicts,
+choose the lower one: overstating coverage misleads the candidate more than
+understating it.
 
 For each item return:
-- required_skill: echo the input
+- required_skill: echo the input exactly
 - best_candidate_skill: the single most relevant candidate skill (or null)
-- transferability: 0-1 (calibrated as above)
-- rationale: 1-2 sentences explaining the bridge or why it's missing
-- bridge_bullet: ONLY when transferability >= 0.55, draft a single resume bullet
-  (<= 25 words, action-verb led, no fabrication) that surfaces the candidate's
-  existing experience in language that demonstrates readiness for the required
-  skill. Use only facts implied by the candidate's declared skills/experience.
-  Otherwise return null.
+- verdict: one of same_family, adjacent, distant, none
+- rationale: 1-2 sentences naming what the candidate has and what they'd need to learn
 """),
         ("user", """Candidate declared skills:
 {candidate_skills}
@@ -665,6 +680,36 @@ def _collapse_required_skill_groups(
     return passthrough + collapsed
 
 
+def _match_from_verdict(unresolved: SkillMatch, judged: "_LLMTransferabilityItem") -> SkillMatch:
+    """
+    Turn the judge's verdict into a SkillMatch.
+
+    The curated skill graph outranks the judge: when it places the required
+    skill and the candidate's skill in different families (Spring Boot in
+    JVM frameworks, Django in Python frameworks), they are not the same
+    thing, so "same_family" is capped at "adjacent" - learnable, not covered.
+    """
+    verdict = judged.verdict
+    candidate = judged.best_candidate_skill
+    if verdict == "same_family" and candidate:
+        required_family = skill_graph_service.find_family(unresolved.required_skill)
+        candidate_family = skill_graph_service.find_family(candidate)
+        if required_family and candidate_family and required_family != candidate_family:
+            verdict = "adjacent"
+    if not candidate and verdict in ("same_family", "adjacent"):
+        verdict = "distant"  # nothing on the CV to build on
+    kind, score = VERDICT_SCORES[verdict]
+    return SkillMatch(
+        required_skill=unresolved.required_skill,
+        matched_with=candidate,
+        kind=kind,
+        transferability=score,
+        rationale=judged.rationale,
+        bridge_bullet=None,
+        is_required=unresolved.is_required,
+    )
+
+
 def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> List[SkillMatch]:
     """
     Resolve every required and preferred job skill against the candidate's CV
@@ -763,26 +808,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
                 judged = llm_results.get(_norm_key(m.required_skill))
                 if judged is None:
                     continue
-                if judged.transferability >= TRANSFERABLE_THRESHOLD:
-                    matches[idx] = SkillMatch(
-                        required_skill=m.required_skill,
-                        matched_with=judged.best_candidate_skill,
-                        kind="transferable",
-                        transferability=float(judged.transferability),
-                        rationale=judged.rationale,
-                        bridge_bullet=judged.bridge_bullet,
-                        is_required=m.is_required,
-                    )
-                else:
-                    matches[idx] = SkillMatch(
-                        required_skill=m.required_skill,
-                        matched_with=judged.best_candidate_skill,
-                        kind="missing",
-                        transferability=float(judged.transferability),
-                        rationale=judged.rationale,
-                        bridge_bullet=None,
-                        is_required=m.is_required,
-                    )
+                matches[idx] = _match_from_verdict(m, judged)
 
     # 5. Collapse OR-alternative requirement groups (see
     # `required_skill_groups` on JobRequirements) AFTER every skill has been
@@ -846,7 +872,8 @@ def assess_transferability_llm(unresolved_pairs_json: str) -> str:
 
     Returns:
         JSON list of assessments, each with required_skill, best_candidate_skill,
-        transferability (0-1), rationale, and bridge_bullet (when applicable).
+        verdict (same_family / adjacent / distant / none; scored via
+        VERDICT_SCORES), and rationale.
     """
     try:
         payload = json.loads(unresolved_pairs_json) if isinstance(unresolved_pairs_json, str) else unresolved_pairs_json
@@ -1195,11 +1222,35 @@ def _score_eligibility(checks: List[EligibilityCheck]) -> Tuple[float, str]:
 # Dimension Scorers
 # ============================================
 
-def _bucket_counts(matches: List[SkillMatch]) -> Tuple[int, int, int]:
-    """(matched, transferable, missing) using the same thresholds as GapAnalysis."""
-    matched = sum(1 for m in matches if m.transferability >= MATCHED_THRESHOLD)
-    transferable = sum(1 for m in matches if TRANSFERABLE_THRESHOLD <= m.transferability < MATCHED_THRESHOLD)
-    return matched, transferable, len(matches) - matched - transferable
+SkillBucket = Literal["matched", "transferable", "learnable", "missing"]
+
+
+def _bucket(match: SkillMatch) -> SkillBucket:
+    """The GapAnalysis bucket of one match. Learnable is decided by kind, not
+    score, so a learnable skill never drifts into 'transferable' (covered)."""
+    if match.kind == "learnable":
+        return "learnable"
+    if match.transferability >= MATCHED_THRESHOLD:
+        return "matched"
+    if match.transferability >= TRANSFERABLE_THRESHOLD:
+        return "transferable"
+    return "missing"
+
+
+def _bucket_counts(matches: List[SkillMatch]) -> Tuple[int, int, int, int]:
+    """(matched, transferable, learnable, missing), the same split as GapAnalysis."""
+    buckets = [_bucket(m) for m in matches]
+    return (buckets.count("matched"), buckets.count("transferable"),
+            buckets.count("learnable"), buckets.count("missing"))
+
+
+def _bucket_summary(matches: List[SkillMatch]) -> str:
+    matched, transferable, learnable, missing = _bucket_counts(matches)
+    parts = [f"{matched} matched", f"{transferable} transferable"]
+    if learnable:
+        parts.append(f"{learnable} learnable")
+    parts.append(f"{missing} missing")
+    return ", ".join(parts)
 
 
 def _score_hard_skills(matches: List[SkillMatch], job_level: str = "") -> Tuple[float, str]:
@@ -1237,12 +1288,10 @@ def _score_hard_skills(matches: List[SkillMatch], job_level: str = "") -> Tuple[
 
     parts: List[str] = []
     if required:
-        rm, rt, rx = _bucket_counts(required)
-        parts.append(f"Required: {rm} matched, {rt} transferable, {rx} missing of {len(required)}.")
+        parts.append(f"Required: {_bucket_summary(required)} of {len(required)}.")
     if preferred:
-        pm, pt, px = _bucket_counts(preferred)
         parts.append(
-            f"Preferred: {pm} matched, {pt} transferable, {px} missing of {len(preferred)} "
+            f"Preferred: {_bucket_summary(preferred)} of {len(preferred)} "
             f"(weighted {int(round(pw * 100))}% for a {bucket}-level role)."
         )
     return score, " ".join(parts)
@@ -1560,13 +1609,22 @@ def _interpret_report(
     parts = [f"Overall {level} compatibility."]
     req_missing = [m.required_skill for m in gap.missing_skills if m.is_required]
     pref_missing = [m.required_skill for m in gap.missing_skills if not m.is_required]
-    req_total = sum(1 for m in gap.matched_skills + gap.transferable_skills + gap.missing_skills if m.is_required)
+    # Covered means held, or held via an interchangeable related skill. A
+    # learnable skill is still a gap and is named as one.
+    req_covered = sum(1 for m in gap.matched_skills + gap.transferable_skills if m.is_required)
+    req_total = req_covered + sum(1 for m in gap.learnable_skills + gap.missing_skills if m.is_required)
     if req_total:
-        parts.append(f"Required skills: {req_total - len(req_missing)} of {req_total} covered.")
+        parts.append(f"Required skills: {req_covered} of {req_total} covered.")
     if req_missing:
         parts.append(f"Genuine gaps on required skills: {', '.join(req_missing)}.")
     if gap.transferable_skills:
-        parts.append(f"{len(gap.transferable_skills)} skills can be bridged from adjacent experience.")
+        parts.append(f"{len(gap.transferable_skills)} skills are covered via a closely related skill.")
+    learnable = [
+        f"{m.required_skill} (via {m.matched_with})" if m.matched_with else m.required_skill
+        for m in gap.learnable_skills
+    ]
+    if learnable:
+        parts.append(f"Not on the CV but learnable from adjacent experience: {', '.join(learnable)}.")
     if pref_missing:
         parts.append(f"Nice-to-haves not on the CV: {', '.join(pref_missing)}.")
     unmet = [c.requirement for c in gap.eligibility if c.status == "unmet"]
@@ -1702,23 +1760,17 @@ def _build_gap_analysis_internal(
     job_data: Dict[str, Any],
     eligibility: Optional[List[EligibilityCheck]] = None,
 ) -> GapAnalysis:
-    matched: List[SkillMatch] = []
-    transferable: List[SkillMatch] = []
-    missing: List[SkillMatch] = []
+    buckets: Dict[str, List[SkillMatch]] = {"matched": [], "transferable": [], "learnable": [], "missing": []}
     for m in matches:
-        if m.transferability >= MATCHED_THRESHOLD:
-            matched.append(m)
-        elif m.transferability >= TRANSFERABLE_THRESHOLD:
-            transferable.append(m)
-        else:
-            missing.append(m)
+        buckets[_bucket(m)].append(m)
     over = _detect_over_qualified_signals(cv_data, job_data, matches)
     if eligibility is None:
         eligibility = _check_eligibility(cv_data, job_data)
     return GapAnalysis(
-        matched_skills=matched,
-        transferable_skills=transferable,
-        missing_skills=missing,
+        matched_skills=buckets["matched"],
+        transferable_skills=buckets["transferable"],
+        learnable_skills=buckets["learnable"],
+        missing_skills=buckets["missing"],
         over_qualified_signals=over,
         eligibility=eligibility,
     )

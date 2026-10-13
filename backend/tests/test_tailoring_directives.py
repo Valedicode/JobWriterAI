@@ -29,7 +29,7 @@ from app.agents.writer_agent import (
 from app.models.schemas import CompatibilityReport, RewrittenContent, SelectedContent
 
 
-def _report(*, transferable=None, matched=None, missing=None, ats_score=0.9) -> CompatibilityReport:
+def _report(*, transferable=None, matched=None, missing=None, learnable=None, ats_score=0.9) -> CompatibilityReport:
     return CompatibilityReport.model_validate({
         "aggregate_score": 0.7,
         "level": "high",
@@ -41,6 +41,7 @@ def _report(*, transferable=None, matched=None, missing=None, ats_score=0.9) -> 
         "gap_analysis": {
             "matched_skills": matched or [],
             "transferable_skills": transferable or [],
+            "learnable_skills": learnable or [],
             "missing_skills": missing or [],
         },
     })
@@ -64,6 +65,16 @@ def test_transferable_skill_never_ships_drafted_bullet_text():
     bridge = next(d for d in directives if d["type"] == "surface_adjacent_experience")
     assert bridge["candidate_skill"] == "Django"
     assert "Do not claim Spring Boot" in bridge["guidance"]
+
+
+def test_learnable_skill_only_surfaces_the_adjacent_experience():
+    learnable = {**SPRING_VIA_DJANGO, "kind": "learnable", "transferability": 0.45, "bridge_bullet": None}
+    strategy = _build_directives_from_report(_report(learnable=[learnable]))
+    bridge = next(d for d in strategy["directives"] if d["type"] == "surface_adjacent_experience")
+    assert bridge["candidate_skill"] == "Django"
+    assert "Do not claim Spring Boot" in bridge["guidance"]
+    assert not any(d["type"] == "handle_missing_skills" for d in strategy["directives"])
+    assert strategy["summary"]["learnable_skills_count"] == 1
 
 
 def test_transferable_skill_without_candidate_emits_no_directive():

@@ -630,3 +630,93 @@ def test_ats_score_is_verbatim_term_coverage():
     # Java + Spring Boot present verbatim; Quarkus, WildFly, Kubernetes, Kafka, Terraform absent
     assert score == pytest.approx(2 / 7)
     assert "Quarkus" in rationale
+
+
+# ---------------------------------------------------------------------------
+# Learnable vs covered (H3)
+#
+# Regression: the LLM judge rated "adjacent" skills 0.55-0.75, exactly on
+# TRANSFERABLE_THRESHOLD, so Spring Boot / WildFly / Quarkus counted as
+# covered ("Missing: 0") for a CV that only shows Django.
+# ---------------------------------------------------------------------------
+
+from app.agents.scoring_agent import (  # noqa: E402
+    VERDICT_SCORES,
+    _LLMTransferabilityItem,
+    _match_skill_pairs_internal,
+)
+
+DJANGO_CV = {**MINIMAL_CV, "skills": ["Python", "Django"], "experience": [], "projects": []}
+
+
+def _judge(**verdicts):
+    """Stub for _assess_transferability_llm: {required_skill: (verdict, candidate)}."""
+    return {
+        skill.casefold(): _LLMTransferabilityItem(
+            required_skill=skill, best_candidate_skill=candidate, verdict=verdict, rationale="stub"
+        )
+        for skill, (verdict, candidate) in verdicts.items()
+    }
+
+
+def _matches_for(job, judged):
+    with patch("app.agents.scoring_agent._embedding_transferability", return_value=None), \
+         patch("app.agents.scoring_agent._assess_transferability_llm", return_value=judged):
+        return {m.required_skill: m for m in _match_skill_pairs_internal(DJANGO_CV, job)}
+
+
+def test_adjacent_verdict_is_learnable_not_covered():
+    job = {**MINIMAL_JOB, "required_skills": ["Python", "Spring Boot"], "preferred_skills": []}
+    m = _matches_for(job, _judge(**{"Spring Boot": ("adjacent", "Django")}))["Spring Boot"]
+    assert m.kind == "learnable"
+    assert m.transferability == VERDICT_SCORES["adjacent"][1] < TRANSFERABLE_THRESHOLD
+    assert m.matched_with == "Django"
+    assert m.bridge_bullet is None
+
+
+def test_skill_graph_overrules_a_same_family_verdict_across_families():
+    # Spring Boot (backend_jvm) and Django (backend_python) are different
+    # families in the curated graph, so the judge cannot call them the same kind.
+    job = {**MINIMAL_JOB, "required_skills": ["Spring Boot"], "preferred_skills": []}
+    m = _matches_for(job, _judge(**{"Spring Boot": ("same_family", "Django")}))["Spring Boot"]
+    assert m.kind == "learnable"
+
+
+def test_same_family_verdict_outside_the_graph_still_counts_as_covered():
+    job = {**MINIMAL_JOB, "required_skills": ["Litestar"], "preferred_skills": []}
+    m = _matches_for(job, _judge(Litestar=("same_family", "Django")))["Litestar"]
+    assert m.kind == "transferable"
+    assert m.transferability >= TRANSFERABLE_THRESHOLD
+
+
+def test_verdict_without_a_candidate_skill_is_missing():
+    job = {**MINIMAL_JOB, "required_skills": ["Spring Boot"], "preferred_skills": []}
+    m = _matches_for(job, _judge(**{"Spring Boot": ("adjacent", None)}))["Spring Boot"]
+    assert m.kind == "missing"
+
+
+def test_report_names_learnable_skills_and_does_not_count_them_covered():
+    job = {
+        **MINIMAL_JOB,
+        "required_skills": ["Python", "WildFly", "Quarkus", "Spring Boot"],
+        "required_skill_groups": [["Python"], ["WildFly", "Quarkus", "Spring Boot"]],
+        "preferred_skills": [],
+    }
+    judged = _judge(**{
+        "WildFly": ("distant", "Django"),
+        "Quarkus": ("adjacent", "Django"),
+        "Spring Boot": ("same_family", "Django"),  # capped to adjacent by the graph
+    })
+    with patch("app.agents.scoring_agent.get_embeddings", return_value=[[1.0] + [0.0] * 1535]), \
+         patch("app.agents.scoring_agent._embedding_transferability", return_value=None), \
+         patch("app.agents.scoring_agent._assess_transferability_llm", return_value=judged):
+        report = _calculate_compatibility_score_v2_internal(DJANGO_CV, job)
+
+    gap = report.gap_analysis
+    assert [m.required_skill for m in gap.learnable_skills] == ["WildFly / Quarkus / Spring Boot"]
+    assert not gap.transferable_skills
+    assert not gap.missing_skills
+    assert "Required skills: 1 of 2 covered." in report.interpretation
+    assert "learnable from adjacent experience: WildFly / Quarkus / Spring Boot (via Django)" in report.interpretation
+    hard = next(d for d in report.dimensions if d.name == "hard_skills")
+    assert "1 learnable" in hard.rationale
