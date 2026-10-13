@@ -26,7 +26,7 @@ Data Models:
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from app.openai_llm import chat_openai_mini
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_tavily import TavilySearch
@@ -125,7 +125,7 @@ def retrieve_web(web_urls: list[str]) -> str:
     loader = WebBaseLoader(web_urls)
     docs = loader.load()
     text_content = "\n\n".join([page.page_content for page in docs])
-    llm = ChatOpenAI(model="gpt-4o-mini")
+    llm = chat_openai_mini(temperature=None)
     prompt = ChatPromptTemplate.from_messages([
        ("system", _JOB_EXTRACTION_SYSTEM_PROMPT),
        ("user", "Here are the pages necessary for application {pages}")
@@ -146,7 +146,7 @@ def retrieve_text(info: str) -> str:
     Returns:
         JSON string with structured job requirements information
     """
-    llm = ChatOpenAI(model="gpt-4o-mini")
+    llm = chat_openai_mini(temperature=None)
     prompt = ChatPromptTemplate.from_messages([
        ("system", _JOB_EXTRACTION_SYSTEM_PROMPT),
        ("user", "Here is the text necessary for application {text}")
@@ -179,7 +179,7 @@ def collect_company_info(company_name: str) -> str:
         for result in search_results
     ])
 
-    llm = ChatOpenAI(model="gpt-4o-mini")
+    llm = chat_openai_mini(temperature=None)
     structured_llm = llm.with_structured_output(CompanyInfo)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Extract structured company information from the search results. Focus on identifying company values, culture, mission statement, industry, company size, products/services, and recent news that would be relevant for someone applying to this company."),
@@ -190,7 +190,7 @@ def collect_company_info(company_name: str) -> str:
     result = chain.invoke({"company_name": company_name, "search_results": formatted_results})
     return result.model_dump_json(indent=2)
 
-llm = ChatOpenAI(model="gpt-4o-mini")
+llm = chat_openai_mini(temperature=None)
 system_prompt = """You are a job analysis assistant. Your role is to help users gather comprehensive information about job postings and companies.
 
 Your available tools:

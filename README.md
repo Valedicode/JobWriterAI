@@ -89,7 +89,8 @@ Use `backend/env.example` as a reference; at minimum you should set:
 
 ```bash
 # backend/.env
-# OPENAI_API_KEY=your_openai_api_key_here
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+# OPENAI_API_KEY=your_openai_api_key_here  (voice transcription, or LLM fallback)
 # ANTHROPIC_API_KEY=your_anthropic_api_key_here
 # GEMINI_API_KEY=your_gemini_api_key_here
 # GROQ_API_KEY=your_groq_api_key_here

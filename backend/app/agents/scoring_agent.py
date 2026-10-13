@@ -24,11 +24,10 @@ from __future__ import annotations
 
 from pydantic import Field, BaseModel
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from app.openai_llm import chat_openai_mini, model_id, openai_client
 from langchain_core.prompts import ChatPromptTemplate
 from functools import lru_cache
 import json
-import os
 import re
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
@@ -51,11 +50,8 @@ from app.services import skill_graph as skill_graph_service
 # ============================================
 
 def _get_openai_client() -> OpenAI:
-    """Get OpenAI client for embeddings."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY not found in environment variables")
-    return OpenAI(api_key=api_key)
+    """Get the OpenAI-compatible client for embeddings (OpenRouter or OpenAI)."""
+    return openai_client()
 
 
 # ============================================
@@ -88,7 +84,7 @@ def get_embeddings(texts: List[str], model: str = "text-embedding-3-small") -> L
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         response = client.embeddings.create(
-            model=model,
+            model=model_id(model),
             input=batch
         )
         batch_embeddings = [item.embedding for item in response.data]
@@ -463,7 +459,7 @@ def _assess_transferability_llm(
     if not unresolved_required:
         return {}
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_openai_mini(temperature=0)
     structured_llm = llm.with_structured_output(_LLMTransferabilityBatch)
 
     prompt = ChatPromptTemplate.from_messages([
