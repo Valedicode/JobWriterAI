@@ -22,8 +22,12 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
 
-    # Database
-    database_url: str = "postgresql://localhost:5432/jobwriterai"
+    # Database: orchestrator sessions (LangGraph checkpoints) are stored here.
+    # Unset -> in-memory only, and every restart loses all sessions.
+    database_url: Optional[str] = None
+    # Sessions (and the CV data in them) are deleted this long after their
+    # last activity.
+    session_ttl_hours: float = 24.0
 
     # Application
     app_name: str = "JobWriterAI"
