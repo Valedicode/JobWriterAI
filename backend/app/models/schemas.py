@@ -656,6 +656,10 @@ class OrchestratorGateResolution(BaseModel):
             "'accept'/'include'."
         ),
     )
+    answers: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Answers keyed by question id, for gates whose preview lists `questions` (confirm_eligibility).",
+    )
 
 
 class OrchestratorStartRequest(BaseModel):

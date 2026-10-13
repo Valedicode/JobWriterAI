@@ -5,6 +5,7 @@ import { EmptyState } from './EmptyState';
 import { ApprovalGate } from './ApprovalGate';
 import { ChoiceGate } from './ChoiceGate';
 import { InputGate } from './InputGate';
+import { EligibilityGate } from './EligibilityGate';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 interface ChatContainerProps {
@@ -25,7 +26,12 @@ interface ChatContainerProps {
   pendingGate?: OrchestratorGatePayload | null;
   onSubmitGateResolution?: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> }
+    opts?: {
+      feedback?: string;
+      choice?: string;
+      decisions?: Record<string, BulletDecision>;
+      answers?: Record<string, string>;
+    }
   ) => void | Promise<void>;
 }
 
@@ -109,7 +115,13 @@ export const ChatContainer = ({
           key={pendingGate.step}
           className="gate-in border-t border-border bg-surface-sunken px-6 py-4"
         >
-          {pendingGate.kind === 'choice' ? (
+          {pendingGate.step === 'confirm_eligibility' ? (
+            <EligibilityGate
+              gate={pendingGate}
+              isLoading={isLoading}
+              onSubmit={onSubmitGateResolution}
+            />
+          ) : pendingGate.kind === 'choice' ? (
             <ChoiceGate
               gate={pendingGate}
               isLoading={isLoading}

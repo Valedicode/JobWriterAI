@@ -27,6 +27,7 @@ from langchain_core.tools import tool
 from app.openai_llm import chat_openai_mini, model_id, openai_client
 from langchain_core.prompts import ChatPromptTemplate
 from functools import lru_cache
+import copy
 import json
 import re
 from datetime import datetime
@@ -1137,7 +1138,7 @@ def _check_education(requirement: str, entries: List[Tuple[str, str]]) -> Eligib
     want_level = _degree_level_in(requirement)
     related_ok = bool(_RELATED_FIELD_RE.search(req_low))
 
-    if not wants_enrollment and not want_fields and want_level is None:
+    if not _education_is_checkable(requirement):
         return EligibilityCheck(requirement=requirement, kind="education", status="unclear",
                                 rationale="Requirement is too vague to check automatically.")
     if not entries:
@@ -1202,6 +1203,178 @@ def _check_eligibility(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Lis
         entries = _cv_education_entries(cv_data)
         checks.extend(_check_education(req, entries) for req in education)
     return checks
+
+
+# ============================================
+# Eligibility questions — asking instead of guessing
+# ============================================
+#
+# An 'unclear' requirement means the CV is silent. Rather than leaving it
+# unscored for good, the orchestrator asks the user (confirm_eligibility
+# gate) and feeds the answers back through the same deterministic checks.
+
+LANGUAGE_LEVEL_OPTIONS: List[str] = ["native", "C2", "C1", "B2", "B1", "A2", "A1", "none"]
+_NEGATIVE_ANSWERS = {"no", "none", "nein", "keine", "kein", "n", "-"}
+_LEVEL_OPTION_BY_ORDINAL = {7: "native", 6: "C2", 5: "C1", 4: "B2", 3: "B1", 2: "A2", 1: "A1"}
+
+
+def _education_is_checkable(requirement: str) -> bool:
+    """False for requirements too vague for _check_education ('good education')."""
+    return bool(
+        _ENROLLMENT_RE.search(requirement.casefold())
+        or _fields_in(requirement)
+        or _degree_level_in(requirement) is not None
+    )
+
+
+def eligibility_questions(checks: List[Any]) -> List[Dict[str, Any]]:
+    """
+    One question per unclear requirement the user can settle: a language
+    level, current enrollment, or the degree when the CV lists none.
+    Requirements too vague to check get no question. Ids are positional
+    (q0, q1, ...) and stable for the same report.
+    """
+    questions: List[Dict[str, Any]] = []
+    for raw in checks or []:
+        check = raw if isinstance(raw, EligibilityCheck) else EligibilityCheck.model_validate(raw)
+        if check.status != "unclear":
+            continue
+        question: Dict[str, Any] = {"requirement": check.requirement, "kind": check.kind}
+        if check.kind == "language":
+            language = _parse_language(check.requirement)[0]
+            if not language:
+                continue
+            question.update(
+                language=language.title(),
+                prompt=f"What is your {language.title()} level?",
+                options=LANGUAGE_LEVEL_OPTIONS,
+            )
+        else:
+            if not _education_is_checkable(check.requirement):
+                continue
+            if check.matched_with:
+                question.update(
+                    matched_with=check.matched_with,
+                    prompt=(
+                        f"Are you currently enrolled in {check.matched_with}? If so, when do you "
+                        "expect to graduate? Answer 'no' if you're not enrolled."
+                    ),
+                    placeholder="e.g. Expected: September 2027",
+                )
+            else:
+                question.update(
+                    prompt="Which degree or study program have you completed or are you enrolled in? Answer 'no' if none.",
+                    placeholder="e.g. B.Sc. Computer Science, expected 2027",
+                )
+        question["id"] = f"q{len(questions)}"
+        questions.append(question)
+    return questions
+
+
+def eligibility_answers_from_text(questions: List[Dict[str, Any]], text: str) -> Dict[str, str]:
+    """
+    Best-effort answers from free text such as "German native, English C1",
+    for answers that arrive through chat instead of the form. Only language
+    levels are read this way; anything ambiguous is left unanswered.
+    """
+    answers: Dict[str, str] = {}
+    segments = [s for s in re.split(r"[,;\n]|\band\b|\bund\b", text or "", flags=re.IGNORECASE) if s.strip()]
+    for q in questions:
+        if q.get("kind") != "language":
+            continue
+        for segment in segments:
+            language, level = _parse_language(segment)
+            if language and language.title() == q["language"] and level is not None:
+                answers[q["id"]] = _LEVEL_OPTION_BY_ORDINAL[level]
+                break
+    return answers
+
+
+def rescore_eligibility(
+    report: CompatibilityReport,
+    cv_data: Dict[str, Any],
+    job_data: Dict[str, Any],
+    overrides: Optional[Dict[str, EligibilityCheck]] = None,
+) -> CompatibilityReport:
+    """
+    Recompute eligibility (and with it the aggregate, level and
+    interpretation) for an updated CV without re-running the embedding and
+    LLM parts of scoring. ``overrides`` replaces the computed check for a
+    requirement, keyed by requirement text.
+    """
+    overrides = overrides or {}
+    checks = [overrides.get(c.requirement, c) for c in _check_eligibility(cv_data, job_data)]
+    other_warnings = [w for w in report.warnings if not w.startswith("Level capped")]
+    return _finish_report(report.dimensions, checks, report.gap_analysis, other_warnings)
+
+
+def apply_eligibility_answers(
+    cv_data: Dict[str, Any],
+    job_data: Dict[str, Any],
+    report: CompatibilityReport,
+    answers: Dict[str, str],
+) -> Tuple[Dict[str, Any], CompatibilityReport, List[str]]:
+    """
+    Fold the user's confirm_eligibility answers into the CV and the report.
+
+    - A language level is added to the CV's languages (the user stated it,
+      and DACH postings expect a Languages section); 'none' marks it unmet.
+    - Enrollment / degree answers are checked with the same rules as CV
+      entries but are not written into the CV's education entries, which
+      would restructure them; the narration suggests adding them instead.
+    - Questions left unanswered keep their 'unclear' status: adding one
+      language must not turn every other language requirement into "CV
+      lists languages but not X".
+
+    Returns (updated cv_data, rescored report, notes for the narration).
+    """
+    questions = eligibility_questions(report.gap_analysis.eligibility)
+    previous = {c.requirement: c for c in report.gap_analysis.eligibility}
+    cv = copy.deepcopy(cv_data)
+    overrides: Dict[str, EligibilityCheck] = {}
+    notes: List[str] = []
+    education_entries = {label: text for text, label in _cv_education_entries(cv)}
+
+    for q in questions:
+        requirement = q["requirement"]
+        answer = (answers.get(q["id"]) or "").strip()
+        if not answer:
+            overrides[requirement] = previous[requirement]
+            continue
+        negative = answer.casefold() in _NEGATIVE_ANSWERS
+        if q["kind"] == "language":
+            if negative:
+                overrides[requirement] = EligibilityCheck(
+                    requirement=requirement, kind="language", status="unmet",
+                    rationale=f"You said you don't speak {q['language']}.",
+                )
+            else:
+                languages = cv.get("languages")
+                if not isinstance(languages, list):
+                    languages = []
+                languages.append({"language": q["language"], "fluency": answer})
+                cv["languages"] = languages
+                notes.append(f"Added {q['language']} ({answer}) to your CV's Languages section.")
+            continue
+
+        if negative:
+            overrides[requirement] = EligibilityCheck(
+                requirement=requirement, kind="education", status="unmet",
+                rationale="You said this does not apply to you.",
+            )
+            continue
+        label = q.get("matched_with") or answer
+        entry_text = education_entries.get(q.get("matched_with") or "", "")
+        check = _check_education(requirement, [(f"{entry_text} {answer}".strip(), label)])
+        overrides[requirement] = check.model_copy(update={
+            "rationale": f"You confirmed: {answer}. {check.rationale}",
+        }) if check.status != "unclear" else previous[requirement]
+        notes.append(
+            f"Noted '{answer}' for scoring. Your CV doesn't show it yet; add it to the "
+            "education entry if you want recruiters to see it."
+        )
+
+    return cv, rescore_eligibility(report, cv, job_data, overrides), notes
 
 
 def _score_eligibility(checks: List[EligibilityCheck]) -> Tuple[Optional[float], str]:

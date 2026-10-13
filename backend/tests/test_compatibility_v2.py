@@ -768,3 +768,94 @@ def test_cv_without_languages_section_is_not_penalised():
     assert {c.status for c in silent.gap_analysis.eligibility} == {"unclear"}
     assert "not scored until you confirm: German (C1), English (fluent)" in silent.interpretation
     assert not silent.warnings
+
+
+# ---------------------------------------------------------------------------
+# Asking instead of guessing: eligibility questions and answers
+# ---------------------------------------------------------------------------
+
+from app.agents.scoring_agent import (  # noqa: E402
+    apply_eligibility_answers,
+    eligibility_answers_from_text,
+    eligibility_questions,
+)
+
+SILENT_CV = {
+    **STUDENT_CV,
+    "languages": [],
+    "education": [{"institution": "RWTH Aachen", "degree": "B.Sc. Computer Science", "dates": "2023"}],
+}
+
+
+def _silent_report(cv=SILENT_CV, job=STUDENT_JOB) -> CompatibilityReport:
+    with patch("app.agents.scoring_agent.get_embeddings", return_value=[[1.0] + [0.0] * 1535]), \
+         patch("app.agents.scoring_agent._embedding_transferability", return_value=None), \
+         patch("app.agents.scoring_agent._assess_transferability_llm", return_value={}):
+        return _calculate_compatibility_score_v2_internal(cv, job)
+
+
+def test_questions_cover_each_unclear_requirement():
+    questions = eligibility_questions(_silent_report().gap_analysis.eligibility)
+    by_req = {q["requirement"]: q for q in questions}
+    assert [q["id"] for q in questions] == ["q0", "q1", "q2"]
+    assert by_req["German (C1)"]["language"] == "German"
+    assert by_req["German (C1)"]["options"][0] == "native"
+    enrollment = by_req["Enrolled student in Computer Science or a related field"]
+    assert enrollment["kind"] == "education"
+    assert enrollment["matched_with"] == "B.Sc. Computer Science"
+
+
+def test_vague_education_requirement_gets_no_question():
+    job = {**STUDENT_JOB, "required_languages": [], "education_requirements": ["Good education"]}
+    assert eligibility_questions(_silent_report(job=job).gap_analysis.eligibility) == []
+
+
+def test_answers_update_cv_and_rescore_without_touching_unanswered():
+    report = _silent_report()
+    assert "eligibility" not in {d.name for d in report.dimensions}
+    questions = {q["requirement"]: q["id"] for q in eligibility_questions(report.gap_analysis.eligibility)}
+
+    cv, rescored, notes = apply_eligibility_answers(
+        SILENT_CV, STUDENT_JOB, report,
+        {questions["German (C1)"]: "native",
+         questions["Enrolled student in Computer Science or a related field"]: "Expected: September 2027"},
+    )
+    status = {c.requirement: c.status for c in rescored.gap_analysis.eligibility}
+    assert status["German (C1)"] == "met"
+    # English was skipped: it must stay unclear, not become "CV lists languages but not English".
+    assert status["English (fluent)"] == "unclear"
+    assert status["Enrolled student in Computer Science or a related field"] == "met"
+    assert cv["languages"] == [{"language": "German", "fluency": "native"}]
+    assert cv["education"] == SILENT_CV["education"]  # enrollment is recorded for scoring only
+    assert SILENT_CV["languages"] == []  # input not mutated
+    elig = next(d for d in rescored.dimensions if d.name == "eligibility")
+    assert elig.score == pytest.approx(1.0)
+    assert any("Languages section" in n for n in notes)
+    # Only eligibility changed; the other dimensions are reused as they were.
+    assert {d.name: d.score for d in rescored.dimensions if d.name != "eligibility"} == \
+           {d.name: d.score for d in report.dimensions}
+
+
+def test_negative_and_low_answers_are_unmet_and_cap_the_level():
+    report = _silent_report()
+    questions = {q["requirement"]: q["id"] for q in eligibility_questions(report.gap_analysis.eligibility)}
+    _, rescored, _ = apply_eligibility_answers(
+        SILENT_CV, STUDENT_JOB, report,
+        {questions["German (C1)"]: "B1",
+         questions["English (fluent)"]: "none",
+         questions["Enrolled student in Computer Science or a related field"]: "no"},
+    )
+    status = {c.requirement: c.status for c in rescored.gap_analysis.eligibility}
+    assert set(status.values()) == {"unmet"}
+    assert rescored.level in ("low", "medium")
+    if report.level in ("high", "excellent"):
+        assert any(w.startswith("Level capped") for w in rescored.warnings)
+
+
+def test_answers_can_be_read_from_chat_text():
+    questions = eligibility_questions(_silent_report().gap_analysis.eligibility)
+    answers = eligibility_answers_from_text(questions, "I'm a native German speaker and my English is C1")
+    by_req = {q["requirement"]: answers.get(q["id"]) for q in questions}
+    assert by_req["German (C1)"] == "native"
+    assert by_req["English (fluent)"] == "C1"
+    assert by_req["Enrolled student in Computer Science or a related field"] is None

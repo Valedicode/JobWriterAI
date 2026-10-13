@@ -6,6 +6,7 @@
 
 const STEP_LABELS: Record<string, string> = {
   present_score: 'Compatibility',
+  confirm_eligibility: 'Requirements check',
   approve_selection: 'Bullet selection',
   approve_rewrite: 'Rewrite',
   cover_letter_language: 'Cover letter language',

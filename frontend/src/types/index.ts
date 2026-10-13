@@ -331,6 +331,20 @@ export interface OrchestratorGateResolution {
   choice?: string;
   /** Per-bullet decisions keyed by bullet_id, for approve_selection / approve_rewrite gates. */
   decisions?: Record<string, BulletDecision>;
+  /** Answers keyed by question id, for gates whose preview lists `questions` (confirm_eligibility). */
+  answers?: Record<string, string>;
+}
+
+/** One question in a confirm_eligibility gate preview. */
+export interface EligibilityQuestion {
+  id: string;
+  requirement: string;
+  kind: 'language' | 'education';
+  prompt: string;
+  language?: string;
+  options?: string[];
+  placeholder?: string;
+  matched_with?: string;
 }
 
 export interface OrchestratorStartRequest {
