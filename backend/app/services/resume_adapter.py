@@ -20,6 +20,7 @@ The output of ``build_harvard_sections`` feeds ``cv.tex.j2``:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 SECTION_LABELS: dict[str, str] = {
@@ -34,6 +35,61 @@ SECTION_LABELS: dict[str, str] = {
     "languages": "Languages",
     "interests": "Interests",
 }
+
+# Section titles for a CV whose content is in German.
+SECTION_LABELS_DE: dict[str, str] = {
+    "education": "Ausbildung",
+    "work": "Berufserfahrung",
+    "volunteer": "Engagement",
+    "projects": "Projekte",
+    "skills": "Kenntnisse",
+    "awards": "Auszeichnungen",
+    "certificates": "Zertifikate",
+    "publications": "Veröffentlichungen",
+    "languages": "Sprachen",
+    "interests": "Interessen",
+}
+
+# Words the adapter itself writes into the CV, per content language.
+_PHRASES = {
+    "english": {"grade": "Grade", "technologies": "Technologies", "present": "present", "skills": "Skills",
+                "languages": "Languages"},
+    "german": {"grade": "Note", "technologies": "Technologien", "present": "heute", "skills": "Kenntnisse",
+               "languages": "Sprachen"},
+}
+
+_MONTH_NUMBERS = {
+    name: n
+    for n, names in enumerate((
+        ("jan", "january", "januar", "jän", "jänner"), ("feb", "february", "februar"),
+        ("mar", "march", "mär", "märz", "maerz"), ("apr", "april"), ("may", "mai"),
+        ("jun", "june", "juni"), ("jul", "july", "juli"), ("aug", "august"),
+        ("sep", "sept", "september"), ("oct", "october", "okt", "oktober"),
+        ("nov", "november"), ("dec", "december", "dez", "dezember"),
+    ), start=1)
+    for name in names
+}
+_MONTH_YEAR_RE = re.compile(r"\b([A-Za-zÄÖÜäöü]{3,9})\.?\s+((?:19|20)\d{2})\b")
+_PRESENT_RE = re.compile(r"\b(present|current|now|today|ongoing|heute|aktuell|jetzt|dato)\b", re.IGNORECASE)
+_RANGE_DASH_RE = re.compile(r"\s*(?:--|–|—|-|\bto\b|\bbis\b)\s*")
+
+
+def format_dates_dach(text: str, language: str = "english") -> str:
+    """'Jan 2022 -- Present' -> '01/2022 – present' ('heute' in German).
+    Text without a recognisable month and year is left as it is."""
+    if not text:
+        return text
+
+    def month_year(match: "re.Match[str]") -> str:
+        month = _MONTH_NUMBERS.get(match.group(1).casefold())
+        return f"{month:02d}/{match.group(2)}" if month else match.group(0)
+
+    converted = _MONTH_YEAR_RE.sub(month_year, text)
+    converted = _PRESENT_RE.sub(_PHRASES.get(language, _PHRASES["english"])["present"], converted)
+    if converted == text:
+        return text
+    return _RANGE_DASH_RE.sub(" – ", converted, count=1)
+
 
 DEFAULT_SECTION_ORDER: list[str] = [
     "education",
@@ -551,16 +607,65 @@ def _resolve_section_order(section_order: list[str] | None) -> list[str]:
     return mapped
 
 
+def _localize_entries(entries: list[dict[str, Any]], language: str, convention: str) -> list[dict[str, Any]]:
+    """German wording for the adapter's own words, and DACH date style."""
+    if language != "german" and convention != "dach":
+        return entries
+    phrases = _PHRASES["german"] if language == "german" else _PHRASES["english"]
+    out = []
+    for entry in entries:
+        entry = dict(entry)
+        if "rows" in entry:
+            rows = []
+            for row in entry["rows"]:
+                row = dict(row)
+                if language == "german" and row["left"].startswith("Grade: "):
+                    row["left"] = f"{phrases['grade']}: " + row["left"][len("Grade: "):]
+                if convention == "dach":
+                    row["right"] = format_dates_dach(row["right"], language)
+                rows.append(row)
+            entry["rows"] = rows
+        if language == "german" and isinstance(entry.get("text"), str):
+            entry["text"] = entry["text"].replace("Technologies: ", f"{phrases['technologies']}: ")
+        out.append(entry)
+    return out
+
+
+def _merge_languages_into_skills(sections: list[dict[str, Any]], language: str) -> list[dict[str, Any]]:
+    """Fold a short Languages section into Skills as one labelled line, so it
+    can't end up alone on the last page."""
+    by_type = {s["type"]: s for s in sections}
+    languages, skills = by_type.get("languages"), by_type.get("skills")
+    if not languages or not skills:
+        return sections
+    spoken = ", ".join(
+        f"{e['label']} ({e['text']})" if e.get("text") else e.get("label", "")
+        for e in languages["entries"] if e.get("label")
+    )
+    merged = {**skills, "entries": skills["entries"] + [_item(_PHRASES[language]["languages"], spoken)]}
+    return [merged if s is skills else s for s in sections if s is not languages]
+
+
 def build_harvard_sections(
     cv_data: dict[str, Any],
     section_order: list[str] | None = None,
+    *,
+    language: str = "english",
+    convention: str = "international",
+    merge_languages: bool = False,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     Build template context: basics header fields + ordered sections.
 
     Each section is ``{"type", "title", "style", "entries"}`` where style is
     "entries" (row-based blocks) or "itemize" (compact labelled bullets).
+
+    ``language`` is the language the CV content is written in (section titles
+    follow it); ``convention`` "dach" writes dates as MM/YYYY; with
+    ``merge_languages`` the Languages section becomes a line in Skills.
     """
+    language = language if language in _PHRASES else "english"
+    labels = SECTION_LABELS_DE if language == "german" else SECTION_LABELS
     doc = to_json_resume(cv_data)
     basics = doc.get("basics") or {}
     header = {
@@ -585,9 +690,11 @@ def build_harvard_sections(
         sections.append(
             {
                 "type": section_type,
-                "title": SECTION_LABELS[section_type],
+                "title": labels[section_type],
                 "style": "itemize" if section_type in _ITEMIZE_SECTIONS else "entries",
-                "entries": entries,
+                "entries": _localize_entries(entries, language, convention),
             }
         )
+    if merge_languages:
+        sections = _merge_languages_into_skills(sections, language)
     return header, sections

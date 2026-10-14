@@ -116,7 +116,7 @@ def test_render_cover_letter_tex_uses_entry_level_header_layout():
     assert "ML Engineer" in tex
     assert "kevin@example.com" in tex
     assert "linkedin.com/in/kevinha" in tex
-    assert "Yours Faithfully" in tex
+    assert "Yours sincerely" in tex  # a named recipient
     assert "Dear Dr. Jane Smith" in tex
 
 
