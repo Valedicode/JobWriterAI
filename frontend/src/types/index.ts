@@ -329,7 +329,15 @@ export interface OrchestratorGatePayload {
   choices?: string[] | null;
 }
 
-export type BulletDecisionChoice = 'accept' | 'keep_original' | 'custom' | 'include' | 'exclude';
+/** Selection: include (tailor it), exclude (keep as is), leave_out (drop from the
+ * tailored CV). Rewrite: accept, keep_original, custom. */
+export type BulletDecisionChoice =
+  | 'accept'
+  | 'keep_original'
+  | 'custom'
+  | 'include'
+  | 'exclude'
+  | 'leave_out';
 
 export interface BulletDecision {
   choice: BulletDecisionChoice;
