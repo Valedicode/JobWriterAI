@@ -274,7 +274,7 @@ def test_rubric_flows_through_selection_review_and_assembly(graph, patched_tools
          patch("app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
                _fake_tool(lambda _: json.dumps(REWRITE))):
         config = {"configurable": {"thread_id": "rubric-flow"}}
-        result = graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        result = graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         preview = _interrupt_payload(result)["preview"]
         assert preview["rubric"][0]["text"] == "Python"
         assert preview["knockouts"] == []

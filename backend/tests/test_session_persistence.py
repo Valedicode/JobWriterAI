@@ -122,7 +122,7 @@ def test_postgres_session_survives_a_restart_and_expires(patched_tools):  # noqa
     saver, close = postgres_checkpointer(TEST_DATABASE_URL)
     try:
         graph = build_graph(checkpointer=saver)
-        first = graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        first = graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         assert first["__interrupt__"][0].value["step"] == "present_score"
     finally:
         close()
@@ -154,7 +154,7 @@ def test_api_session_survives_an_app_restart(monkeypatch, patched_tools):  # noq
     with TestClient(app) as client:  # startup creates the tables and opens the pool
         start = client.post(
             "/api/orchestrator/start",
-            json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+            json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
         ).json()
     session_id = start["session_id"]
     assert start["pending_gate"]["step"] == "present_score"

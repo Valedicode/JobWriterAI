@@ -180,7 +180,7 @@ def test_user_added_facts_replace_by_id():
 
 def test_the_run_starts_with_the_ledger_and_a_frozen_cv(graph, patched_tools):  # noqa: F811
     config = {"configurable": {"thread_id": "ledger-start"}}
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
     values = graph.get_state(config).values
     assert values["original_cv_data"] == CV
     assert set(_index_cv_bullets(CV)) <= set(values["fact_ledger"])
@@ -189,7 +189,7 @@ def test_the_run_starts_with_the_ledger_and_a_frozen_cv(graph, patched_tools):  
 
 def test_step6_keeps_the_users_cv_and_writes_the_tailored_one(graph, patched_tools):  # noqa: F811
     config = {"configurable": {"thread_id": "ledger-step6"}}
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
     for _ in range(3):  # score, selection, rewrite
         graph.invoke(Command(resume={"action": "approve"}), config=config)
     values = graph.get_state(config).values
@@ -201,7 +201,7 @@ def test_step6_keeps_the_users_cv_and_writes_the_tailored_one(graph, patched_too
 
 def test_eligibility_answers_join_the_ledger(graph, silent_on_german):  # noqa: F811
     config = {"configurable": {"thread_id": "ledger-eligibility"}}
-    result = graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    result = graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
     [question] = _interrupt_payload(result)["preview"]["questions"]
     graph.invoke(Command(resume={"action": "edit", "feedback": "C1", "answers": {question["id"]: "C1"}}),
                  config=config)

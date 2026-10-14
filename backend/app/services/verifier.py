@@ -44,10 +44,17 @@ BANNED_PHRASES = (
     "synergien", "lösungsorientiert",
 )
 
+# Words that are the same in both languages ("in") would tip the balance, so
+# each list has only words that belong to one of them.
 _STOPWORDS = {
-    "en": {"the", "and", "with", "for", "of", "to", "in", "a", "an", "on", "as", "was", "by", "from"},
+    "en": {"the", "and", "with", "for", "of", "to", "a", "on", "as", "was", "by", "from"},
     "de": {"der", "die", "das", "und", "mit", "für", "von", "zu", "im", "ein", "eine", "bei", "auf", "als", "durch"},
 }
+
+
+def text_language(text: str) -> str | None:
+    """'en' or 'de' when ``text`` clearly reads as one, else None."""
+    return _language(text)
 
 
 def _language(text: str) -> str | None:

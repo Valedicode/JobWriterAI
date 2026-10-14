@@ -146,7 +146,7 @@ def tools():
 
 def _start(client) -> str:
     body = client.post(
-        "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}
+        "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}
     ).json()
     assert body["pending_gate"]["step"] == "present_score"
     return body["session_id"]

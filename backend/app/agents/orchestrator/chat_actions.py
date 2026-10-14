@@ -57,7 +57,8 @@ RERUN_STEPS: dict[str, tuple[str, str]] = {
 
 # Kept as they are now rather than restored from before the target step: the
 # transcript, the chat itself, and the user's CV with everything they have
-# confirmed since (cv_data is never tailored; step 6 writes tailored_cv_data).
+# confirmed since, in the language they chose (cv_data is never tailored;
+# step 6 writes tailored_cv_data). Its bullet index follows it.
 _CARRIED_FORWARD = {
     "flow",
     "messages",
@@ -66,6 +67,8 @@ _CARRIED_FORWARD = {
     "cv_data",
     "original_cv_data",
     "fact_ledger",
+    "bullet_index",
+    "cv_language",
     "eligibility_asked",
 }
 

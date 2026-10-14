@@ -75,7 +75,7 @@ def test_download_needs_the_owning_session(client, _temporary_file_store):
 
 def test_generated_files_are_written_and_linked_per_session(client, _temporary_file_store, patched_tools):  # noqa: F811
     start = client.post(
-        "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()
     sid = start["session_id"]
 

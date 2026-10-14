@@ -40,6 +40,7 @@ from app.agents.writer_agent import (
 )
 from app.agents.orchestrator.outputs import file_record, session_output_dir
 from app.services.latex_renderer import cv_content_language, extract_recipient_name
+from app.services.resume_adapter import normalize_skill_list
 from app.agents.scoring_agent import (
     apply_eligibility_answers,
     calculate_compatibility_score_v2,
@@ -47,12 +48,12 @@ from app.agents.scoring_agent import (
     eligibility_questions,
 )
 from app.agents.strategist_agent import plan_tailoring_strategy, validate_plan
-from app.agents.translator_agent import translatable_fields, translate_cv, translate_cv_fields
+from app.agents.translator_agent import needs_translation, translatable_fields, translate_cv, translate_cv_fields
 from app.models.schemas import CompatibilityReport, StrategistPlan, VerifierResult
 from app.services.bullet_index import index_cv_bullets as _index_cv_bullets
 from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
 from app.services.requirement_rubric import evidence_prompt_block, refresh_evidence, rubric_alignment
-from app.services.verifier import issue_notes, retry_feedback, verify_rewrites
+from app.services.verifier import issue_notes, retry_feedback, text_language, verify_rewrites
 
 
 # --------------------------------------------------------------------------- #
@@ -83,7 +84,8 @@ JT_GATE_CONFIRM_ELIGIBILITY = "jt_gate_confirm_eligibility"
 JT_GATE_CONFIRM_CHANGE = "jt_gate_confirm_change"
 JT_STEP5B_VERIFY = "jt_step5b_verify"
 JT_GATE_VERIFIER_FAILED = "jt_gate_verifier_failed"
-JT_STEP6B_TRANSLATE = "jt_step6b_translate_cv"
+JT_GATE_CV_LANGUAGE = "jt_gate_cv_language"
+JT_STEP_TRANSLATE_CV = "jt_step_translate_cv"
 JT_GATE_APPROVE_TRANSLATION = "jt_gate_approve_translation"
 
 
@@ -287,10 +289,15 @@ def jt_entry(state: OrchestratorState) -> dict[str, Any]:
     We do NOT call the LLM here - the goal is to confirm the CV/job pair is
     present and well-formed before we burn tokens on step 1.
     """
-    cv_data = state.get("cv_data") or {}
+    raw_cv = state.get("cv_data") or {}
     job_data = state.get("job_data") or {}
-    name = cv_data.get("name", "you")
+    name = raw_cv.get("name", "you")
     job_title = job_data.get("job_title") or "the target role"
+
+    # Skills as plain names: extraction can leave the CV's category labels
+    # inside the items ('Backend: FastAPI'), which would print as skills and
+    # keep the plan's skill groups from matching.
+    cv_data = {**raw_cv, "skills": normalize_skill_list(raw_cv.get("skills"))} if raw_cv.get("skills") else raw_cv
 
     narration = (
         f"Starting the job-tailoring flow for {name} against {job_title}. "
@@ -301,8 +308,9 @@ def jt_entry(state: OrchestratorState) -> dict[str, Any]:
     bullet_index = _index_cv_bullets(cv_data)
     return _narrate(
         {
+            "cv_data": cv_data,
             "bullet_index": bullet_index,
-            "original_cv_data": copy.deepcopy(cv_data),
+            "original_cv_data": copy.deepcopy(raw_cv),
             "fact_ledger": build_fact_ledger(cv_data, bullet_index),
         },
         narration,
@@ -490,7 +498,7 @@ def _eligibility_questions_for(report: dict[str, Any] | None) -> list[dict[str, 
 def route_after_score(state: OrchestratorState) -> str:
     if not state.get("eligibility_asked") and _eligibility_questions_for(state.get("compatibility_report")):
         return JT_GATE_CONFIRM_ELIGIBILITY
-    return JT_STEP3_STRATEGY
+    return _after_scoring(state)
 
 
 def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
@@ -531,7 +539,7 @@ def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
                 {"eligibility_asked": True},
                 "Skipped. Those requirements stay out of the score.",
             ),
-            goto=JT_STEP3_STRATEGY,
+            goto=_after_scoring(state),
         )
 
     previous = CompatibilityReport.model_validate(report)
@@ -563,7 +571,7 @@ def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
             },
             "\n".join(lines),
         ),
-        goto=JT_STEP3_STRATEGY,
+        goto=_after_scoring(state),
     )
 
 
@@ -711,6 +719,7 @@ def _draft_plan(state: OrchestratorState) -> tuple[dict[str, Any] | None, list[s
         "facts_block": _facts_prompt_block(ledger),
         "bullet_index_block": _bullet_index_prompt_block(bullet_index),
         "feedback": feedback,
+        "cv_language": state.get("cv_language") or "",
     }), None)
     error = _tool_error(raw, "strategist")
     if error:
@@ -726,6 +735,9 @@ def _draft_plan(state: OrchestratorState) -> tuple[dict[str, Any] | None, list[s
         bullet_index=bullet_index, project_count=len(projects),
         cv_skills=[s for s in skills if isinstance(s, str)],
     )
+    if state.get("cv_language") in ("english", "german"):
+        # The user decided the CV language; the plan doesn't get to change it.
+        cleaned = cleaned.model_copy(update={"cv_language": state["cv_language"]})
     return cleaned.model_dump(), notes, None
 
 
@@ -1239,7 +1251,7 @@ def jt_gate_approve_rewrite(state: OrchestratorState) -> Command:
 # reported an error, so a failure is never shown as an empty-but-valid result.
 # --------------------------------------------------------------------------- #
 
-_RETRYABLE_STEPS = (JT_STEP4_SELECT, JT_STEP5_REWRITE, JT_STEP6B_TRANSLATE)
+_RETRYABLE_STEPS = (JT_STEP4_SELECT, JT_STEP5_REWRITE, JT_STEP_TRANSLATE_CV)
 
 
 def route_after_select(state: OrchestratorState) -> str:
@@ -1388,47 +1400,87 @@ def _alignment_narration(alignment: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Step 6b: translate the tailored CV into the plan's language, then review
+# CV language: asked right after scoring, then the whole CV is translated
+# (and reviewed) before the plan, selection and rewriting, so every later step
+# works on a CV in one language and the result can't come out mixed.
 # --------------------------------------------------------------------------- #
 
 _LANGUAGE_NAMES = {"english": "English", "german": "German"}
+_POSTING_CODES = {"de": "german", "en": "english"}
 
 
-def _translation_target(state: OrchestratorState) -> str | None:
-    """The plan's CV language when the tailored CV's content is in another."""
-    plan = (state.get("tailoring_strategy") or {}).get("plan") or {}
-    target = plan.get("cv_language")
-    tailored = state.get("tailored_cv_data")
-    if target not in _LANGUAGE_NAMES or not tailored:
-        return None
-    return target if cv_content_language(tailored) != target else None
+def _posting_language(state: OrchestratorState) -> str:
+    """The posting's language: as extracted, else read from its text, else
+    the CV's own."""
+    job = state.get("job_data") or {}
+    code = str(job.get("posting_language") or "").strip().lower()[:2]
+    if code in _POSTING_CODES:
+        return _POSTING_CODES[code]
+    text = " ".join(str(x) for key in ("responsibilities", "key_requirements", "qualifications")
+                    for x in job.get(key) or [])
+    detected = text_language(text)
+    if detected:
+        return {"de": "german", "en": "english"}[detected]
+    return cv_content_language(state.get("cv_data") or {})
 
 
-def route_after_assemble(state: OrchestratorState) -> str:
-    return JT_STEP6B_TRANSLATE if _translation_target(state) else JT_STEP7_GENERATE_CV_FILES
+def _after_scoring(state: OrchestratorState) -> str:
+    """Ask for the CV language once per session, then plan."""
+    return JT_STEP3_STRATEGY if state.get("cv_language") else JT_GATE_CV_LANGUAGE
+
+
+def jt_gate_cv_language(state: OrchestratorState) -> Command:
+    posting = _posting_language(state)
+    other = "english" if posting == "german" else "german"
+    payload = GatePayload(
+        step="cv_language",
+        kind="choice",
+        narration=(
+            f"The posting is in {_LANGUAGE_NAMES[posting]}. Should your CV be in {_LANGUAGE_NAMES[posting]} "
+            f"as well, or in {_LANGUAGE_NAMES[other]}? The whole CV will be in the language you pick."
+        ),
+        preview={"posting_language": _LANGUAGE_NAMES[posting]},
+        allowed_actions=["choose"],
+        choices=[posting, other],
+    ).model_dump()
+
+    raw = interrupt(payload)
+    resolution = GateResolution.model_validate(raw)
+    language = resolution.choice if resolution.choice in _LANGUAGE_NAMES else posting
+    if needs_translation(state.get("cv_data") or {}, language):
+        return Command(
+            update=_narrate({"cv_language": language},
+                            f"Your CV will be in {_LANGUAGE_NAMES[language]}. Translating it first."),
+            goto=JT_STEP_TRANSLATE_CV,
+        )
+    return Command(
+        update=_narrate({"cv_language": language},
+                        f"Your CV will be in {_LANGUAGE_NAMES[language]}; it already is."),
+        goto=JT_STEP3_STRATEGY,
+    )
 
 
 def route_after_translate(state: OrchestratorState) -> str:
     return JT_GATE_STEP_FAILED if state.get("step_error") else JT_GATE_APPROVE_TRANSLATION
 
 
-def jt_step6b_translate_cv(state: OrchestratorState) -> dict[str, Any]:
-    target = _translation_target(state) or ((state.get("tailoring_strategy") or {}).get("plan") or {}).get("cv_language")
-    tailored = state.get("tailored_cv_data") or {}
+def jt_step_translate_cv(state: OrchestratorState) -> dict[str, Any]:
+    target = state.get("cv_language") or "english"
+    cv_data = state.get("cv_data") or {}
     feedback = "\n".join(f"- {note}" for note in state.get("translation_feedback") or [] if note)
     raw = _safe_json_loads(translate_cv_fields.invoke({
-        "fields_json": json.dumps(translatable_fields(tailored), ensure_ascii=False),
+        "fields_json": json.dumps(translatable_fields(cv_data), ensure_ascii=False),
         "language": target,
         "feedback": feedback,
     }), None)
     error = _tool_error(raw, "translation")
     if error:
-        return _fail_step(JT_STEP6B_TRANSLATE, "Translation", error)
+        return _fail_step(JT_STEP_TRANSLATE_CV, "Translation", error)
 
-    translated_cv, rows = translate_cv(tailored, raw.get("fields") or [])
+    translated_cv, rows = translate_cv(cv_data, raw.get("fields") or [])
     kept = [r for r in rows if r["problem"]]
-    language = _LANGUAGE_NAMES.get(target, target)
-    narration = f"Translated your CV into {language}: {len(rows) - len(kept)} of {len(rows)} fields."
+    changed = [r for r in rows if not r["problem"] and r["translated"] != r["original"]]
+    narration = f"Translated your CV into {_LANGUAGE_NAMES.get(target, target)}: {len(changed)} field(s) changed."
     if kept:
         narration += f" {len(kept)} kept their original text because the translation changed a fact; they're marked below."
     return _narrate(
@@ -1450,19 +1502,32 @@ def _translation_preview(translation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _with_cv(state: OrchestratorState, cv_data: dict[str, Any]) -> dict[str, Any]:
+    """State update for a new version of the user's CV: its bullet index and
+    fact ledger follow it (same ids), keeping what the user confirmed."""
+    bullet_index = _index_cv_bullets(cv_data)
+    confirmed = [f for f in (state.get("fact_ledger") or {}).values()
+                 if isinstance(f, dict) and f.get("source") != "cv_extraction"]
+    return {
+        "cv_data": cv_data,
+        "bullet_index": bullet_index,
+        "fact_ledger": with_facts(build_fact_ledger(cv_data, bullet_index), confirmed),
+    }
+
+
 def jt_gate_approve_translation(state: OrchestratorState) -> Command:
     """
-    approve: use the translated CV; reject: keep the CV in its original
-    language; edit: translate again with the user's notes.
+    approve: use the translated CV from here on; reject: keep the CV as it
+    is; edit: translate again with the user's notes.
     """
     translation = state.get("translation") or {}
-    language = _LANGUAGE_NAMES.get(translation.get("target_language"), "the plan's language")
+    language = _LANGUAGE_NAMES.get(translation.get("target_language"), "the chosen language")
     payload = GatePayload(
         step="approve_translation",
         kind="approval",
         narration=(
-            f"Review the {language} translation of your CV. Approve to use it, edit with notes to "
-            "translate again, or reject to keep your CV in its original language."
+            f"Review the {language} version of your CV. Approve to tailor it in {language}, edit "
+            "with notes to translate again, or reject to keep your CV as it is."
         ),
         preview=_translation_preview(translation),
         allowed_actions=["approve", "edit", "reject"],
@@ -1472,21 +1537,24 @@ def jt_gate_approve_translation(state: OrchestratorState) -> Command:
     resolution = GateResolution.model_validate(raw)
 
     if resolution.action == "approve":
+        translated = translation.get("translated_cv") or state.get("cv_data") or {}
         return Command(
-            update=_narrate({"tailored_cv_data": translation.get("translated_cv") or state.get("tailored_cv_data")},
-                            f"Using the {language} version. Generating the PDF."),
-            goto=JT_STEP7_GENERATE_CV_FILES,
+            update=_narrate({**_with_cv(state, translated), "translation": None},
+                            f"Using the {language} version of your CV."),
+            goto=JT_STEP3_STRATEGY,
         )
     if resolution.action == "edit":
         notes = list(state.get("translation_feedback") or []) + [resolution.feedback or ""]
         return Command(
             update=_narrate({"translation_feedback": notes, "translation": None},
                             f"Translating again with your notes: {resolution.feedback}"),
-            goto=JT_STEP6B_TRANSLATE,
+            goto=JT_STEP_TRANSLATE_CV,
         )
+    kept_language = cv_content_language(state.get("cv_data") or {})
     return Command(
-        update=_narrate({"translation": None}, "Keeping your CV in its original language. Generating the PDF."),
-        goto=JT_STEP7_GENERATE_CV_FILES,
+        update=_narrate({"translation": None, "cv_language": kept_language},
+                        "Keeping your CV as it is, without translating it."),
+        goto=JT_STEP3_STRATEGY,
     )
 
 

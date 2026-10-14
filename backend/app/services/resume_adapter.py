@@ -115,6 +115,38 @@ _SKILL_CATEGORIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
 _OTHER_SKILLS = {"english": "Other", "german": "Weitere"}
 
 
+# Words CV skill-category labels are made of ("Backend", "Frontend & Tools",
+# "Programming Languages"), as opposed to skill names.
+_CATEGORY_WORD_RE = re.compile(
+    r"^(?:(?:backend|frontend|tools?|programming|languages?|frameworks?|libraries|databases?|devops|cloud|"
+    r"ml|ai|data|web|mobile|testing|other|platforms?|agents?|infrastructure|technologies)"
+    r"(?:\s*(?:&|and|/|,)\s*|\s+|$))+$",
+    re.IGNORECASE,
+)
+
+
+def normalize_skill_list(skills: Any) -> list[str]:
+    """
+    Skill names only, each once. CV extraction sometimes keeps the CV's own
+    category labels inside the items ('ML / Agent Frameworks: LangChain') and
+    splits a label at its comma ('Backend', 'Frontend & Tools: FastAPI');
+    the labels would otherwise print as skills.
+    """
+    from app.services import skill_graph  # local: keeps the adapter's import light
+
+    items = [s.strip() for s in skills or [] if isinstance(s, str) and s.strip()]
+    names: list[str] = []
+    for i, item in enumerate(items):
+        if ":" in item:
+            item = item.split(":", 1)[1].strip()
+        elif (i + 1 < len(items) and ":" in items[i + 1]
+              and _CATEGORY_WORD_RE.match(item) and not skill_graph.find_family(item)):
+            continue  # the first half of a label split at its comma
+        if item and item.casefold() not in {n.casefold() for n in names}:
+            names.append(item)
+    return names
+
+
 def group_skills(skills: list[str], language: str = "english") -> list[dict[str, Any]]:
     """
     A flat skills list as labelled groups, by skill-graph family. Skills the
@@ -613,14 +645,6 @@ _ROW_BUILDERS = {
 }
 
 
-def _contains(text: str, part: str) -> bool:
-    """Whether ``part`` appears in ``text``, ignoring case, spacing and a
-    trailing full stop."""
-    def norm(s: str) -> str:
-        return re.sub(r"\s+", " ", s or "").strip().rstrip(".").casefold()
-    return bool(norm(part)) and norm(part) in norm(text)
-
-
 def _printable(text: Any) -> str:
     """Text without the invisible characters PDF extraction picks up: icon-font
     glyphs (private use), control and format characters. 'Phone' and 'LinkedIn'
@@ -734,9 +758,10 @@ def build_harvard_sections(
     doc = to_json_resume(cv_data, language)
     basics = doc.get("basics") or {}
     label, summary = basics.get("label") or "", basics.get("summary") or ""
-    if label and _contains(summary, label):
-        # The headline is already the summary's opening; printing both shows
-        # the same sentence twice, the first copy cut short.
+    if summary.strip():
+        # With a summary, a headline only restates it (often as a paraphrase
+        # of its first sentence), so the intro read twice. It is printed only
+        # for a CV without a summary.
         label = ""
     header = {
         "name": basics.get("name") or cv_data.get("name") or "Applicant",

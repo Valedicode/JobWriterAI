@@ -747,10 +747,8 @@ def _format_plan(strategy_data: Dict[str, Any], step: str) -> str:
             lines.append(f"Project order (indices, best first): {plan['project_order']}")
     else:
         if plan.get("headline"):
-            lines.append(
-                f"Headline (printed on its own line under the name; do NOT repeat it in the summary): "
-                f"{plan['headline']}"
-            )
+            lines.append(f"Headline idea for the summary's opening (the CV prints no separate headline): "
+                         f"{plan['headline']}")
         keywords = [k for k in plan.get("keyword_plan") or [] if isinstance(k, dict)]
         usable = [k["keyword"] for k in keywords if k.get("allowed")]
         unusable = [k["keyword"] for k in keywords if not k.get("allowed")]
@@ -923,9 +921,15 @@ def rewrite_enhance_content(
                 "already mention, even when a directive or the job asks for it.\n"
                 "- Weave in job keywords naturally — forced keyword stuffing degrades ATS scores.\n"
                 "- Lead each bullet with a strong action verb.\n"
-                "- Write every rewrite and the summary in the language the CV is written in, even "
-                "when the posting or the plan uses another language: a later step translates the "
-                "whole CV at once, so a single translated part would leave the CV mixed.\n"
+                "- Write every rewrite and the summary in the language the CV is written in. The CV "
+                "was already put into the language the candidate chose; never switch languages.\n"
+                "- Write naturally, the way a native professional writes a CV in that language: "
+                "idiomatic phrasing, no word-for-word constructions, no anglicisms in German.\n"
+                "- The summary (`updated_summary`) describes the candidate's profile and strengths. "
+                "Never state that they are looking for a job, a position or an internship ('seeking "
+                "a working student role', 'sucht eine Werkstudentenstelle'): the application itself "
+                "says that. If the CV has a summary, always return an improved `updated_summary`, "
+                "with any such sentence removed.\n"
                 "- Keep the candidate's authentic voice.\n"
                 "- Only enhance descriptions — do not replace their substance.\n"
                 "- For each bullet, report a confidence score (0–1) for how well the rewrite "

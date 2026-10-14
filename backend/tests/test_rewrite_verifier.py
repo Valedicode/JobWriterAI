@@ -197,7 +197,7 @@ def run(graph, patched_tools):  # noqa: F811
         for p in patches:
             p.start()
         config = {"configurable": {"thread_id": f"verify-{len(texts)}-{texts[0][:12]}-{id(rewrites)}"}}
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # score
         result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # selection -> rewrite
         start.cleanup.extend(patches)

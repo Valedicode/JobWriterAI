@@ -91,7 +91,11 @@ def extract_resume_info(pdf_path: str = "", pdf_bytes: bytes = b"") -> str:
          "For leadership roles, extracurricular activities, and volunteer work: one leadership_activities "
          "entry per activity with role, organization, location, dates, a short description, and impact bullets. "
          "For spoken languages: one languages entry per language with the stated fluency "
-         "(e.g. language='German', fluency='native'); do not put spoken languages into skills."),
+         "(e.g. language='German', fluency='native'); do not put spoken languages into skills. "
+         "For skills: one entry per skill name only (e.g. 'FastAPI'), without the CV's category "
+         "labels such as 'Backend:' or 'ML / Agent Frameworks:'. "
+         "Contact fields hold text only: leave out icon symbols, and leave a field empty "
+         "rather than filling it with an icon or a label."),
         ("user", "{text}")
     ])
 
