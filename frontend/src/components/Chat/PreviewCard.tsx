@@ -387,13 +387,30 @@ interface RewriteBullet {
   confidence: number;
   keywords_added?: string[];
   bullet_id?: string | null;
+  /** Fact-check notes for this bullet ("Check: ...", "Blocked: ..."). */
+  verifier_notes?: string[];
 }
 
 interface RewritePreview {
   rewritten_bullets?: RewriteBullet[];
   updated_summary?: string;
+  summary_notes?: string[];
   keywords_inserted?: string[];
   warnings?: string[];
+}
+
+/** Fact-check notes under a rewrite: things worth a second look. */
+function VerifierNotes({ notes }: { notes: string[] }) {
+  if (notes.length === 0) return null;
+  return (
+    <ul className="mt-1.5 space-y-0.5" aria-label="Fact check">
+      {notes.map((note, i) => (
+        <li key={i} className="text-meta text-ink-muted [overflow-wrap:anywhere]">
+          {note}
+        </li>
+      ))}
+    </ul>
+  );
 }
 
 /** One rewrite card with its own accept / keep-original / edit controls.
@@ -440,6 +457,7 @@ function RewriteBulletCard({
           <Diff original={bullet.original} rewritten={bullet.rewritten} />
         )}
       </div>
+      <VerifierNotes notes={asArray<string>(bullet.verifier_notes)} />
       {showEdit && (
         <div className="mt-2 space-y-1.5">
           <textarea
@@ -503,6 +521,7 @@ function ApproveRewrite({ preview, decisions, onDecisionChange }: { preview: Pre
           <div className="rounded bg-added-surface px-1.5 py-0.5 text-body text-added-text [overflow-wrap:anywhere]">
             {p.updated_summary}
           </div>
+          <VerifierNotes notes={asArray<string>(p.summary_notes)} />
         </Section>
       )}
       {keywords.length > 0 && (
