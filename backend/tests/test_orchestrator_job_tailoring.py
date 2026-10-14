@@ -695,3 +695,102 @@ def test_rewrite_falls_back_to_original_text_when_model_returns_nothing(graph, p
     rewrites = payload["preview"]["rewritten_bullets"]
     assert len(rewrites) > 0
     assert rewrites[0]["rewritten"] == rewrites[0]["original"]
+
+
+# --------------------------------------------------------------------------- #
+# A tool that reports an error routes to the step_failed gate (retry or stop)
+# instead of being shown as an empty-but-valid result.
+# --------------------------------------------------------------------------- #
+
+def _fails_then(result: dict[str, Any], empty: dict[str, Any]):
+    """Tool stub that reports an error on the first call and succeeds after."""
+    calls = {"n": 0}
+
+    def _invoke(_: Any) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({"error": "sequence item 0: expected str instance, dict found", **empty})
+        return json.dumps(result)
+
+    return _fake_tool(_invoke)
+
+
+EMPTY_SELECTION = {"selected_bullets": [], "section_order": [], "sections_to_emphasize": [], "items_to_de_emphasize": []}
+EMPTY_REWRITE = {"rewritten_bullets": [], "updated_summary": "", "keywords_inserted": []}
+
+
+def test_selection_error_routes_to_step_failed_and_retry_resumes(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-selection-error-retry"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
+        _fails_then(SELECTED, EMPTY_SELECTION),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+
+        payload = _interrupt_payload(result)
+        assert payload["step"] == "step_failed"
+        assert payload["allowed_actions"] == ["approve", "reject"]
+        assert "expected str instance" in payload["preview"]["error"]
+        narration = result["messages"][-1].content
+        assert "Bullet selection failed" in narration
+        assert "Nothing in your CV was changed" in narration
+
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # retry
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "approve_selection"
+    assert payload["preview"]["selected_bullets"][0]["original_text"] == "Designed the first algorithm"
+    assert not graph.get_state(config).values.get("step_error")
+
+
+def test_selection_error_reject_stops_without_files(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-selection-error-stop"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
+        _fails_then(SELECTED, EMPTY_SELECTION),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        result = graph.invoke(Command(resume={"action": "reject"}), config=config)  # step_failed
+
+    assert "__interrupt__" not in result
+    assert not result.get("generated_files")
+    assert "Stopped after bullet selection failed" in result["last_narration"]
+
+
+def test_rewrite_error_routes_to_step_failed_and_retry_resumes(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-rewrite-error-retry"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fails_then(REWRITTEN, EMPTY_REWRITE),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
+
+        payload = _interrupt_payload(result)
+        assert payload["step"] == "step_failed"
+        assert payload["preview"]["failed_step"] == "Bullet rewriting"
+
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # retry
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "approve_rewrite"
+    assert payload["preview"]["rewritten_bullets"][0]["confidence"] == 0.88
+
+
+def test_chat_context_reports_step_error():
+    from app.agents.orchestrator.chat_agent import _state_context_block
+
+    block = _state_context_block({
+        "cv_data": CV,
+        "step_error": {"step": "jt_step5_rewrite_enhance", "label": "Bullet rewriting", "detail": "boom"},
+    })
+    assert "step_error: Bullet rewriting failed - boom" in block

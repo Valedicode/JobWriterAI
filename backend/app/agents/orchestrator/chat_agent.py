@@ -116,9 +116,11 @@ _SYSTEM_PROMPT = (
     "if they genuinely have it (a course, a side project, brief exposure) - "
     "that unlocks real rewriting on the next pass.\n"
     "- If `bullets_selected` or `bullets_rewritten` is 0, say plainly that "
-    "nothing was actually changed in the CV at that step, and why (usually: "
-    "nothing in the CV was relevant enough), rather than implying the CV was "
-    "already good."
+    "nothing was actually changed in the CV at that step, rather than implying "
+    "the CV was already good. Do not guess a reason the context does not give.\n"
+    "- If `step_error` is present, the last step failed: say so, say that "
+    "nothing was changed, and that it can be retried. Never present a failure "
+    "as the CV being fine or as nothing in it being relevant."
 )
 
 
@@ -185,6 +187,10 @@ def _state_context_block(state: dict[str, Any] | None) -> str:
     parts.append(f"bullets_rewritten: {bullets_rewritten}")
     if rewritten.get("updated_summary"):
         parts.append(f"updated_summary: {rewritten['updated_summary']}")
+
+    step_error = state.get("step_error")
+    if isinstance(step_error, dict):
+        parts.append(f"step_error: {step_error.get('label')} failed - {step_error.get('detail')}")
 
     files = state.get("generated_files") or []
     if files:

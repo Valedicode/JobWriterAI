@@ -19,6 +19,8 @@ This state holds three classes of data:
    - rewritten_content
    - cover_letter_content
    - cover_letter_language
+   - step_error                 : set when a step's tool failed; read by the
+                                  step_failed gate (retry or stop).
 
    CV-review branch:
    - review_outputs
@@ -88,6 +90,9 @@ class OrchestratorState(TypedDict, total=False):
     cover_letter_content: dict[str, Any] | None
     cover_letter_language: CoverLetterLanguage | None
     cover_letter_recipient: str | None
+    # Set by a step whose tool failed ({step, label, detail}); routes the graph
+    # to the step_failed gate instead of presenting a fallback as real output.
+    step_error: dict[str, Any] | None
 
     # --- cv-review artifacts -----------------------------------------------
     review_outputs: dict[str, dict[str, Any]]
