@@ -978,23 +978,53 @@ interface TranslationChange {
   path?: string;
   original?: string;
   translated?: string;
+  /** Why the translation wasn't used (kept fields only), in plain words. */
+  problem?: string;
 }
 
-/** "experience.0.responsibilities.1" -> "Experience 1 · responsibilities 2". */
-const fieldLabel = (path: string): string =>
-  path
-    .split('.')
-    .map((part) => (/^\d+$/.test(part) ? String(Number(part) + 1) : humanizeKey(part)))
-    .join(' ')
-    .replace(/ (\d+) /g, ' $1 · ');
+const SECTION_NAMES: Record<string, string> = {
+  summary: 'Summary',
+  label: 'Headline',
+  location: 'Location',
+  experience: 'Experience',
+  education: 'Education',
+  projects: 'Projects',
+  leadership_activities: 'Activities',
+  languages: 'Languages',
+};
+const FIELD_NAMES: Record<string, string> = {
+  responsibilities: 'bullet',
+  highlights: 'bullet',
+  outcomes: 'bullet',
+  details: 'detail',
+  position: 'job title',
+  role: 'role',
+  duration: 'dates',
+  dates: 'dates',
+  degree: 'degree',
+  grade: 'grade',
+  description: 'description',
+  location: 'location',
+  language: 'language',
+  fluency: 'level',
+};
+
+/** "experience.0.responsibilities.1" -> "Experience 1 · bullet 2". */
+const fieldLabel = (path: string): string => {
+  const [section, entry, field, item] = path.split('.');
+  const parts = [SECTION_NAMES[section] ?? humanizeKey(section)];
+  if (entry !== undefined && /^\d+$/.test(entry)) parts[0] += ` ${Number(entry) + 1}`;
+  if (field) parts.push(`${FIELD_NAMES[field] ?? humanizeKey(field)}${item ? ` ${Number(item) + 1}` : ''}`);
+  return parts.join(' · ');
+};
 
 function ApproveTranslation({ preview }: { preview: PreviewMap }) {
   const changes = asArray<TranslationChange>(preview.changes).filter((c) => c && c.translated);
-  const kept = asArray<string>(preview.kept_original);
+  const kept = asArray<TranslationChange>(preview.kept_original).filter((c) => c && c.original);
   const language = typeof preview.target_language === 'string' ? preview.target_language : '';
   return (
     <div>
-      <Section title={`Translated into ${language || 'the plan language'} (${changes.length})`}>
+      <Section title={`Translated into ${language || 'the chosen language'} (${changes.length})`}>
         <ul className="space-y-2">
           {changes.map((c, i) => (
             <MiniCard key={c.path ?? i}>
@@ -1005,8 +1035,27 @@ function ApproveTranslation({ preview }: { preview: PreviewMap }) {
         </ul>
       </Section>
       {kept.length > 0 && (
-        <Section title="Kept in the original language">
-          <Bullets items={kept} />
+        <Section title={`Kept as written (${kept.length})`}>
+          <p className="mb-2 text-meta text-ink-muted">
+            The translation of these changed a fact, so your original wording stays. Edit with a note to
+            try again.
+          </p>
+          <ul className="space-y-2">
+            {kept.map((c, i) => (
+              <MiniCard key={c.path ?? i}>
+                <div className="mb-1 text-meta text-ink-faint">
+                  {c.path ? fieldLabel(c.path) : ''}
+                  {c.problem ? ` · ${c.problem}` : ''}
+                </div>
+                <div className="text-body text-ink [overflow-wrap:anywhere]">{c.original}</div>
+                {c.translated && c.translated !== c.original && (
+                  <div className="mt-1 text-meta text-ink-faint [overflow-wrap:anywhere]">
+                    Proposed: {c.translated}
+                  </div>
+                )}
+              </MiniCard>
+            ))}
+          </ul>
         </Section>
       )}
     </div>
