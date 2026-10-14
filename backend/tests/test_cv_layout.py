@@ -18,6 +18,7 @@ Run with::
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import unicodedata
@@ -170,12 +171,17 @@ def test_english_sign_off_follows_the_recipient():
 # Rendered PDFs (need a LaTeX compiler)
 # --------------------------------------------------------------------------- #
 
-@pytest.fixture
-def compiler(monkeypatch):
-    if shutil.which("pdflatex"):
-        monkeypatch.setenv("LATEX_COMPILER", "pdflatex")
-    elif not shutil.which("tectonic"):
-        pytest.skip("no LaTeX compiler installed")
+@pytest.fixture(params=["pdflatex", "tectonic"])
+def compiler(request, monkeypatch):
+    """Each installed compiler: pdfLaTeX (8-bit fonts) and Tectonic (XeTeX,
+    Unicode fonts) need different font setups, so both are exercised."""
+    if request.param == "pdflatex":
+        if not shutil.which("pdflatex"):
+            pytest.skip("pdflatex not installed")
+    elif not (os.getenv("TECTONIC_PATH") or shutil.which("tectonic")):
+        pytest.skip("tectonic not installed (set TECTONIC_PATH to test it)")
+    monkeypatch.setenv("LATEX_COMPILER", request.param)
+    return request.param
 
 
 def _pdf_lines(path) -> list[list[str]]:
@@ -217,3 +223,27 @@ def test_parse_back_recovers_every_bullet(compiler, tmp_path):
     for entry in cv["experience"]:
         assert entry["company"] in text and entry["position"] in text
     assert "01/2011 – 12/2012" in text
+
+
+def test_german_characters_dashes_and_bullets_survive(compiler, tmp_path):
+    # Regression: with T1 fonts under Tectonic the dash vanished and the sharp
+    # s printed as "SS"; under pdfLaTeX they extracted as control characters.
+    cv = cv_with(1, 1)
+    cv["experience"][0]["responsibilities"] = ["Straße und Grüße – mit Umlauten äöü"]
+    pdf, _ = render_cv_pdf(cv, tmp_path, "cv", section_order=ORDER, convention="dach")
+    text = _flat("\n".join("\n".join(page) for page in _pdf_lines(pdf)))
+    assert "Straße und Grüße – mit Umlauten äöü" in text
+    assert "• Berlin" in text
+
+
+def test_cover_letters_keep_german_characters_and_dashes(compiler, tmp_path):
+    from app.services.latex_renderer import compile_tex_to_pdf, render_cover_letter_tex
+
+    content = {"language": "german", "betreff": "Bewerbung", "opening_paragraph": "Gerne – mit Grüßen.",
+               "body_paragraph_1": "Eins.", "body_paragraph_2": "Zwei.", "closing_paragraph": "Ende.",
+               "grussformel": "Mit freundlichen Grüßen"}
+    tex = render_cover_letter_tex(content, "Alex", recipient_info="Frau Weber",
+                                  cv_data={"name": "Alex", "email": "a@example.com"}, job_data={"job_title": "Dev"})
+    text = _flat("\n".join("\n".join(page) for page in _pdf_lines(compile_tex_to_pdf(tex, tmp_path, "letter"))))
+    assert "Sehr geehrte Frau Weber," in text
+    assert "Gerne – mit Grüßen." in text and "Mit freundlichen Grüßen" in text

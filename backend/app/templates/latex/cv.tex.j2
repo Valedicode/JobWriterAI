@@ -3,17 +3,18 @@
 \linespread{ {{- layout.linespread -}} }
 \usepackage{iftex}
 \ifPDFTeX
-% Map glyphs back to Unicode, so dashes and bullets extract as text (ATS
-% parsers read the PDF's text layer). XeTeX-based compilers do this already.
+% pdfLaTeX: 8-bit T1 fonts. cmap (loaded first) and lmodern map the glyphs back
+% to Unicode, so the PDF's text layer is searchable (ATS parsers read it).
 \usepackage{cmap}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
 \fi
+% XeTeX / Tectonic use Unicode fonts by default; T1 there drops dashes and
+% prints the sharp s as SS, so no font encoding is set for them.
 \usepackage{hyperref}
 \usepackage{enumitem}
 \setlist{leftmargin=1.3em}
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
-% Vector fonts with a proper encoding, so the text layer is searchable.
-\usepackage{lmodern}
 \usepackage[english]{babel}
 \usepackage[left={{ layout.margin_x }},top={{ layout.margin_top }},right={{ layout.margin_x }},bottom={{ layout.margin_bottom }}]{geometry}
 

@@ -6,12 +6,15 @@
 \usepackage[margin=1cm]{geometry}
 \usepackage{iftex}
 \ifPDFTeX
-% Map glyphs back to Unicode so the PDF's text layer is searchable.
+% pdfLaTeX: 8-bit T1 fonts. cmap (loaded first) and lmodern map the glyphs back
+% to Unicode, so the PDF's text layer is searchable (ATS parsers read it).
 \usepackage{cmap}
-\fi
+\usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
-\usepackage[utf8]{inputenc}
+\fi
+% XeTeX / Tectonic use Unicode fonts by default; T1 there drops dashes and
+% prints the sharp s as SS, so no font encoding is set for them.
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
 \usepackage{fancyhdr}
