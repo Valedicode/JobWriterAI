@@ -61,6 +61,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_GATE_APPROVE_COVER_LETTER,
     JT_GATE_APPROVE_REWRITE,
     JT_GATE_APPROVE_SELECTION,
+    JT_GATE_CONFIRM_CHANGE,
     JT_GATE_CONFIRM_ELIGIBILITY,
     JT_GATE_COVER_LETTER,
     JT_GATE_COVER_LETTER_RECIPIENT,
@@ -80,6 +81,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     jt_gate_approve_cover_letter,
     jt_gate_approve_rewrite,
     jt_gate_approve_selection,
+    jt_gate_confirm_change,
     jt_gate_confirm_eligibility,
     jt_gate_cover_letter,
     jt_gate_cover_letter_recipient,
@@ -172,6 +174,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node(JT_GATE_APPROVE_COVER_LETTER, jt_gate_approve_cover_letter)
     graph.add_node(JT_GATE_STEP_FAILED, jt_gate_step_failed)
     graph.add_node(JT_GATE_CONFIRM_ELIGIBILITY, jt_gate_confirm_eligibility)
+    # Reached only through a chat proposal (app.agents.orchestrator.chat_actions),
+    # which redirects the paused graph here; it routes on via Command.
+    graph.add_node(JT_GATE_CONFIRM_CHANGE, jt_gate_confirm_change)
 
     # --- entry routing -------------------------------------------------------
     graph.add_conditional_edges(

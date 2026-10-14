@@ -9,11 +9,13 @@ when the gate didn't support edits at all. There was no path for the model to
 actually read a question and answer it.
 
 ``interpret_chat`` is a single structured-output LLM call that looks at the
-user's message plus the current gate (if any) and decides:
-  - Is this a question / comment that should just be answered, with the gate
-    left exactly as it is? -> ``action=None``.
-  - Or does it map to one of the gate's ``allowed_actions``? -> return a
-    ``GateResolution`` the caller resumes the graph with.
+user's message, the current gate (if any), the session and the recent chat
+turns, and picks at most one tool:
+  - none: a question or comment, answered with the session left as it is;
+  - resolve_gate: one of the gate's ``allowed_actions`` -> ``ChatTurn.action``;
+  - edit_bullet / rerun_from / update_profile -> ``ChatTurn.call``, which the
+    API checks and carries out through ``chat_actions`` (a re-run or profile
+    update only ever becomes a proposal at the confirm_change gate).
 
 The explicit gate buttons in the UI remain the deterministic path (they call
 the graph directly with no LLM involved). This module is only the flexible
@@ -26,7 +28,7 @@ and leave the gate pending rather than guess at an action.
 from __future__ import annotations
 
 import json
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 
 from langchain_core.prompts import ChatPromptTemplate
 from app.openai_llm import chat_model
@@ -35,13 +37,44 @@ from pydantic import BaseModel, Field, model_validator
 from app.agents.orchestrator.gates import GatePayload, GateResolution
 
 
-class _ChatAction(BaseModel):
-    """Mirrors GateResolution but keeps every field optional so structured
-    output never fails validation on a partial/omitted action."""
+class ResolveGate(BaseModel):
+    """Answer the pending gate, like pressing one of its buttons."""
 
+    tool: Literal["resolve_gate"]
     action: Literal["approve", "reject", "edit", "choose"]
     feedback: Optional[str] = None
     choice: Optional[str] = None
+
+
+class EditBullet(BaseModel):
+    """Change one rewritten bullet (only while approve_rewrite is pending)."""
+
+    tool: Literal["edit_bullet"]
+    bullet_id: str = Field(description="The bullet_id, copied exactly from the rewrites in the preview.")
+    instruction: str = Field(description="What to change in that bullet, in the user's terms.")
+
+
+class RerunFrom(BaseModel):
+    """Go back to an earlier step and run forward again (the user confirms first)."""
+
+    tool: Literal["rerun_from"]
+    step: Literal["score", "strategy", "select", "rewrite", "cover_letter"]
+    note: Optional[str] = Field(
+        default=None,
+        description="Guidance for the re-run (select / rewrite only), e.g. 'focus on backend work'.",
+    )
+
+
+class UpdateProfile(BaseModel):
+    """Add a skill or spoken language the user says they have (the user confirms first)."""
+
+    tool: Literal["update_profile"]
+    kind: Literal["skill", "language"]
+    value: str = Field(description="The skill or language name, e.g. 'Docker', 'German'.")
+    fluency: Optional[str] = Field(default=None, description="Language level as the user stated it, e.g. 'C1'.")
+
+
+ChatCall = Union[ResolveGate, EditBullet, RerunFrom, UpdateProfile]
 
 
 class ChatDecision(BaseModel):
@@ -50,29 +83,34 @@ class ChatDecision(BaseModel):
     reply: str = Field(
         description=(
             "Conversational reply shown to the user as a chat bubble. Always "
-            "populated, even when an action is also taken - briefly say what "
+            "populated, even when a tool is also called - briefly say what "
             "you're doing (e.g. 'Sure, approving that.')."
         )
     )
-    action: Optional[_ChatAction] = Field(
+    call: Optional[ChatCall] = Field(
         default=None,
         description=(
-            "Set only when the message clearly maps to one of the gate's "
-            "allowed_actions. Leave unset for questions, comments, or "
-            "anything ambiguous - answer in `reply` instead and let the gate "
-            "stay pending."
+            "At most one tool call. Leave unset for questions, comments, or "
+            "anything ambiguous - answer in `reply` instead and leave the "
+            "session as it is."
         ),
     )
 
 
 class ChatTurn(BaseModel):
-    """Return type of ``interpret_chat``: a reply plus an optional resolution."""
+    """
+    Return type of ``interpret_chat``: a reply, plus either a gate resolution
+    (``action``) or one of the other tool calls (``call``) - never both.
+    """
 
     reply: str
     action: Optional[GateResolution] = None
+    call: Optional[Union[EditBullet, RerunFrom, UpdateProfile]] = None
 
     @model_validator(mode="after")
-    def _validate(self) -> "ChatTurn":
+    def _one_kind_of_action(self) -> "ChatTurn":
+        if self.action is not None and self.call is not None:
+            raise ValueError("a chat turn carries a gate resolution or a tool call, not both")
         return self
 
 
@@ -81,26 +119,34 @@ _SYSTEM_PROMPT = (
     "user is looking at a structured review step (a 'gate') in a chat UI, or "
     "the flow has already finished. You receive their free-text message plus "
     "the current context.\n\n"
-    "Decide one of two things:\n"
-    "1. ANSWER ONLY - the message is a question, comment, or anything that "
-    "doesn't clearly ask you to act (e.g. 'what does ATS keyword density "
-    "mean?', 'why is my score low?'). Reply helpfully using the provided "
-    "context. Leave `action` unset.\n"
-    "2. ANSWER + ACT - the message clearly requests one of the gate's "
-    "allowed_actions (e.g. 'looks good, approve it', 'no, reject this', "
-    "'use German', 'change X to Y'). Set `action` accordingly AND write a "
-    "short `reply` acknowledging what you're doing.\n\n"
+    "Always write `reply`. Set `call` only when the message clearly asks for "
+    "one of these; otherwise (questions, comments, anything ambiguous) answer "
+    "only and leave `call` unset:\n"
+    "- resolve_gate: the user answers the pending gate ('looks good, approve "
+    "it', 'no, stop here', 'use German', 'make the rewrites shorter'). "
+    "`action` MUST be one of the gate's allowed_actions; for a 'choice' gate "
+    "`choice` MUST be one of its `choices`, verbatim; for 'edit', `feedback` "
+    "is a short, specific instruction derived from the message. Never use it "
+    "when no gate is pending.\n"
+    "- edit_bullet: while step is 'approve_rewrite', the user wants ONE "
+    "specific rewritten bullet changed ('make the second bullet mention the "
+    "team size'). Copy its `bullet_id` exactly from the preview. For changes "
+    "to all rewrites, use resolve_gate with 'edit' instead.\n"
+    "- rerun_from: the user explicitly asks to redo or go back to an earlier "
+    "step ('redo the bullet selection', 'start over from the score'). The "
+    "user confirms before anything changes.\n"
+    "- update_profile: the user states they HAVE a skill or speak a language "
+    "that is missing from their CV ('I used Docker in a university course', "
+    "'I speak German at C1'). Only what they explicitly claim; never infer a "
+    "skill from a question like 'should I learn Docker?'. The user confirms "
+    "before it is added and the score is recalculated.\n\n"
     "Hard rules:\n"
-    "- `action.action` MUST be one of the gate's allowed_actions. If there is "
-    "no pending gate, never set `action`.\n"
-    "- For a 'choice' gate, `action.choice` MUST be one of the gate's "
-    "`choices`, verbatim.\n"
-    "- For `action.action='edit'`, `action.feedback` must be a short, "
-    "specific rewrite instruction derived from the user's message.\n"
     "- Never invent facts about the CV, job, or score that are not in the "
     "context provided. If you don't know, say so.\n"
-    "- When genuinely unsure whether the user wants to act, answer only and "
-    "leave the gate pending - the buttons are always there as a fallback.\n\n"
+    "- When genuinely unsure whether the user wants to act, answer only - the "
+    "buttons are always there as a fallback.\n"
+    "- Use the recent conversation to resolve references like 'that one' or "
+    "'do it'.\n\n"
     "Honesty about fit and improvements - this is the part users complain "
     "loudest about when it's wrong:\n"
     "- Never say the CV is 'well tailored', 'looks great', or similar unless "
@@ -112,9 +158,9 @@ _SYSTEM_PROMPT = (
     "read `missing_skills`, `learnable_skills` and `transferable_skills` from the context and "
     "answer with the SPECIFIC skill names, not a generic 'looks good'. If a "
     "missing skill has no transferable bridge in the CV, say the pipeline "
-    "cannot invent that experience, and suggest the user add it themselves "
-    "if they genuinely have it (a course, a side project, brief exposure) - "
-    "that unlocks real rewriting on the next pass.\n"
+    "cannot invent that experience, and suggest the user tell you if they "
+    "genuinely have it (a course, a side project, brief exposure) - you can "
+    "then add it to their profile and rescore.\n"
     "- If `bullets_selected` or `bullets_rewritten` is 0, say plainly that "
     "nothing was actually changed in the CV at that step, rather than implying "
     "the CV was already good. Do not guess a reason the context does not give.\n"
@@ -199,10 +245,27 @@ def _state_context_block(state: dict[str, Any] | None) -> str:
     if isinstance(step_error, dict):
         parts.append(f"step_error: {step_error.get('label')} failed - {step_error.get('detail')}")
 
+    added = state.get("user_added_facts") or []
+    if added:
+        parts.append(
+            "Added by the user in this chat: "
+            + ", ".join(str(f.get("value")) for f in added if isinstance(f, dict))
+        )
+
     files = state.get("generated_files") or []
     if files:
         parts.append("Generated files: " + ", ".join(f.get("filename", "") for f in files))
     return "\n".join(parts)
+
+
+def _history_block(state: dict[str, Any] | None) -> str:
+    turns = (state or {}).get("chat_history") or []
+    lines = [
+        f"{t.get('role')}: {t.get('content')}"
+        for t in turns
+        if isinstance(t, dict) and t.get("content")
+    ]
+    return "\n".join(lines) if lines else "(none)"
 
 
 def interpret_chat(
@@ -232,6 +295,7 @@ def interpret_chat(
             ("user", (
                 "Current gate:\n{gate}\n\n"
                 "Session context:\n{state}\n\n"
+                "Recent conversation:\n{history}\n\n"
                 "User message:\n{text}"
             )),
         ])
@@ -239,6 +303,7 @@ def interpret_chat(
         decision: ChatDecision = chain.invoke({
             "gate": _gate_context_block(gate),
             "state": _state_context_block(state),
+            "history": _history_block(state),
             "text": text,
         })
     except Exception as exc:  # noqa: BLE001 - defensive fallback for any LLM/parse failure
@@ -250,25 +315,25 @@ def interpret_chat(
             action=None,
         )
 
-    if decision.action is None:
-        return ChatTurn(reply=decision.reply, action=None)
+    call = decision.call
+    if call is None:
+        return ChatTurn(reply=decision.reply)
+    if isinstance(call, ResolveGate):
+        return ChatTurn(reply=decision.reply, action=_gate_resolution(call, gate))
+    # The other tools are checked against the session by the API
+    # (chat_actions), which knows the checkpoint history.
+    return ChatTurn(reply=decision.reply, call=call)
 
-    # Validate the proposed action against the actual gate before trusting it.
-    if gate is None or decision.action.action not in gate.allowed_actions:
-        return ChatTurn(reply=decision.reply, action=None)
-    if decision.action.action == "choose":
-        if not gate.choices or decision.action.choice not in gate.choices:
-            return ChatTurn(reply=decision.reply, action=None)
-    if decision.action.action == "edit" and not (decision.action.feedback or "").strip():
-        return ChatTurn(reply=decision.reply, action=None)
 
+def _gate_resolution(call: ResolveGate, gate: "GatePayload | Any | None") -> GateResolution | None:
+    """The resolution, or None when it doesn't fit the pending gate."""
+    if gate is None or call.action not in gate.allowed_actions:
+        return None
+    if call.action == "choose" and (not gate.choices or call.choice not in gate.choices):
+        return None
+    if call.action == "edit" and not (call.feedback or "").strip():
+        return None
     try:
-        resolution = GateResolution(
-            action=decision.action.action,
-            feedback=decision.action.feedback,
-            choice=decision.action.choice,
-        )
+        return GateResolution(action=call.action, feedback=call.feedback, choice=call.choice)
     except Exception:
-        return ChatTurn(reply=decision.reply, action=None)
-
-    return ChatTurn(reply=decision.reply, action=resolution)
+        return None

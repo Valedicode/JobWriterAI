@@ -15,6 +15,7 @@ across requests. Per-session isolation is provided by the checkpointer.
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from contextlib import contextmanager
@@ -27,7 +28,15 @@ from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
 from app.agents.orchestrator import GateResolution, build_graph
-from app.agents.orchestrator.chat_agent import interpret_chat
+from app.agents.orchestrator.chat_actions import (
+    ChatActionRefused,
+    edit_bullet_resolution,
+    propose_profile_update,
+    propose_rerun,
+    raise_confirm_gate,
+    remember_chat_turn,
+)
+from app.agents.orchestrator.chat_agent import EditBullet, RerunFrom, UpdateProfile, interpret_chat
 from app.models.schemas import (
     GeneratedFile,
     OrchestratorGatePayload,
@@ -41,6 +50,7 @@ from app.services.generic_session_manager import get_session_manager
 from app.services.session_retention import expire_sessions
 
 router = APIRouter(prefix="/api/orchestrator", tags=["Orchestrator"])
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -312,8 +322,10 @@ def orchestrator_start(
     summary="Send a message to the orchestrator",
     description=(
         "Resume a paused session with a structured gate resolution, or push a "
-        "free-text chat turn (answered in place, or mapped to one of the "
-        "pending gate's allowed actions). A resolution whose action or choice "
+        "free-text chat turn. A chat turn is answered in place, mapped to one "
+        "of the pending gate's allowed actions, used to change one rewritten "
+        "bullet (at approve_rewrite), or turned into a re-run / profile-update "
+        "proposal that waits at the confirm_change gate. A resolution whose action or choice "
         "the pending gate does not allow is refused with 400; one whose `step` "
         "does not match the pending gate is refused with 409. Returns the next "
         "narration and the next pending gate (if any)."
@@ -389,42 +401,72 @@ def _handle_message(request: OrchestratorMessageRequest) -> OrchestratorResponse
             detail="kind='chat' requires non-empty 'text'.",
         )
 
+    text = request.text.strip()
     pending = _pending_gate_from_snapshot(snapshot)
-    turn = interpret_chat(text=request.text.strip(), gate=pending, state=snapshot.values)
+    turn = interpret_chat(text=text, gate=pending, state=snapshot.values)
 
-    if turn.action is None:
-        # Pure Q&A / small talk - answer without touching the graph. The gate
-        # (if any) stays exactly as it was.
-        return OrchestratorResponse(
-            success=True,
-            session_id=request.session_id,
-            narration=turn.reply,
-            narrations=[turn.reply],
-            pending_gate=pending,
-            generated_files=_files_from_state(snapshot.values),
-            done=pending is None,
-            message="ok",
-        )
-
-    # The chat model decided this message maps to a concrete gate action.
-    # Resume the graph with it and prepend the conversational reply.
+    shown_reply = turn.reply
     try:
-        internal = GateResolution.model_validate(turn.action.model_dump())
+        if turn.action is not None:
+            response = _resume_from_chat(request.session_id, snapshot, pending, turn.action, turn.reply)
+        elif isinstance(turn.call, EditBullet):
+            resolution = edit_bullet_resolution(pending, turn.call.bullet_id, turn.call.instruction)
+            response = _resume_from_chat(request.session_id, snapshot, pending, resolution, turn.reply)
+        elif isinstance(turn.call, (RerunFrom, UpdateProfile)):
+            response = _propose_from_chat(request.session_id, snapshot, pending, turn.call, text, turn.reply)
+        else:
+            # Pure Q&A / small talk: the session stays exactly as it was.
+            response = _chat_reply(request.session_id, snapshot, pending, turn.reply)
+    except ChatActionRefused as refused:
+        # The model asked for something the session can't do right now; its
+        # reply may already promise it, so the reason replaces the reply.
+        shown_reply = str(refused)
+        response = _chat_reply(request.session_id, snapshot, pending, shown_reply)
+
+    _remember(request.session_id, text, shown_reply)
+    return response
+
+
+def _chat_reply(
+    session_id: str, snapshot: Any, pending: OrchestratorGatePayload | None, reply: str
+) -> OrchestratorResponse:
+    return OrchestratorResponse(
+        success=True,
+        session_id=session_id,
+        narration=reply,
+        narrations=[reply],
+        pending_gate=pending,
+        generated_files=_files_from_state(snapshot.values),
+        done=pending is None,
+        message="ok",
+    )
+
+
+def _resume_from_chat(
+    session_id: str,
+    snapshot: Any,
+    pending: OrchestratorGatePayload | None,
+    resolution: GateResolution,
+    reply: str,
+) -> OrchestratorResponse:
+    """Resume the pending gate with a resolution the chat derived, checked by
+    the same rule as a button press."""
+    try:
+        internal = GateResolution.model_validate(resolution.model_dump())
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Chat produced an invalid gate resolution: {exc}",
         ) from exc
-    # interpret_chat already checks its action against this gate; repeat the
-    # check here so every resume goes through the same rule.
     _check_resolution_against_gate(internal, pending)
 
+    graph = _get_graph()
     messages_before = len(snapshot.values.get("messages") or [])
     run_id = uuid.uuid4()
     try:
         result = graph.invoke(
             Command(resume=internal.model_dump()),
-            config=_run_config(request.session_id, snapshot.values.get("flow"), run_id),
+            config=_run_config(session_id, snapshot.values.get("flow"), run_id),
         )
     except GraphInterrupt as exc:
         raise HTTPException(
@@ -433,12 +475,56 @@ def _handle_message(request: OrchestratorMessageRequest) -> OrchestratorResponse
         ) from exc
 
     response = _snapshot_response(
-        session_id=request.session_id, invoke_result=result, messages_before=messages_before,
-        run_id=run_id,
+        session_id=session_id, invoke_result=result, messages_before=messages_before, run_id=run_id,
     )
-    if turn.reply:
-        response.narrations = [turn.reply, *response.narrations]
+    if reply:
+        response.narrations = [reply, *response.narrations]
     return response
+
+
+def _propose_from_chat(
+    session_id: str,
+    snapshot: Any,
+    pending: OrchestratorGatePayload | None,
+    call: RerunFrom | UpdateProfile,
+    text: str,
+    reply: str,
+) -> OrchestratorResponse:
+    """Turn a re-run or profile update into a proposal at the confirm_change
+    gate. Nothing in the session changes until the user approves it there."""
+    graph = _get_graph()
+    config = _thread_config(session_id)
+    where = {
+        "pending_node": snapshot.next[0] if snapshot.next else None,
+        "pending_step": pending.step if pending else None,
+    }
+    if isinstance(call, RerunFrom):
+        proposal = propose_rerun(graph, config, snapshot.values, step=call.step, note=call.note, **where)
+    else:
+        proposal = propose_profile_update(
+            graph, config, snapshot.values,
+            kind=call.kind, value=call.value, fluency=call.fluency, source_text=text, **where,
+        )
+
+    raise_confirm_gate(graph, config, proposal)
+    messages_before = len(snapshot.values.get("messages") or [])
+    run_id = uuid.uuid4()
+    result = graph.invoke(None, config=_run_config(session_id, snapshot.values.get("flow"), run_id))
+    response = _snapshot_response(
+        session_id=session_id, invoke_result=result, messages_before=messages_before, run_id=run_id,
+    )
+    if reply:
+        response.narrations = [reply, *response.narrations]
+    return response
+
+
+def _remember(session_id: str, text: str, reply: str) -> None:
+    """Keep the exchange as short-term chat memory. A failure here must not
+    lose the answer the user already got, so it is logged, not raised."""
+    try:
+        remember_chat_turn(_get_graph(), _thread_config(session_id), text, reply)
+    except Exception:
+        logger.exception("Could not store chat memory for session %s", session_id)
 
 
 # --------------------------------------------------------------------------- #
