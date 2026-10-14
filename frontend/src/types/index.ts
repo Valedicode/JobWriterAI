@@ -94,6 +94,8 @@ export interface CVClarificationResponse {
 
 export interface JobRequirements {
   job_title: string;
+  /** The role in one to three words, e.g. "Software Developer"; may be empty. */
+  short_title?: string;
   job_level: string;
   required_skills: string[];
   required_skill_groups?: string[][];

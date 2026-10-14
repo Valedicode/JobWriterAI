@@ -213,6 +213,14 @@ class JobTextRequest(BaseModel):
 class JobRequirements(BaseModel):
     """Structured job requirements extracted from posting."""
     job_title: str = Field(description="Job title")
+    short_title: str = Field(
+        default="",
+        description=(
+            "The role in one to three words, as a person would say it: 'Software Developer', "
+            "'Data Scientist'. No gender markers like (m/w/d), no seniority, no 'Student' or "
+            "'Intern' prefix, no team or project name."
+        ),
+    )
     job_level: str = Field(description="Experience level (entry, mid, senior, etc.)")
     required_skills: List[str] = Field(description="Required technical skills")
     required_skill_groups: List[List[str]] = Field(
