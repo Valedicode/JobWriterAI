@@ -112,6 +112,10 @@ class OrchestratorState(TypedDict, total=False):
     # fact_id -> FactEntry dump: what the CV and the user state
     # (app.services.fact_ledger). Rewrites may only claim these.
     fact_ledger: dict[str, dict[str, Any]]
+    # The fact check of the latest rewrite pass (VerifierResult dump), and
+    # which attempt the next check is (1 = first pass, reset when it passes).
+    verifier_result: dict[str, Any] | None
+    verify_attempt: int | None
 
     # --- chat --------------------------------------------------------------
     # A change the chat proposed (re-run, profile update), waiting at the

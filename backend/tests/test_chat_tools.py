@@ -58,6 +58,11 @@ from tests.test_orchestrator_job_tailoring import (
 BULLET_IDS = list(_index_cv_bullets(CV))  # two experience bullets
 
 
+def _stub_text(rewrite_pass: int, bullet_id: str) -> str:
+    """Stub rewrite wording without digits, so the fact check has nothing to flag."""
+    return f"Rewritten in pass {'abcdef'[rewrite_pass - 1]} for bullet {'xyz'[BULLET_IDS.index(bullet_id)]}"
+
+
 def _rewrite_of(bullet_id: str, text: str) -> dict[str, Any]:
     original = _index_cv_bullets(CV)[bullet_id]["text"]
     return {"original": original, "rewritten": text, "confidence": 0.9,
@@ -98,7 +103,7 @@ class _Tools:
         def rewrite(kwargs):
             locked = {b["bullet_id"]: b for b in json.loads(kwargs["locked_bullets_json"])}
             n = self.count("rewrite_enhance_content")
-            bullets = [locked.get(b) or _rewrite_of(b, f"Rewrite {n} of {b}") for b in BULLET_IDS]
+            bullets = [locked.get(b) or _rewrite_of(b, _stub_text(n, b)) for b in BULLET_IDS]
             return json.dumps({"rewritten_bullets": bullets, "updated_summary": "", "keywords_inserted": []})
 
         return {
@@ -244,7 +249,7 @@ def test_edit_bullet_reruns_only_that_bullet(enabled_client, tools):  # noqa: F8
     assert [b["bullet_id"] for b in locked] == [other]
     bullets = {b["bullet_id"]: b["rewritten"] for b in body["pending_gate"]["preview"]["rewritten_bullets"]}
     assert bullets[other] == kept_text
-    assert bullets[target] == f"Rewrite 2 of {target}"  # regenerated in the second pass
+    assert bullets[target] == _stub_text(2, target)  # regenerated in the second pass
     feedback = _state(sid)["tailoring_strategy"]["user_feedback"][-1]["text"]
     assert target in feedback and "team size" in feedback
 

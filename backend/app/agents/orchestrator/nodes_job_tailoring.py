@@ -46,8 +46,9 @@ from app.agents.scoring_agent import (
     eligibility_answers_from_text,
     eligibility_questions,
 )
-from app.models.schemas import CompatibilityReport
+from app.models.schemas import CompatibilityReport, VerifierResult
 from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
+from app.services.verifier import issue_notes, retry_feedback, verify_rewrites
 
 
 # --------------------------------------------------------------------------- #
@@ -76,6 +77,8 @@ JT_STEP9_COVER_LETTER_FILES = "jt_step9_cover_letter_files"
 JT_GATE_STEP_FAILED = "jt_gate_step_failed"
 JT_GATE_CONFIRM_ELIGIBILITY = "jt_gate_confirm_eligibility"
 JT_GATE_CONFIRM_CHANGE = "jt_gate_confirm_change"
+JT_STEP5B_VERIFY = "jt_step5b_verify"
+JT_GATE_VERIFIER_FAILED = "jt_gate_verifier_failed"
 
 
 # --------------------------------------------------------------------------- #
@@ -243,6 +246,20 @@ def _bullet_index_prompt_block(bullet_index: dict[str, dict[str, Any]]) -> str:
     """Render the id index as a numbered `[id] text` list for LLM prompts."""
     lines = [f"[{bullet_id}] {ref['text']}" for bullet_id, ref in bullet_index.items()]
     return "\n".join(lines) if lines else "(no bullets found)"
+
+
+_FACTS_PROMPT_LIMIT = 250
+
+
+def _facts_prompt_block(fact_ledger: dict[str, dict[str, Any]] | None) -> str:
+    """The ledger's citable facts as `[fact_id] value` lines. Bullets are left
+    out: the rewrite prompt already has them, with their ids."""
+    lines = [
+        f"[{fact_id}] {fact.get('value', '')}"
+        for fact_id, fact in (fact_ledger or {}).items()
+        if isinstance(fact, dict) and fact.get("kind") != "bullet"
+    ]
+    return "\n".join(lines[:_FACTS_PROMPT_LIMIT]) if lines else "(none)"
 
 
 def _write_bullet_by_id(cv_data: dict[str, Any], bullet_id: str, new_text: str, bullet_index: dict[str, dict[str, Any]]) -> bool:
@@ -835,12 +852,17 @@ def jt_step5_rewrite_enhance(state: OrchestratorState) -> dict[str, Any]:
         "selected_content_json": selected_json,
         "tailoring_strategy_json": strategy_json,
         "locked_bullets_json": json.dumps(locked),
+        "facts_block": _facts_prompt_block(state.get("fact_ledger")),
     })
     rewritten = _safe_json_loads(rewritten_json, None)
     error = _tool_error(rewritten, "rewrite")
     if error:
         # locked_rewrites stays in state so a retry keeps the user's choices.
         return _fail_step(JT_STEP5_REWRITE, "Bullet rewriting", error)
+    rewritten["user_written_bullet_ids"] = [
+        b["bullet_id"] for b in locked
+        if isinstance(b, dict) and b.get("user_written") and b.get("bullet_id")
+    ]
 
     bullets = rewritten.get("rewritten_bullets", []) or []
     selected_bullets = (state.get("selected_content") or {}).get("selected_bullets", []) or []
@@ -888,6 +910,176 @@ def jt_step5_rewrite_enhance(state: OrchestratorState) -> dict[str, Any]:
     return _narrate(
         {"rewritten_content": rewritten, "locked_rewrites": None, "step_error": None},
         "\n".join(lines),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Step 5b: fact-check the rewrites against the ledger (no LLM)
+#
+# A rewrite that claims something no fact supports (a technology, number or
+# year) is sent back once with the problems as feedback, the passing bullets
+# locked. Still blocked after that, the verifier_failed gate shows the
+# problems; a blocked rewrite never reaches the review gate as-is.
+# --------------------------------------------------------------------------- #
+
+MAX_VERIFY_ATTEMPTS = 2
+
+_REWRITE_ANNOTATIONS = ("verifier_notes", "user_written")
+
+
+def _without_annotations(bullet: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in bullet.items() if k not in _REWRITE_ANNOTATIONS}
+
+
+def _annotated(rewritten: dict[str, Any], result: VerifierResult) -> dict[str, Any]:
+    """The rewrites with each bullet's verifier notes attached for the UI."""
+    notes = issue_notes(result)
+    annotated = dict(rewritten)
+    annotated["rewritten_bullets"] = [
+        {**_without_annotations(b), "verifier_notes": notes.get(b.get("bullet_id") or "", [])}
+        for b in rewritten.get("rewritten_bullets") or [] if isinstance(b, dict)
+    ]
+    annotated["summary_notes"] = notes.get("summary", [])
+    return annotated
+
+
+def _blocked_problem_lines(result: VerifierResult) -> list[str]:
+    return [f"{i.bullet_id}: {i.detail}" for i in result.issues if i.severity == "block"]
+
+
+def jt_step5b_verify(state: OrchestratorState) -> Command:
+    rewritten = state.get("rewritten_content") or {}
+    attempt = state.get("verify_attempt") or 1
+    bullet_index = state.get("bullet_index") or _index_cv_bullets(state.get("cv_data") or {})
+    result = verify_rewrites(
+        rewritten,
+        state.get("fact_ledger") or {},
+        bullet_index,
+        cv_summary=(state.get("cv_data") or {}).get("summary"),
+        attempt=attempt,
+        user_written_ids=rewritten.get("user_written_bullet_ids") or [],
+    )
+    warnings = sum(1 for i in result.issues if i.severity == "warn")
+
+    if result.passed:
+        narration = "Fact check: every rewrite is backed by your CV."
+        if warnings:
+            narration += f" {warnings} thing(s) are worth a second look; they're marked below."
+        return Command(
+            update=_narrate(
+                {"rewritten_content": _annotated(rewritten, result),
+                 "verifier_result": result.model_dump(), "verify_attempt": None},
+                narration,
+            ),
+            goto=JT_GATE_APPROVE_REWRITE,
+        )
+
+    blocked = set(result.blocked_ids())
+    problems = _blocked_problem_lines(result)
+    if attempt < MAX_VERIFY_ATTEMPTS:
+        user_written = set(rewritten.get("user_written_bullet_ids") or [])
+        locked = [
+            {**_without_annotations(b), **({"user_written": True} if b.get("bullet_id") in user_written else {})}
+            for b in rewritten.get("rewritten_bullets") or []
+            if isinstance(b, dict) and b.get("bullet_id") and b["bullet_id"] not in blocked
+        ]
+        strategy = dict(state.get("tailoring_strategy") or {})
+        strategy["user_feedback"] = list(strategy.get("user_feedback") or []) + [
+            {"stage": "verifier", "text": retry_feedback(result)}
+        ]
+        return Command(
+            update=_narrate(
+                {"locked_rewrites": locked, "tailoring_strategy": strategy, "rewritten_content": None,
+                 "verifier_result": result.model_dump(), "verify_attempt": attempt + 1},
+                "Fact check: some rewrites claim things your CV doesn't support:\n"
+                + "\n".join(f"- {p}" for p in problems)
+                + "\n\nRewriting those again; the others are kept.",
+            ),
+            goto=JT_STEP5_REWRITE,
+        )
+
+    return Command(
+        update=_narrate(
+            {"rewritten_content": _annotated(rewritten, result),
+             "verifier_result": result.model_dump(), "verify_attempt": None},
+            "Fact check: these rewrites still claim things your CV doesn't support:\n"
+            + "\n".join(f"- {p}" for p in problems),
+        ),
+        goto=JT_GATE_VERIFIER_FAILED,
+    )
+
+
+def jt_gate_verifier_failed(state: OrchestratorState) -> Command:
+    """
+    approve: keep the original wording of every blocked bullet (and the CV's
+             own summary if the new one was blocked), then review as usual;
+    edit:    re-run the rewrite with the user's notes, passing bullets kept;
+    reject:  stop.
+    A blocked rewrite is never applied from here.
+    """
+    rewritten = state.get("rewritten_content") or {}
+    result = VerifierResult.model_validate(state.get("verifier_result") or {"passed": False, "attempt": 1,
+                                                                            "preservation_score": 1.0})
+    blocked = set(result.blocked_ids())
+    bullets = [b for b in rewritten.get("rewritten_bullets") or [] if isinstance(b, dict)]
+    payload = GatePayload(
+        step="verifier_failed",
+        kind="approval",
+        narration=(
+            "Some rewrites claim things your CV doesn't support. Approve to keep your original "
+            "wording for those, edit to rewrite them with your notes, or reject to stop."
+        ),
+        preview={
+            "problems": _blocked_problem_lines(result),
+            "blocked_rewrites": [
+                {"bullet_id": b.get("bullet_id"), "original": b.get("original", ""), "rewritten": b.get("rewritten", "")}
+                for b in bullets if b.get("bullet_id") in blocked
+            ],
+            "on_approve": "Blocked bullets keep their original wording; the other rewrites go to your review.",
+        },
+        allowed_actions=["approve", "edit", "reject"],
+    ).model_dump()
+
+    raw = interrupt(payload)
+    resolution = GateResolution.model_validate(raw)
+
+    if resolution.action == "approve":
+        kept = [
+            {**b, "rewritten": b.get("original", ""), "keywords_added": [], "cited_fact_ids": [],
+             "verifier_notes": ["Kept your original wording: the rewrite wasn't backed by your CV."]}
+            if b.get("bullet_id") in blocked else b
+            for b in bullets
+        ]
+        updated = {**rewritten, "rewritten_bullets": kept}
+        if "summary" in blocked:
+            updated["updated_summary"] = ""
+            updated["summary_notes"] = ["Kept your CV's own summary: the new one wasn't backed by your CV."]
+        return Command(
+            update=_narrate({"rewritten_content": updated},
+                            f"Kept the original wording for {len(blocked)} item(s). Review the rest below."),
+            goto=JT_GATE_APPROVE_REWRITE,
+        )
+    if resolution.action == "edit":
+        strategy = dict(state.get("tailoring_strategy") or {})
+        strategy["user_feedback"] = list(strategy.get("user_feedback") or []) + [
+            {"stage": "approve_rewrite", "text": resolution.feedback or ""}
+        ]
+        user_written = set(rewritten.get("user_written_bullet_ids") or [])
+        locked = [
+            {**_without_annotations(b), **({"user_written": True} if b.get("bullet_id") in user_written else {})}
+            for b in bullets if b.get("bullet_id") and b["bullet_id"] not in blocked
+        ]
+        return Command(
+            update=_narrate(
+                {"tailoring_strategy": strategy, "rewritten_content": None, "locked_rewrites": locked,
+                 "verify_attempt": None},
+                f"Re-running the rejected rewrites with your notes: {resolution.feedback}",
+            ),
+            goto=JT_STEP5_REWRITE,
+        )
+    return Command(
+        update=_narrate({}, "Stopped before document assembly. No documents were generated."),
+        goto=END,
     )
 
 
@@ -940,6 +1132,7 @@ def _locked_bullets_for_edit(
     for b in rewritten_bullets:
         if not isinstance(b, dict):
             continue
+        b = _without_annotations(b)
         bullet_id = b.get("bullet_id")
         decision = decisions.get(bullet_id) if bullet_id else None
         if decision is None:
@@ -948,7 +1141,8 @@ def _locked_bullets_for_edit(
         if choice == "keep_original":
             locked.append({**b, "rewritten": b.get("original", ""), "keywords_added": []})
         elif choice == "custom" and getattr(decision, "text", None):
-            locked.append({**b, "rewritten": decision.text})
+            # The user's own words: the fact check leaves them alone.
+            locked.append({**b, "rewritten": decision.text, "user_written": True})
         elif choice == "accept":
             locked.append(b)
     return locked
@@ -1017,7 +1211,8 @@ def route_after_select(state: OrchestratorState) -> str:
 
 
 def route_after_rewrite(state: OrchestratorState) -> str:
-    return JT_GATE_STEP_FAILED if state.get("step_error") else JT_GATE_APPROVE_REWRITE
+    # Rewrites are fact-checked before the user sees them.
+    return JT_GATE_STEP_FAILED if state.get("step_error") else JT_STEP5B_VERIFY
 
 
 def jt_gate_step_failed(state: OrchestratorState) -> Command:
