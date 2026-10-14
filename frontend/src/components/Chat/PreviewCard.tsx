@@ -152,6 +152,7 @@ interface ScorePreview {
   gap_analysis?: {
     matched_skills?: ScoreSkillMatch[];
     transferable_skills?: ScoreSkillMatch[];
+    learnable_skills?: ScoreSkillMatch[];
     missing_skills?: ScoreSkillMatch[];
     eligibility?: ScoreEligibility[];
   };
@@ -178,6 +179,10 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
   const gap = p.gap_analysis ?? {};
   const missingRequired = skillNames(gap.missing_skills, true);
   const missingPreferred = skillNames(gap.missing_skills, false);
+  // Learnable: not on the CV, only adjacent experience - a gap, shown with what it builds on.
+  const learnable = asArray<ScoreSkillMatch>(gap.learnable_skills)
+    .filter((m) => m && m.required_skill)
+    .map((m) => (m.matched_with ? `${m.required_skill} (via ${m.matched_with})` : (m.required_skill as string)));
   const eligibility = asArray<ScoreEligibility>(gap.eligibility).filter((e) => e && e.requirement);
   const warnings = asArray<string>(p.warnings).filter((w) => typeof w === 'string' && w);
   return (
@@ -225,6 +230,7 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums text-ink-muted">
           <span>Matched {(gap.matched_skills || []).length}</span>
           <span>Transferable {(gap.transferable_skills || []).length}</span>
+          <span>Learnable {learnable.length}</span>
           <span>Missing {(gap.missing_skills || []).length}</span>
         </div>
         {missingRequired.length > 0 && (
@@ -235,6 +241,11 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
         {missingPreferred.length > 0 && (
           <p className="mt-1 text-sm text-ink-muted [overflow-wrap:anywhere]">
             <span className="font-medium">Missing nice-to-haves:</span> {missingPreferred.join(', ')}
+          </p>
+        )}
+        {learnable.length > 0 && (
+          <p className="mt-1 text-sm text-ink-muted [overflow-wrap:anywhere]">
+            <span className="font-medium">Not on your CV, learnable:</span> {learnable.join(', ')}
           </p>
         )}
       </Section>

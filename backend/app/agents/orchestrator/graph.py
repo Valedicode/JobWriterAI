@@ -61,6 +61,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_GATE_APPROVE_COVER_LETTER,
     JT_GATE_APPROVE_REWRITE,
     JT_GATE_APPROVE_SELECTION,
+    JT_GATE_CONFIRM_ELIGIBILITY,
     JT_GATE_COVER_LETTER,
     JT_GATE_COVER_LETTER_RECIPIENT,
     JT_STEP_SET_COVER_LETTER_RECIPIENT,
@@ -79,6 +80,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     jt_gate_approve_cover_letter,
     jt_gate_approve_rewrite,
     jt_gate_approve_selection,
+    jt_gate_confirm_eligibility,
     jt_gate_cover_letter,
     jt_gate_cover_letter_recipient,
     jt_gate_present_score,
@@ -94,6 +96,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     jt_step9_cover_letter_files,
     jt_step_set_cover_letter_recipient,
     route_after_rewrite,
+    route_after_score,
     route_after_select,
 )
 from app.agents.orchestrator.state import OrchestratorState
@@ -168,6 +171,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node(JT_GATE_COVER_LETTER, jt_gate_cover_letter)
     graph.add_node(JT_GATE_APPROVE_COVER_LETTER, jt_gate_approve_cover_letter)
     graph.add_node(JT_GATE_STEP_FAILED, jt_gate_step_failed)
+    graph.add_node(JT_GATE_CONFIRM_ELIGIBILITY, jt_gate_confirm_eligibility)
 
     # --- entry routing -------------------------------------------------------
     graph.add_conditional_edges(
@@ -183,7 +187,14 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # --- linear edges for non-routing step nodes ----------------------------
     graph.add_edge(JT_ENTRY, JT_STEP1_SUMMARIZE)
     graph.add_edge(JT_STEP1_SUMMARIZE, JT_STEP2_COMPATIBILITY)
-    graph.add_edge(JT_STEP2_COMPATIBILITY, JT_GATE_PRESENT_SCORE)
+    # Step 2 asks about eligibility the CV is silent on (once per run) before
+    # the score review; JT_GATE_CONFIRM_ELIGIBILITY then goes to
+    # JT_GATE_PRESENT_SCORE via Command.
+    graph.add_conditional_edges(
+        JT_STEP2_COMPATIBILITY,
+        route_after_score,
+        {JT_GATE_CONFIRM_ELIGIBILITY: JT_GATE_CONFIRM_ELIGIBILITY, JT_GATE_PRESENT_SCORE: JT_GATE_PRESENT_SCORE},
+    )
     # JT_GATE_PRESENT_SCORE returns Command(goto=JT_STEP3_STRATEGY or END)
     graph.add_edge(JT_STEP3_STRATEGY, JT_STEP4_SELECT)
     # Steps 4 and 5 go to their review gate, or to JT_GATE_STEP_FAILED when

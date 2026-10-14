@@ -297,6 +297,34 @@ def test_message_rejects_bad_gate_resolution(enabled_client, patched_tools):
     assert resp.status_code == 400
 
 
+def test_eligibility_answers_pass_through_the_api(enabled_client, patched_tools):
+    from tests.test_orchestrator_job_tailoring import GERMAN_JOB, SILENT_REPORT
+
+    with patch(
+        "app.agents.orchestrator.nodes_job_tailoring.calculate_compatibility_score_v2",
+        _fake_tool(lambda _: json.dumps(SILENT_REPORT)),
+    ):
+        start = enabled_client.post(
+            "/api/orchestrator/start",
+            json={"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB},
+        ).json()
+    assert start["pending_gate"]["step"] == "confirm_eligibility"
+    [question] = start["pending_gate"]["preview"]["questions"]
+
+    resp = enabled_client.post(
+        "/api/orchestrator/message",
+        json={
+            "session_id": start["session_id"],
+            "kind": "gate_resolution",
+            "resolution": {"action": "edit", "feedback": "German: native", "answers": {question["id"]: "native"}},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["pending_gate"]["step"] == "present_score"
+    assert body["pending_gate"]["preview"]["gap_analysis"]["eligibility"][0]["status"] == "met"
+
+
 # --------------------------------------------------------------------------- #
 # Resolutions are checked against the pending gate before the graph resumes.
 # --------------------------------------------------------------------------- #

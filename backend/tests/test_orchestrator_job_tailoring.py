@@ -31,6 +31,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_GATE_APPROVE_SELECTION,
     JT_GATE_COVER_LETTER,
     JT_GATE_PRESENT_SCORE,
+    route_after_score,
 )
 
 
@@ -794,3 +795,87 @@ def test_chat_context_reports_step_error():
         "step_error": {"step": "jt_step5_rewrite_enhance", "label": "Bullet rewriting", "detail": "boom"},
     })
     assert "step_error: Bullet rewriting failed - boom" in block
+
+
+# --------------------------------------------------------------------------- #
+# confirm_eligibility: asked once when the CV is silent on a stated must-have
+# --------------------------------------------------------------------------- #
+
+GERMAN_JOB = {**JOB, "required_languages": ["German (C1)"]}
+SILENT_REPORT = {
+    **COMPATIBILITY_REPORT,
+    "gap_analysis": {
+        **COMPATIBILITY_REPORT["gap_analysis"],
+        "eligibility": [{
+            "requirement": "German (C1)", "kind": "language", "status": "unclear",
+            "rationale": "CV lists no languages.",
+        }],
+    },
+}
+
+
+@pytest.fixture
+def silent_on_german(patched_tools):
+    with patch(
+        "app.agents.orchestrator.nodes_job_tailoring.calculate_compatibility_score_v2",
+        _fake_tool(lambda _: json.dumps(SILENT_REPORT)),
+    ):
+        yield
+
+
+def test_unclear_eligibility_asks_before_the_score_gate(graph, silent_on_german):
+    config = {"configurable": {"thread_id": "test-eligibility-answer"}}
+    result = graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "confirm_eligibility"
+    assert payload["kind"] == "input"
+    [question] = payload["preview"]["questions"]
+    assert question["language"] == "German"
+    assert "I'll ask you about these next." in result["messages"][-1].content
+
+    result = graph.invoke(
+        Command(resume={"action": "edit", "feedback": "German: C1", "answers": {question["id"]: "C1"}}),
+        config=config,
+    )
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "present_score"
+    eligibility = payload["preview"]["gap_analysis"]["eligibility"]
+    assert eligibility[0]["status"] == "met"
+    assert any(d["name"] == "eligibility" for d in payload["preview"]["dimensions"])
+
+    values = graph.get_state(config).values
+    assert values["cv_data"]["languages"] == [{"language": "German", "fluency": "C1"}]
+    assert values["eligibility_asked"] is True
+    assert "German (C1): met" in result["messages"][-1].content
+
+
+def test_skipping_eligibility_continues_unchanged_and_never_asks_again(graph, silent_on_german):
+    config = {"configurable": {"thread_id": "test-eligibility-skip"}}
+    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # skip
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "present_score"
+    assert payload["preview"]["gap_analysis"]["eligibility"][0]["status"] == "unclear"
+    values = graph.get_state(config).values
+    assert "languages" not in values["cv_data"]
+    assert route_after_score(values) == JT_GATE_PRESENT_SCORE
+
+
+def test_eligibility_answer_typed_as_text_is_understood(graph, silent_on_german):
+    config = {"configurable": {"thread_id": "test-eligibility-chat"}}
+    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    result = graph.invoke(
+        Command(resume={"action": "edit", "feedback": "I'm a native German speaker"}), config=config
+    )
+    assert _interrupt_payload(result)["step"] == "present_score"
+    assert graph.get_state(config).values["cv_data"]["languages"][0]["fluency"] == "native"
+
+
+def test_unreadable_text_answer_asks_again(graph, silent_on_german):
+    config = {"configurable": {"thread_id": "test-eligibility-unreadable"}}
+    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    result = graph.invoke(Command(resume={"action": "edit", "feedback": "not sure"}), config=config)
+    assert _interrupt_payload(result)["step"] == "confirm_eligibility"
+    assert "couldn't match" in result["messages"][-1].content

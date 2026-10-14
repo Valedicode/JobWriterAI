@@ -137,6 +137,13 @@ class GateResolution(BaseModel):
             "'accept'/'include'."
         ),
     )
+    answers: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Answers keyed by question id, for gates whose preview lists "
+            "`questions` (confirm_eligibility). Unanswered ids are skipped."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_shape(self) -> "GateResolution":

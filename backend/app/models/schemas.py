@@ -309,11 +309,12 @@ class SkillMatch(BaseModel):
         default=None,
         description="Candidate skill that satisfies the requirement (None if missing)"
     )
-    kind: Literal["direct", "family", "transferable", "missing"] = Field(
+    kind: Literal["direct", "family", "transferable", "learnable", "missing"] = Field(
         description=(
             "How the match was resolved: direct (exact/alias), family "
             "(same skill-graph family), transferable (LLM/embedding judged "
-            "transferable), or missing"
+            "transferable), learnable (not held, but adjacent experience makes "
+            "it learnable - a gap, not coverage), or missing"
         )
     )
     transferability: float = Field(
@@ -369,11 +370,18 @@ class GapAnalysis(BaseModel):
     )
     transferable_skills: List[SkillMatch] = Field(
         default_factory=list,
-        description="Skills with 0.55 <= transferability < 0.95 (each carries a bridge_bullet)"
+        description="Skills with 0.55 <= transferability < 0.95, counted as covered via a related skill"
+    )
+    learnable_skills: List[SkillMatch] = Field(
+        default_factory=list,
+        description=(
+            "Skills the CV does not show but adjacent experience makes learnable "
+            "(kind='learnable'). A gap, not coverage."
+        ),
     )
     missing_skills: List[SkillMatch] = Field(
         default_factory=list,
-        description="Skills with transferability < 0.55 (real gaps)"
+        description="Skills with transferability < 0.55 and no adjacent experience (real gaps)"
     )
     over_qualified_signals: List[str] = Field(
         default_factory=list,
@@ -654,6 +662,10 @@ class OrchestratorGateResolution(BaseModel):
             "and approve_rewrite gates. Bullets with no entry default to "
             "'accept'/'include'."
         ),
+    )
+    answers: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Answers keyed by question id, for gates whose preview lists `questions` (confirm_eligibility).",
     )
 
 

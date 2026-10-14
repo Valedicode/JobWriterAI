@@ -38,7 +38,13 @@ from app.agents.writer_agent import (
     select_prioritize_content,
 )
 from app.services.latex_renderer import extract_recipient_name
-from app.agents.scoring_agent import calculate_compatibility_score_v2
+from app.agents.scoring_agent import (
+    apply_eligibility_answers,
+    calculate_compatibility_score_v2,
+    eligibility_answers_from_text,
+    eligibility_questions,
+)
+from app.models.schemas import CompatibilityReport
 
 
 # --------------------------------------------------------------------------- #
@@ -65,6 +71,7 @@ JT_STEP8_COVER_LETTER_CONTENT = "jt_step8_cover_letter_content"
 JT_GATE_APPROVE_COVER_LETTER = "jt_gate_approve_cover_letter"
 JT_STEP9_COVER_LETTER_FILES = "jt_step9_cover_letter_files"
 JT_GATE_STEP_FAILED = "jt_gate_step_failed"
+JT_GATE_CONFIRM_ELIGIBILITY = "jt_gate_confirm_eligibility"
 
 
 # --------------------------------------------------------------------------- #
@@ -416,9 +423,13 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
     gap = report.get("gap_analysis", {}) or {}
     matched = [m for m in (gap.get("matched_skills") or []) if isinstance(m, dict)]
     transferable = [m for m in (gap.get("transferable_skills") or []) if isinstance(m, dict)]
+    learnable = [m for m in (gap.get("learnable_skills") or []) if isinstance(m, dict)]
     missing = [m for m in (gap.get("missing_skills") or []) if isinstance(m, dict)]
     lines.append("")
-    lines.append(f"Matched: {len(matched)} | Transferable: {len(transferable)} | Missing: {len(missing)}")
+    lines.append(
+        f"Matched: {len(matched)} | Transferable: {len(transferable)} | "
+        f"Learnable: {len(learnable)} | Missing: {len(missing)}"
+    )
     # Name the actual gaps instead of only a count, and keep must-haves apart
     # from nice-to-haves: a missing required skill is a real gap, a missing
     # preferred one on a student posting is expected.
@@ -428,13 +439,17 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
         lines.append(f"Missing required skills: {', '.join(missing_required)}")
     if missing_preferred:
         lines.append(f"Missing nice-to-haves: {', '.join(missing_preferred)}")
-    transferable_bridges = [
-        f"{m.get('required_skill')} (via {m.get('matched_with')})"
-        for m in transferable
-        if m.get("required_skill") and m.get("bridge_bullet")
-    ]
-    if transferable_bridges:
-        lines.append(f"Bridgeable via existing experience: {', '.join(transferable_bridges)}")
+    def _via(items: list[dict[str, Any]]) -> list[str]:
+        return [
+            f"{m['required_skill']} (via {m['matched_with']})" if m.get("matched_with") else m["required_skill"]
+            for m in items
+            if m.get("required_skill")
+        ]
+
+    if transferable:
+        lines.append(f"Covered via a closely related skill: {', '.join(_via(transferable))}")
+    if learnable:
+        lines.append(f"Not on your CV, but learnable from adjacent experience: {', '.join(_via(learnable))}")
 
     eligibility = [e for e in (gap.get("eligibility") or []) if isinstance(e, dict)]
     if eligibility:
@@ -453,23 +468,120 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
     if report.get("interpretation"):
         lines.append("")
         lines.append(report["interpretation"])
-    if missing_required and not transferable_bridges:
+    gaps_required = missing_required + [
+        m["required_skill"] for m in learnable if m.get("required_skill") and m.get("is_required", True)
+    ]
+    if gaps_required:
         lines.append(
-            "\nNote: none of these required-skill gaps can be bridged from your current CV "
-            "content - the rewrite step can only rephrase what's already there, not invent "
-            "missing skills. If you have any real exposure to "
-            f"{', '.join(missing_required)} (a course, a side project, brief use on the job), "
-            "add it to your CV before this step so it can be surfaced."
+            "\nNote: the rewrite step only rephrases what's already on your CV; it will not add "
+            f"{', '.join(gaps_required)}. If you have any real exposure to them (a course, a side "
+            "project, brief use on the job), add it to your CV before this step so it can be surfaced."
         )
     unclear = [e.get("requirement") for e in eligibility if e.get("status") == "unclear"]
     if unclear:
+        follow_up = (
+            "I'll ask you about these next."
+            if _eligibility_questions_for(report) else
+            "If you meet them, add them to the CV (a Languages section, an 'Expected' graduation date)."
+        )
         lines.append(
             "\nYour CV gives no information on: "
-            f"{', '.join(str(u) for u in unclear if u)}. If you meet these, add them to the CV "
-            "(a Languages section, an 'Expected' graduation date) so the score reflects it."
+            f"{', '.join(str(u) for u in unclear if u)}. These are left out of the score until "
+            f"confirmed. {follow_up}"
         )
 
     return _narrate({"compatibility_report": report}, "\n".join(lines))
+
+
+# --------------------------------------------------------------------------- #
+# Gate: confirm eligibility (only when the CV is silent on a stated must-have)
+# --------------------------------------------------------------------------- #
+
+def _eligibility_questions_for(report: dict[str, Any] | None) -> list[dict[str, Any]]:
+    checks = ((report or {}).get("gap_analysis") or {}).get("eligibility") or []
+    try:
+        return eligibility_questions(checks)
+    except Exception:
+        return []
+
+
+def route_after_score(state: OrchestratorState) -> str:
+    if not state.get("eligibility_asked") and _eligibility_questions_for(state.get("compatibility_report")):
+        return JT_GATE_CONFIRM_ELIGIBILITY
+    return JT_GATE_PRESENT_SCORE
+
+
+def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
+    """
+    Ask about language / enrollment / degree requirements the CV says
+    nothing about, then rescore deterministically (no new LLM call) and
+    continue to the score review. Asked once per run; skipping leaves the
+    items unclear and out of the score.
+    """
+    report = state.get("compatibility_report") or {}
+    questions = _eligibility_questions_for(report)
+    payload = GatePayload(
+        step="confirm_eligibility",
+        kind="input",
+        narration=(
+            "The posting asks for things your CV doesn't mention. Answer what applies; "
+            "anything you skip stays out of the score."
+        ),
+        preview={"questions": questions},
+        allowed_actions=["edit", "approve"],
+    ).model_dump()
+
+    raw = interrupt(payload)
+    resolution = GateResolution.model_validate(raw)
+
+    answers = {k: v for k, v in (resolution.answers or {}).items() if isinstance(v, str) and v.strip()}
+    if resolution.action == "edit" and not answers:
+        # Typed through the chat rather than the form: read what we can.
+        answers = eligibility_answers_from_text(questions, resolution.feedback or "")
+        if not answers:
+            return Command(
+                update=_narrate({}, "I couldn't match that to the questions. Please answer them in the form, or skip."),
+                goto=JT_GATE_CONFIRM_ELIGIBILITY,
+            )
+    if resolution.action != "edit" or not answers:
+        return Command(
+            update=_narrate(
+                {"eligibility_asked": True},
+                "Skipped. Those requirements stay out of the score.",
+            ),
+            goto=JT_GATE_PRESENT_SCORE,
+        )
+
+    previous = CompatibilityReport.model_validate(report)
+    cv_data, rescored, notes = apply_eligibility_answers(
+        state.get("cv_data") or {}, state.get("job_data") or {}, previous, answers
+    )
+    asked = {q["requirement"] for q in questions}
+    status_label = {"met": "met", "unclear": "still unclear", "unmet": "NOT met"}
+    lines = [
+        "Eligibility updated",
+        "",
+        f"Compatibility Score: {previous.aggregate_score:.2f} -> {rescored.aggregate_score:.2f} "
+        f"({rescored.level.upper()})",
+    ]
+    for check in rescored.gap_analysis.eligibility:
+        if check.requirement in asked:
+            lines.append(f"- {check.requirement}: {status_label.get(check.status, check.status)}")
+    lines.extend(f"\n{w}" for w in rescored.warnings)
+    if notes:
+        lines.append("")
+        lines.extend(notes)
+    return Command(
+        update=_narrate(
+            {
+                "cv_data": cv_data,
+                "compatibility_report": rescored.model_dump(),
+                "eligibility_asked": True,
+            },
+            "\n".join(lines),
+        ),
+        goto=JT_GATE_PRESENT_SCORE,
+    )
 
 
 # --------------------------------------------------------------------------- #

@@ -69,7 +69,12 @@ interface UseOrchestratorChatReturn {
   handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   submitGateResolution: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> }
+    opts?: {
+      feedback?: string;
+      choice?: string;
+      decisions?: Record<string, BulletDecision>;
+      answers?: Record<string, string>;
+    }
   ) => Promise<void>;
   clearError: () => void;
   resetSession: () => void;
@@ -195,10 +200,16 @@ export const useOrchestratorChat = ({
   const submitGateResolution = useCallback(
     async (
       action: OrchestratorGateAction,
-      opts: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> } = {}
+      opts: {
+        feedback?: string;
+        choice?: string;
+        decisions?: Record<string, BulletDecision>;
+        answers?: Record<string, string>;
+      } = {}
     ) => {
       if (!sessionId || isLoading) return;
 
+      const hasAnswers = Boolean(opts.answers && Object.keys(opts.answers).length > 0);
       const resolution: OrchestratorGateResolution = {
         action,
         // Tie the answer to the gate on screen, so a double-submit or a stale
@@ -209,17 +220,23 @@ export const useOrchestratorChat = ({
         ...(opts.decisions && Object.keys(opts.decisions).length > 0
           ? { decisions: opts.decisions }
           : {}),
+        ...(hasAnswers ? { answers: opts.answers } : {}),
       };
 
       // Echo a user-side message describing the action so the transcript
       // shows what was decided.
+      const isQuestionGate = pendingGate?.step === 'confirm_eligibility';
       const echoText =
         action === 'approve'
-          ? 'Approved.'
+          ? isQuestionGate
+            ? 'Skipped.'
+            : 'Approved.'
           : action === 'reject'
             ? 'Rejected.'
             : action === 'edit'
-              ? `Edit: ${opts.feedback || ''}`
+              ? hasAnswers
+                ? `Answered: ${opts.feedback || ''}`
+                : `Edit: ${opts.feedback || ''}`
               : `Selected: ${opts.choice || ''}`;
       setMessages((prev) => [
         ...prev,

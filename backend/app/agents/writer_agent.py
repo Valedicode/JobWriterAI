@@ -498,7 +498,8 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
     # has. No drafted bullet text goes in here - the scorer's bridge_bullet is
     # a claim about the required skill, and handing it to the rewriter as an
     # instruction is how a skill the CV never mentions ends up on it.
-    for sk in gap.transferable_skills:
+    adjacent = gap.transferable_skills + gap.learnable_skills
+    for sk in adjacent:
         if not sk.matched_with:
             continue
         directives.append({
@@ -520,7 +521,7 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
             "rationale": "These job-required skills are explicitly held by the candidate; surface them prominently.",
         })
 
-    if any(sk.matched_with for sk in gap.transferable_skills):
+    if any(sk.matched_with for sk in adjacent):
         focus_areas.append("surface_adjacent_experience")
 
     if gap.missing_skills:
@@ -596,6 +597,7 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
         "summary": {
             "matched_skills_count": len(gap.matched_skills),
             "transferable_skills_count": len(gap.transferable_skills),
+            "learnable_skills_count": len(gap.learnable_skills),
             "missing_skills_count": len(gap.missing_skills),
             "over_qualified_signals_count": len(gap.over_qualified_signals),
         },

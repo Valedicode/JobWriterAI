@@ -93,6 +93,9 @@ class OrchestratorState(TypedDict, total=False):
     # Set by a step whose tool failed ({step, label, detail}); routes the graph
     # to the step_failed gate instead of presenting a fallback as real output.
     step_error: dict[str, Any] | None
+    # True once the confirm_eligibility gate has been shown, so it is asked
+    # at most once per run (answered or skipped).
+    eligibility_asked: bool
 
     # --- cv-review artifacts -----------------------------------------------
     review_outputs: dict[str, dict[str, Any]]
