@@ -327,6 +327,8 @@ export interface BulletDecision {
 
 export interface OrchestratorGateResolution {
   action: OrchestratorGateAction;
+  /** Step of the gate being answered; a stale answer (step mismatch) is refused with 409. */
+  step?: string;
   feedback?: string;
   choice?: string;
   /** Per-bullet decisions keyed by bullet_id, for approve_selection / approve_rewrite gates. */
