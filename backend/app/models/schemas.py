@@ -640,6 +640,13 @@ class OrchestratorGateResolution(BaseModel):
     action: Literal["approve", "reject", "edit", "choose"] = Field(
         description="Selected action. Must be in the gate's allowed_actions."
     )
+    step: Optional[str] = Field(
+        default=None,
+        description=(
+            "The `step` of the gate this answers. When set and it does not match "
+            "the pending gate, the answer is stale and is refused with 409."
+        ),
+    )
     feedback: Optional[str] = Field(
         default=None,
         description="Free-text edit instructions (required when action='edit')."

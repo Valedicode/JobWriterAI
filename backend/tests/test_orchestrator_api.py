@@ -323,3 +323,85 @@ def test_eligibility_answers_pass_through_the_api(enabled_client, patched_tools)
     body = resp.json()
     assert body["pending_gate"]["step"] == "present_score"
     assert body["pending_gate"]["preview"]["gap_analysis"]["eligibility"][0]["status"] == "met"
+
+
+# --------------------------------------------------------------------------- #
+# Resolutions are checked against the pending gate before the graph resumes.
+# --------------------------------------------------------------------------- #
+
+def _start(client) -> str:
+    start = client.post(
+        "/api/orchestrator/start",
+        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+    ).json()
+    assert start["pending_gate"]["step"] == "present_score"
+    return start["session_id"]
+
+
+def _send(client, session_id: str, **resolution):
+    return client.post(
+        "/api/orchestrator/message",
+        json={"session_id": session_id, "kind": "gate_resolution", "resolution": resolution},
+    )
+
+
+def _pending_step(client, session_id: str) -> str | None:
+    gate = client.get(f"/api/orchestrator/state/{session_id}").json()["pending_gate"]
+    return gate["step"] if gate else None
+
+
+def test_disallowed_action_is_refused_and_gate_stays(enabled_client, patched_tools):
+    # present_score allows approve/reject; 'edit' used to fall through to END.
+    session_id = _start(enabled_client)
+    resp = _send(enabled_client, session_id, action="edit", feedback="more detail")
+    assert resp.status_code == 400
+    assert "not allowed at gate 'present_score'" in resp.json()["detail"]
+    assert _pending_step(enabled_client, session_id) == "present_score"
+    # The gate still works normally afterwards.
+    assert _send(enabled_client, session_id, action="approve").json()["pending_gate"]["step"] == "approve_selection"
+
+
+def test_invalid_choice_is_refused_instead_of_skipping(enabled_client, patched_tools):
+    session_id = _start(enabled_client)
+    for _ in range(3):  # present_score, approve_selection, approve_rewrite
+        _send(enabled_client, session_id, action="approve")
+    assert _pending_step(enabled_client, session_id) == "cover_letter_language"
+
+    resp = _send(enabled_client, session_id, action="choose", choice="french")
+    assert resp.status_code == 400
+    assert _pending_step(enabled_client, session_id) == "cover_letter_language"
+
+    resp = _send(enabled_client, session_id, action="approve")
+    assert resp.status_code == 400
+    assert _pending_step(enabled_client, session_id) == "cover_letter_language"
+
+
+def test_stale_step_is_refused_with_conflict(enabled_client, patched_tools):
+    session_id = _start(enabled_client)
+    first = _send(enabled_client, session_id, action="approve", step="present_score")
+    assert first.status_code == 200
+    assert first.json()["pending_gate"]["step"] == "approve_selection"
+
+    # A second click on the old present_score panel must not approve the selection.
+    stale = _send(enabled_client, session_id, action="approve", step="present_score")
+    assert stale.status_code == 409
+    assert _pending_step(enabled_client, session_id) == "approve_selection"
+
+
+def test_resolution_after_flow_end_is_refused(enabled_client, patched_tools):
+    session_id = _start(enabled_client)
+    assert _send(enabled_client, session_id, action="reject").json()["done"] is True
+    resp = _send(enabled_client, session_id, action="approve")
+    assert resp.status_code == 409
+
+
+def test_chat_action_outside_allowed_actions_is_refused(enabled_client, patched_tools):
+    session_id = _start(enabled_client)
+    chat_turn = ChatTurn(reply="Re-running.", action=GateResolution(action="edit", feedback="shorter"))
+    with patch("app.api.orchestrator.interpret_chat", return_value=chat_turn):
+        resp = enabled_client.post(
+            "/api/orchestrator/message",
+            json={"session_id": session_id, "kind": "chat", "text": "make it shorter"},
+        )
+    assert resp.status_code == 400
+    assert _pending_step(enabled_client, session_id) == "present_score"
