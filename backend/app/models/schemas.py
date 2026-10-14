@@ -5,7 +5,7 @@ This module defines all Pydantic models used for API communication.
 These models provide validation, serialization, and documentation for the API.
 """
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 
 
@@ -202,6 +202,15 @@ class JobRequirements(BaseModel):
         ),
     )
     preferred_skills: List[str] = Field(default=[], description="Preferred skills")
+    learnable_skills: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Skills the posting says the employer will teach or that the candidate "
+            "may still be learning, e.g. 'was Du noch nicht kennst, lernst Du bei "
+            "uns', 'training provided', 'eager to learn X'. A skill listed here "
+            "appears in neither required_skills nor preferred_skills."
+        ),
+    )
     required_languages: List[str] = Field(
         default_factory=list,
         description=(
@@ -221,6 +230,43 @@ class JobRequirements(BaseModel):
     years_experience: Optional[int] = Field(default=None, description="Years of experience required")
     employment_type: str = Field(description="Employment type (Full-time, Contract, etc.)")
     location: str = Field(description="Job location")
+    # Knockout conditions: stated hard conditions that rule a candidate out
+    # regardless of skills. Each stays empty unless the posting states it.
+    work_mode: Optional[Literal["onsite", "hybrid", "remote"]] = Field(
+        default=None,
+        description="Where the work happens, only when the posting says so.",
+    )
+    location_constraint: Optional[str] = Field(
+        default=None,
+        description=(
+            "A stated condition on where the candidate must live or be able to "
+            "work, e.g. 'within commuting distance of Munich', 'EU residents only'. "
+            "Not the office address; that is `location`."
+        ),
+    )
+    hours_per_week: Optional[str] = Field(
+        default=None,
+        description="Weekly hours as stated, e.g. '20', '16-20', 'up to 20'.",
+    )
+    start_date: Optional[str] = Field(
+        default=None,
+        description="Start date as stated, e.g. 'immediately', 'ab sofort', '2026-11-01'.",
+    )
+    work_permit: Optional[str] = Field(
+        default=None,
+        description=(
+            "A stated work-authorisation condition, e.g. 'EU work permit required', "
+            "'no visa sponsorship'."
+        ),
+    )
+    posting_language: Optional[str] = Field(
+        default=None,
+        description="ISO 639-1 code of the language the posting is written in, e.g. 'de', 'en'.",
+    )
+    country: Optional[str] = Field(
+        default=None,
+        description="ISO 3166-1 alpha-2 code of the country the job is in, e.g. 'DE', 'AT', 'CH'.",
+    )
     responsibilities: List[str] = Field(description="Key responsibilities")
     qualifications: List[str] = Field(default=[], description="Required qualifications")
     key_requirements: List[str] = Field(description="Critical must-have requirements")
@@ -231,6 +277,36 @@ class JobRequirements(BaseModel):
             "(e.g. 'Contact: Jane Smith'). Leave empty when not mentioned."
         ),
     )
+
+    @field_validator("work_mode", mode="before")
+    @classmethod
+    def _normalise_work_mode(cls, value: Any) -> Optional[str]:
+        # Models and older payloads write "On-site", "Remote-first",
+        # "Homeoffice"; an unrecognised value must not fail the whole posting.
+        if not isinstance(value, str):
+            return None
+        text = value.strip().lower()
+        if "hybrid" in text:
+            return "hybrid"
+        if "remote" in text or "homeoffice" in text or "home office" in text:
+            return "remote"
+        if text.replace("-", "").replace(" ", "") in {"onsite", "office", "inoffice", "vorort"}:
+            return "onsite"
+        return None
+
+    @field_validator("posting_language", mode="before")
+    @classmethod
+    def _normalise_language_code(cls, value: Any) -> Optional[str]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip().lower()
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def _normalise_country_code(cls, value: Any) -> Optional[str]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip().upper()
 
 
 class JobExtractionResponse(BaseModel):

@@ -346,6 +346,21 @@ def jt_entry(state: OrchestratorState) -> dict[str, Any]:
 # Step 1: summarise job posting
 # --------------------------------------------------------------------------- #
 
+_CONDITION_LABELS = (
+    ("work_mode", "Work mode"),
+    ("location_constraint", "Location"),
+    ("hours_per_week", "Hours/week"),
+    ("start_date", "Start"),
+    ("work_permit", "Work permit"),
+)
+
+
+def _job_conditions(job_data: dict[str, Any]) -> list[str]:
+    """The knockout conditions the posting states, as 'Label: value'."""
+    return [f"{label}: {job_data[key]}" for key, label in _CONDITION_LABELS
+            if isinstance(job_data.get(key), str) and job_data[key].strip()]
+
+
 def jt_step1_summarize_job(state: OrchestratorState) -> dict[str, Any]:
     job_data = state.get("job_data") or {}
     job_json = json.dumps(job_data)
@@ -373,6 +388,12 @@ def jt_step1_summarize_job(state: OrchestratorState) -> dict[str, Any]:
     pref = summary.get("preferred_skills") or []
     if pref:
         narration_lines.append("Preferred skills: " + ", ".join(pref[:8]))
+    learnable = job_data.get("learnable_skills") or []
+    if learnable:
+        narration_lines.append("Taught on the job: " + ", ".join(learnable[:8]))
+    conditions = _job_conditions(job_data)
+    if conditions:
+        narration_lines.append("Conditions: " + " | ".join(conditions))
     notes = summary.get("key_notes") or []
     if notes:
         narration_lines.append("Notes: " + " | ".join(notes[:4]))
