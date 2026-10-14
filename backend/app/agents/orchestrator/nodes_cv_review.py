@@ -25,8 +25,8 @@ Edit gates fold the user's feedback into the next call by appending it to the
 "feedback so far" block of the per-step prompt before re-invoking the LLM.
 
 Notes on testing:
-The module-level imports of ``chat_openai_mini`` and the schemas are intentional
-so unit tests can ``monkeypatch.setattr(nodes_cv_review.chat_openai_mini, ...)``
+The module-level imports of ``chat_model`` and the schemas are intentional
+so unit tests can ``monkeypatch.setattr(nodes_cv_review.chat_model, ...)``
 to inject deterministic stubs without touching ``langchain_openai`` directly.
 """
 
@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from app.agents.orchestrator.gates import GatePayload, GateResolution
 from app.agents.orchestrator.state import OrchestratorState
 from app.agents.writer_agent import generate_cv_pdf
-from app.openai_llm import chat_openai_mini
+from app.openai_llm import chat_model
 
 
 # --------------------------------------------------------------------------- #
@@ -262,7 +262,7 @@ def _run_step_review(
     it as a module-level callable rather than inlining the chain construction
     makes that monkeypatch a single seam.
     """
-    llm = chat_openai_mini(temperature=0.2)
+    llm = chat_model("writer", temperature=0.2)
     structured = llm.with_structured_output(schema_cls)
     user_content = _format_user_block(section_label, payload, feedback)
     result = structured.invoke(

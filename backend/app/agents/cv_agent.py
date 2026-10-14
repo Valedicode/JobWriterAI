@@ -25,7 +25,7 @@ Data Model:
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool
-from app.openai_llm import chat_openai_mini
+from app.openai_llm import chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
 import fitz
@@ -78,7 +78,7 @@ def extract_resume_info(pdf_path: str = "", pdf_bytes: bytes = b"") -> str:
     doc.close()  # Always close the document
     
     # Use LLM to extract structured data
-    llm = chat_openai_mini(temperature=0)
+    llm = chat_model("extract", temperature=0)
     structured_llm = llm.with_structured_output(ResumeInfo)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -111,7 +111,7 @@ def identify_ambiguities(resume_json: str) -> str:
     Returns:
         List of clarifying questions to ask the user, or "No questions" if data is clear
     """
-    llm = chat_openai_mini(temperature=0)
+    llm = chat_model("extract", temperature=0)
     prompt = ChatPromptTemplate.from_messages([
         ("system", """Analyze the resume data for:
         - Missing important information
@@ -138,7 +138,7 @@ def update_resume_with_clarifications(resume_json: str, clarifications: str) -> 
     Returns:
         Updated resume JSON with clarifications incorporated
     """
-    llm = chat_openai_mini(temperature=0)
+    llm = chat_model("extract", temperature=0)
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Update the resume data by incorporating the user's clarifying answers. Return the complete updated JSON."),
@@ -150,7 +150,7 @@ def update_resume_with_clarifications(resume_json: str, clarifications: str) -> 
     return result.content
 
 # Create agent
-llm = chat_openai_mini(temperature=None)
+llm = chat_model("extract", temperature=None)
 system_prompt = """You are a resume extraction assistant. Your workflow:
 
 1. When given a PDF path, use extract_resume_info to extract information

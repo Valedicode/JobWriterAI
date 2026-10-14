@@ -29,7 +29,7 @@ import json
 from typing import Any, Literal, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
-from app.openai_llm import chat_openai_mini
+from app.openai_llm import chat_model
 from pydantic import BaseModel, Field, model_validator
 
 from app.agents.orchestrator.gates import GatePayload, GateResolution
@@ -211,7 +211,7 @@ def interpret_chat(
     rather than crashing the request.
     """
     try:
-        llm = chat_openai_mini(temperature=0.2)
+        llm = chat_model("chat", temperature=0.2)
         structured_llm = llm.with_structured_output(ChatDecision)
 
         prompt = ChatPromptTemplate.from_messages([
