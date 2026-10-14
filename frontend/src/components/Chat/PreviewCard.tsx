@@ -1025,11 +1025,22 @@ function ApproveTranslation({ preview }: { preview: PreviewMap }) {
   return (
     <div>
       <Section title={`Translated into ${language || 'the chosen language'} (${changes.length})`}>
+        <div className="mb-1 hidden grid-cols-2 gap-2 px-3 text-meta font-semibold uppercase tracking-[0.14em] text-ink-faint sm:grid">
+          <span>Original</span>
+          <span>{language || 'Translation'}</span>
+        </div>
         <ul className="space-y-2">
           {changes.map((c, i) => (
             <MiniCard key={c.path ?? i}>
-              <div className="mb-1 text-meta text-ink-faint">{c.path ? fieldLabel(c.path) : ''}</div>
-              <Diff original={c.original} rewritten={c.translated} />
+              <div className="mb-1.5 text-meta text-ink-faint">{c.path ? fieldLabel(c.path) : ''}</div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="rounded-md bg-danger-surface px-3 py-2 text-body text-danger-text line-through [overflow-wrap:anywhere]">
+                  {c.original}
+                </div>
+                <div className="rounded-md bg-success-surface px-3 py-2 text-body text-success-text [overflow-wrap:anywhere]">
+                  {c.translated}
+                </div>
+              </div>
             </MiniCard>
           ))}
         </ul>

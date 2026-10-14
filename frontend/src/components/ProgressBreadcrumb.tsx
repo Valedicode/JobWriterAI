@@ -8,6 +8,8 @@ interface ProgressBreadcrumbProps {
   analysisStarted: boolean;
   isAnalyzing: boolean;
   chatReady: boolean;
+  /** Slim variant for the chat screen's top bar. */
+  compact?: boolean;
 }
 
 interface Stage {
@@ -25,6 +27,7 @@ export const ProgressBreadcrumb = ({
   analysisStarted,
   isAnalyzing,
   chatReady,
+  compact = false,
 }: ProgressBreadcrumbProps) => {
   // Build stages dynamically - exclude job step if skipped
   const allStages: Stage[] = [
@@ -49,9 +52,10 @@ export const ProgressBreadcrumb = ({
     },
     {
       id: 'chat',
-      label: 'Chat Ready',
-      completed: chatReady,
-      current: analysisStarted && !isAnalyzing && !chatReady,
+      label: compact ? 'Review & tailor' : 'Chat Ready',
+      // In the top bar the last step is where the user works, so it stays current.
+      completed: compact ? false : chatReady,
+      current: compact ? chatReady : analysisStarted && !isAnalyzing && !chatReady,
     },
   ];
 
@@ -59,13 +63,13 @@ export const ProgressBreadcrumb = ({
 
   return (
     <div className="w-full overflow-x-auto">
-      <div className="flex min-w-max items-center justify-center px-2">
+      <div className={`flex min-w-max items-center px-2 ${compact ? 'justify-start' : 'justify-center'}`}>
         {stages.map((stage, index) => (
           <div key={stage.id} className="flex shrink-0 items-center">
             {/* Stage Circle */}
-            <div className="flex items-center gap-3">
+            <div className={`flex items-center ${compact ? 'gap-2' : 'gap-3'}`}>
               <div
-                className={`flex h-10 w-10 items-center justify-center rounded-full border-2 transition-colors ${
+                className={`flex items-center ${compact ? 'h-6 w-6' : 'h-10 w-10'} justify-center rounded-full border-2 transition-colors ${
                   stage.completed
                     ? 'border-success bg-success'
                     : stage.current
@@ -75,7 +79,7 @@ export const ProgressBreadcrumb = ({
               >
                 {stage.completed ? (
                   <svg
-                    className="h-5 w-5 text-success-fg"
+                    className={compact ? 'h-3.5 w-3.5 text-success-fg' : 'h-5 w-5 text-success-fg'}
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -88,9 +92,9 @@ export const ProgressBreadcrumb = ({
                     />
                   </svg>
                 ) : stage.current ? (
-                  <div className="h-3 w-3 rounded-full bg-primary-fg"></div>
+                  <div className={`rounded-full bg-primary-fg ${compact ? 'h-2 w-2' : 'h-3 w-3'}`}></div>
                 ) : (
-                  <span className="text-sm font-medium tabular-nums text-ink-faint">
+                  <span className={`font-medium tabular-nums text-ink-faint ${compact ? 'text-meta' : 'text-sm'}`}>
                     {index + 1}
                   </span>
                 )}
@@ -113,7 +117,9 @@ export const ProgressBreadcrumb = ({
             {/* Connector Line */}
             {index < stages.length - 1 && (
               <div
-                className={`mx-2 h-0.5 w-8 transition-colors sm:mx-4 sm:w-16 ${
+                className={`h-0.5 transition-colors ${
+                  compact ? 'mx-2 w-6' : 'mx-2 w-8 sm:mx-4 sm:w-16'
+                } ${
                   stage.completed ? 'bg-success' : 'bg-border-strong'
                 }`}
               />

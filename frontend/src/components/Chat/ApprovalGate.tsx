@@ -70,15 +70,21 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
   };
 
   return (
-    <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-primary-surface/25 p-4 shadow-sm sm:p-5 lg:mx-0 lg:flex lg:h-full lg:min-h-0 lg:max-w-none lg:flex-col">
-      <div className="mb-3 flex shrink-0 items-center gap-2">
+    <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-primary-surface/25 p-4 shadow-sm sm:p-5 lg:mx-0 lg:flex lg:h-full lg:min-h-0 lg:max-w-none lg:flex-col lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0 lg:shadow-none">
+      {/* Scrolls on its own from lg; the action bar below stays in view. */}
+      <div className="lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:px-6 lg:py-5">
+      <div className="mb-3 flex shrink-0 items-center gap-2 lg:hidden">
         <span className="text-meta font-semibold uppercase tracking-[0.14em] text-primary-text">
           Approval needed
         </span>
         <span className="text-meta font-medium text-ink-faint">{humanizeStep(gate.step)}</span>
       </div>
+      <div className="mb-4 hidden lg:block">
+        <h2 className="text-lg font-semibold text-ink">{humanizeStep(gate.step)}</h2>
+        <p className="mt-0.5 text-sm text-ink-muted">Check the details, then decide below.</p>
+      </div>
 
-      <div className="mb-4 rounded-xl border border-border bg-surface p-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+      <div className="mb-4 rounded-xl border border-border bg-surface p-4 lg:mb-0 lg:border-0 lg:bg-transparent lg:p-0">
         <ErrorBoundary
           fallback={
             <p className="text-sm text-ink-muted">
@@ -89,9 +95,11 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
           <PreviewCard gate={gate} decisions={decisions} onDecisionChange={handleDecisionChange} />
         </ErrorBoundary>
       </div>
+      </div>
 
+      <div className="lg:shrink-0 lg:border-t lg:border-border lg:bg-surface lg:px-6 lg:py-4">
       {showEdit ? (
-        <div className="space-y-2.5 lg:shrink-0">
+        <div className="space-y-2.5">
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
@@ -131,7 +139,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
           </div>
         </div>
       ) : (
-        <div className="flex flex-wrap gap-2 lg:shrink-0">
+        <div className="flex flex-wrap gap-2">
           {allows('approve') && (
             <button
               type="button"
@@ -164,6 +172,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
           )}
         </div>
       )}
+      </div>
     </div>
   );
 };
