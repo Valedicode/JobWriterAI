@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pydantic import Field, BaseModel
 from langchain_core.tools import tool
-from app.openai_llm import chat_model, model_id, openai_client
+from app.openai_llm import chat_model, model_for, model_id, openai_client
 from langchain_core.prompts import ChatPromptTemplate
 from functools import lru_cache
 import copy
@@ -45,6 +45,9 @@ from app.models.schemas import (
     EligibilityCheck,
 )
 from app.services import skill_graph as skill_graph_service
+from app.services.bullet_index import index_cv_bullets
+from app.services.fact_ledger import build_fact_ledger
+from app.services.requirement_rubric import knockout_rows, skill_rows
 
 
 # ============================================
@@ -261,7 +264,10 @@ def calculate_bm25_score(resume_sections: str, job_requirements: str) -> str:
 
 COMPATIBILITY_WEIGHTS: Dict[str, float] = {
     "hard_skills": 0.40,
-    "eligibility": 0.15,   # languages / degree / enrollment; omitted when the posting states none
+    # Languages / degree / enrollment are knockouts: pass/fail, not a degree of
+    # fit, so they stay out of the weighted sum. The dimension is still shown
+    # (weight 0), and an unmet one caps the level instead.
+    "eligibility": 0.0,
     "experience": 0.15,
     "seniority": 0.10,
     "domain": 0.10,
@@ -409,20 +415,7 @@ def _detect_direct_match(required_skill: str, cv_data: Dict[str, Any]) -> Option
     return None
 
 
-@lru_cache(maxsize=2048)
-def _skill_mention_pattern(skill: str) -> Optional["re.Pattern[str]"]:
-    """
-    Regex that finds any surface form of `skill` in free text.
-
-    Uses lookarounds instead of \\b so names ending in a symbol ('C++', 'C#')
-    or containing a dot ('Node.js') still match at their edges, while 'c'
-    never matches inside 'c++' and 'java' never matches inside 'javascript'.
-    """
-    forms = skill_graph_service.surface_forms(skill)
-    if not forms:
-        return None
-    alternation = "|".join(re.escape(f) for f in forms)
-    return re.compile(rf"(?<![\w+#.])(?:{alternation})(?![\w+#])", re.IGNORECASE)
+_skill_mention_pattern = skill_graph_service.mention_pattern
 
 
 def _detect_family_match(
@@ -711,6 +704,7 @@ def _match_from_verdict(unresolved: SkillMatch, judged: "_LLMTransferabilityItem
         rationale=judged.rationale,
         bridge_bullet=None,
         is_required=unresolved.is_required,
+        scored_by="llm_judge",
     )
 
 
@@ -740,6 +734,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
                 rationale=f"Candidate explicitly lists or mentions '{direct}'.",
                 bridge_bullet=None,
                 is_required=is_required,
+                scored_by="deterministic",
             )
 
         # 2. Family match via skill graph
@@ -758,6 +753,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
                 ),
                 bridge_bullet=None,
                 is_required=is_required,
+                scored_by="skill_graph",
             )
 
         # 3. Embedding fallback
@@ -775,6 +771,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
                 ),
                 bridge_bullet=None,
                 is_required=is_required,
+                scored_by="embedding",
             )
 
         return SkillMatch(
@@ -785,6 +782,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
             rationale="No direct, family, or semantic match found in candidate skills.",
             bridge_bullet=None,
             is_required=is_required,
+            scored_by="deterministic",
         )
 
     for skill in required_list:
@@ -1307,7 +1305,12 @@ def rescore_eligibility(
     overrides = overrides or {}
     checks = [overrides.get(c.requirement, c) for c in _check_eligibility(cv_data, job_data)]
     other_warnings = [w for w in report.warnings if not w.startswith("Level capped")]
-    return _finish_report(report.dimensions, checks, report.gap_analysis, other_warnings)
+    rescored = _finish_report(report.dimensions, checks, report.gap_analysis, other_warnings)
+    # Skill rows don't depend on eligibility; the knockouts do.
+    return rescored.model_copy(update={
+        "rubric": list(report.rubric),
+        "knockouts": knockout_rows(checks, job_data),
+    })
 
 
 def apply_eligibility_answers(
@@ -1791,7 +1794,15 @@ def _calculate_compatibility_score_v2_internal(
                        weight=COMPATIBILITY_WEIGHTS["ats_keywords"], rationale=ats_rationale),
     ]
     gap = _build_gap_analysis_internal(matches, cv_data, job_data, eligibility)
-    return _finish_report(dimensions, eligibility, gap)
+    report = _finish_report(dimensions, eligibility, gap)
+
+    ledger = build_fact_ledger(cv_data, index_cv_bullets(cv_data))
+    judged = any(m.scored_by == "llm_judge" for m in matches)
+    return report.model_copy(update={
+        "rubric": skill_rows(matches, [_bucket(m) for m in matches], job_data, ledger,
+                             judge_model=model_for("judge") if judged else None),
+        "knockouts": knockout_rows(eligibility, job_data),
+    })
 
 
 def _finish_report(
@@ -1810,9 +1821,9 @@ def _finish_report(
     """
     warnings = list(warnings or [])
     dims = [d for d in dimensions if d.name != "eligibility"]
-    # Weigh eligibility only when the posting states such requirements and
-    # the CV lets us decide at least one; otherwise it would be a free 1.0
-    # (no requirements) or a penalty for silence (all unclear).
+    # Show eligibility only when the posting states such requirements and the
+    # CV lets us decide at least one. Its weight is 0 (see COMPATIBILITY_WEIGHTS):
+    # knockouts are reported, and an unmet one caps the level below.
     elig_score, elig_rationale = _score_eligibility(eligibility)
     if elig_score is not None:
         dims.insert(1, DimensionScore(name="eligibility", score=elig_score,
@@ -1905,21 +1916,23 @@ def calculate_compatibility_score_v2(cv_json: str, job_json: str) -> str:
     """
     Multi-dimensional compatibility score (v2) with skill-graph transferability.
 
-    Combines up to six dimensions:
+    Combines five weighted dimensions (normalised by their total):
     - hard_skills (40%): required-skill coverage via direct/family/embedding/LLM
       cascade, plus a level-scaled nice-to-have bonus capped just above it
-    - eligibility (15%, only when the posting states any): required languages,
-      degree / field of study, enrollment, checked as met / unclear / unmet
     - experience (15%): years-of-experience match with steep under-penalty
     - seniority (10%): ordinal job-level vs candidate title comparison
     - domain (10%): rescaled embedding cosine of domain context
     - ats_keywords (10%): share of job skill terms present verbatim on the CV
+    plus eligibility (required languages, degree / field of study, enrollment,
+    checked as met / unclear / unmet), shown as a dimension with weight 0:
+    these are knockouts, and an unmet one caps the level at 'medium' with a
+    warning instead of being averaged in.
 
-    Returns a CompatibilityReport with full per-dimension breakdown and a
-    GapAnalysis bucketing skills into matched / transferable / missing /
-    over-qualified plus eligibility checks, including draft bridge bullets
-    for transferable skills. An unmet eligibility requirement caps the level
-    at 'medium' and adds a warning saying so.
+    Returns a CompatibilityReport with the per-dimension breakdown, a
+    GapAnalysis bucketing skills into matched / transferable / learnable /
+    missing / over-qualified plus the eligibility checks, the requirement
+    rubric (each skill requirement with its status and CV evidence), and the
+    knockouts (eligibility plus the posting's stated conditions).
 
     Args:
         cv_json: ResumeInfo JSON from cv_agent.

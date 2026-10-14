@@ -163,6 +163,22 @@ def surface_forms(skill: str) -> Tuple[str, ...]:
     return tuple(sorted(forms, key=len, reverse=True))
 
 
+@lru_cache(maxsize=2048)
+def mention_pattern(skill: str) -> Optional["re.Pattern[str]"]:
+    """
+    Regex that finds any surface form of `skill` in free text.
+
+    Uses lookarounds instead of \\b so names ending in a symbol ('C++', 'C#')
+    or containing a dot ('Node.js') still match at their edges, while 'c'
+    never matches inside 'c++' and 'java' never matches inside 'javascript'.
+    """
+    forms = surface_forms(skill)
+    if not forms:
+        return None
+    alternation = "|".join(re.escape(f) for f in forms)
+    return re.compile(rf"(?<![\w+#.])(?:{alternation})(?![\w+#])", re.IGNORECASE)
+
+
 def list_known_skills() -> List[str]:
     """Flat list of every member skill across all families (normalized)."""
     return list(_member_to_family().keys())
