@@ -212,6 +212,9 @@ export const useOrchestratorChat = ({
       const hasAnswers = Boolean(opts.answers && Object.keys(opts.answers).length > 0);
       const resolution: OrchestratorGateResolution = {
         action,
+        // Tie the answer to the gate on screen, so a double-submit or a stale
+        // view can't resolve whichever gate the session has moved on to.
+        ...(pendingGate ? { step: pendingGate.step } : {}),
         ...(opts.feedback ? { feedback: opts.feedback } : {}),
         ...(opts.choice ? { choice: opts.choice } : {}),
         ...(opts.decisions && Object.keys(opts.decisions).length > 0
