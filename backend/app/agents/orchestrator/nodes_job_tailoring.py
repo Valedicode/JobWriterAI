@@ -46,7 +46,8 @@ from app.agents.scoring_agent import (
     eligibility_answers_from_text,
     eligibility_questions,
 )
-from app.models.schemas import CompatibilityReport, VerifierResult
+from app.agents.strategist_agent import plan_tailoring_strategy, validate_plan
+from app.models.schemas import CompatibilityReport, StrategistPlan, VerifierResult
 from app.services.bullet_index import index_cv_bullets as _index_cv_bullets
 from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
 from app.services.requirement_rubric import evidence_prompt_block, refresh_evidence, rubric_alignment
@@ -486,14 +487,14 @@ def _eligibility_questions_for(report: dict[str, Any] | None) -> list[dict[str, 
 def route_after_score(state: OrchestratorState) -> str:
     if not state.get("eligibility_asked") and _eligibility_questions_for(state.get("compatibility_report")):
         return JT_GATE_CONFIRM_ELIGIBILITY
-    return JT_GATE_PRESENT_SCORE
+    return JT_STEP3_STRATEGY
 
 
 def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
     """
     Ask about language / enrollment / degree requirements the CV says
     nothing about, then rescore deterministically (no new LLM call) and
-    continue to the score review. Asked once per run; skipping leaves the
+    continue to the strategy and the score review. Asked once per run; skipping leaves the
     items unclear and out of the score.
     """
     report = state.get("compatibility_report") or {}
@@ -527,7 +528,7 @@ def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
                 {"eligibility_asked": True},
                 "Skipped. Those requirements stay out of the score.",
             ),
-            goto=JT_GATE_PRESENT_SCORE,
+            goto=JT_STEP3_STRATEGY,
         )
 
     previous = CompatibilityReport.model_validate(report)
@@ -559,20 +560,54 @@ def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
             },
             "\n".join(lines),
         ),
-        goto=JT_GATE_PRESENT_SCORE,
+        goto=JT_STEP3_STRATEGY,
     )
 
 
 # --------------------------------------------------------------------------- #
-# Gate: present score (soft gate - user just acknowledges before strategy)
+# Gate: present score and plan. The fit and the strategist's plan are approved
+# together; edit redrafts the plan with the user's notes.
 # --------------------------------------------------------------------------- #
+
+def _plan_preview(state: OrchestratorState) -> dict[str, Any] | None:
+    """The validated plan in reviewable form: featured bullets as their text,
+    keywords split into usable and not on the CV."""
+    strategy = state.get("tailoring_strategy") or {}
+    plan = strategy.get("plan")
+    if not isinstance(plan, dict):
+        return None
+    bullet_index = state.get("bullet_index") or {}
+    keywords = [k for k in plan.get("keyword_plan") or [] if isinstance(k, dict)]
+    return {
+        "positioning": plan.get("positioning", ""),
+        "headline": plan.get("headline"),
+        "cv_language": plan.get("cv_language"),
+        "convention": plan.get("convention"),
+        "section_order": plan.get("section_order") or [],
+        "featured_bullets": [
+            {"bullet_id": b, "text": (bullet_index.get(b) or {}).get("text", "")}
+            for b in plan.get("bullets_to_feature") or []
+        ],
+        "keywords_to_use": [k["keyword"] for k in keywords if k.get("allowed")],
+        "keywords_not_on_cv": [k["keyword"] for k in keywords if not k.get("allowed")],
+        "red_flags": plan.get("red_flags") or [],
+        "notes": strategy.get("plan_notes") or [],
+    }
+
 
 def jt_gate_present_score(state: OrchestratorState) -> Command:
     report = state.get("compatibility_report") or {}
+    plan = _plan_preview(state)
     payload = GatePayload(
         step="present_score",
         kind="approval",
-        narration="Proceed to design the tailoring strategy?",
+        narration=(
+            "Review the fit and the tailoring plan. Approve to start selecting bullets, "
+            "edit with notes to redraft the plan, or reject to stop."
+            if plan else
+            "Review the fit. Approve to continue with the rule-based strategy, edit with notes "
+            "to try drafting the plan again, or reject to stop."
+        ),
         preview={
             "aggregate_score": report.get("aggregate_score"),
             "level": report.get("level"),
@@ -582,8 +617,9 @@ def jt_gate_present_score(state: OrchestratorState) -> Command:
             "warnings": report.get("warnings", []),
             "rubric": report.get("rubric", []),
             "knockouts": report.get("knockouts", []),
+            "plan": plan,
         },
-        allowed_actions=["approve", "reject"],
+        allowed_actions=["approve", "edit", "reject"],
     ).model_dump()
 
     raw = interrupt(payload)
@@ -592,6 +628,13 @@ def jt_gate_present_score(state: OrchestratorState) -> Command:
     if resolution.action == "approve":
         return Command(
             update={"pending_gate": None},
+            goto=JT_STEP4_SELECT,
+        )
+    if resolution.action == "edit":
+        notes = list(state.get("strategy_feedback") or []) + [resolution.feedback or ""]
+        return Command(
+            update=_narrate({"strategy_feedback": notes},
+                            f"Redrafting the plan with your notes: {resolution.feedback}"),
             goto=JT_STEP3_STRATEGY,
         )
     return Command(
@@ -620,6 +663,12 @@ def jt_step3_decide_strategy(state: OrchestratorState) -> dict[str, Any]:
         "directives": [],
     })
 
+    # The rule-based directives stay underneath (they carry the anti-
+    # fabrication rules); the strategist's plan adds the judgement calls.
+    plan, plan_notes, plan_error = _draft_plan(state)
+    strategy["plan"] = plan
+    strategy["plan_notes"] = plan_notes
+
     focus = ", ".join(strategy.get("focus_areas", []) or []) or "none"
     lines = [
         "Tailoring strategy",
@@ -629,7 +678,46 @@ def jt_step3_decide_strategy(state: OrchestratorState) -> dict[str, Any]:
         f"Focus areas: {focus}",
         f"Directives: {len(strategy.get('directives', []) or [])}",
     ]
+    if plan:
+        lines += ["", f"Positioning: {plan.get('positioning', '')}"]
+        if plan.get("headline"):
+            lines.append(f"Headline: {plan['headline']}")
+        lines.append(f"Featured bullets: {len(plan.get('bullets_to_feature') or [])}")
+    else:
+        lines += ["", f"I couldn't draft the tailoring plan ({plan_error}). The rule-based strategy above still applies."]
     return _narrate({"tailoring_strategy": strategy}, "\n".join(lines))
+
+
+def _draft_plan(state: OrchestratorState) -> tuple[dict[str, Any] | None, list[str], str | None]:
+    """(validated plan, notes on what validation changed, error). The model's
+    plan is only advice until validate_plan has checked it against the CV."""
+    cv_data = state.get("cv_data") or {}
+    report = state.get("compatibility_report") or {}
+    bullet_index = state.get("bullet_index") or _index_cv_bullets(cv_data)
+    ledger = state.get("fact_ledger") or {}
+    feedback = "\n".join(f"- {note}" for note in state.get("strategy_feedback") or [] if note)
+
+    raw = _safe_json_loads(plan_tailoring_strategy.invoke({
+        "cv_json": json.dumps(cv_data),
+        "job_json": json.dumps(state.get("job_data") or {}),
+        "report_json": json.dumps(report),
+        "facts_block": _facts_prompt_block(ledger),
+        "bullet_index_block": _bullet_index_prompt_block(bullet_index),
+        "feedback": feedback,
+    }), None)
+    error = _tool_error(raw, "strategist")
+    if error:
+        return None, [], error[:200]
+    try:
+        plan = StrategistPlan.model_validate(raw)
+    except Exception as exc:  # noqa: BLE001 - a malformed plan is reported, not raised
+        return None, [], f"the plan was malformed: {exc}"[:200]
+    projects = cv_data.get("projects") if isinstance(cv_data.get("projects"), list) else []
+    cleaned, notes = validate_plan(
+        plan, rubric=report.get("rubric") or [], ledger=ledger,
+        bullet_index=bullet_index, project_count=len(projects),
+    )
+    return cleaned.model_dump(), notes, None
 
 
 # --------------------------------------------------------------------------- #
@@ -1301,7 +1389,10 @@ def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig)
     applicant_name = cv_data.get("name", "Applicant")
     base = _filename_base(cv_data)
     selected = state.get("selected_content") or {}
-    section_order = selected.get("section_order") or []
+    plan = (state.get("tailoring_strategy") or {}).get("plan") or {}
+    # Selection follows the plan's order and the user reviewed it there; the
+    # plan's own order is the fallback.
+    section_order = selected.get("section_order") or plan.get("section_order") or []
 
     generated: list[dict[str, str]] = list(state.get("generated_files") or [])
     messages: list[str] = []

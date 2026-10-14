@@ -31,6 +31,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_GATE_APPROVE_SELECTION,
     JT_GATE_COVER_LETTER,
     JT_GATE_PRESENT_SCORE,
+    JT_STEP3_STRATEGY,
     route_after_score,
 )
 
@@ -117,6 +118,23 @@ STRATEGY = {
                 "missing_skills_count": 0, "over_qualified_signals_count": 0},
 }
 
+# The strategist's draft. 'Python' is on the CV; 'Kubernetes' isn't, so
+# validation marks it not allowed.
+PLAN = {
+    "positioning": "Lead with algorithm design and Python.",
+    "headline": "Engineer working with Python",
+    "cv_language": "english",
+    "convention": "international",
+    "section_order": ["experience", "skills", "education"],
+    "project_order": [],
+    "bullets_to_feature": ["experience.0.responsibilities.0"],
+    "keyword_plan": [
+        {"keyword": "Python", "requirement_id": "req.0", "allowed": True, "evidence_fact_ids": ["skill.python"]},
+        {"keyword": "Kubernetes", "requirement_id": "", "allowed": True, "evidence_fact_ids": []},
+    ],
+    "red_flags": ["No Algorithms keyword on the CV"],
+}
+
 SELECTED = {
     "selected_bullets": [
         {"section": "experience", "original_text": "Designed the first algorithm",
@@ -183,6 +201,7 @@ def patched_tools():
         "generate_job_summary": _fake_tool(lambda _: json.dumps(JOB_SUMMARY)),
         "calculate_compatibility_score_v2": _fake_tool(lambda _: json.dumps(COMPATIBILITY_REPORT)),
         "decide_tailoring_strategy": _fake_tool(lambda _: json.dumps(STRATEGY)),
+        "plan_tailoring_strategy": _fake_tool(lambda _: json.dumps(PLAN)),
         "select_prioritize_content": _fake_tool(lambda _: json.dumps(SELECTED)),
         "rewrite_enhance_content": _fake_tool(lambda _: json.dumps(REWRITTEN)),
         "generate_cv_pdf": _fake_tool(
@@ -847,7 +866,7 @@ def test_unclear_eligibility_asks_before_the_score_gate(graph, silent_on_german)
     values = graph.get_state(config).values
     assert values["cv_data"]["languages"] == [{"language": "German", "fluency": "C1"}]
     assert values["eligibility_asked"] is True
-    assert "German (C1): met" in result["messages"][-1].content
+    assert any("German (C1): met" in m.content for m in result["messages"])
 
 
 def test_skipping_eligibility_continues_unchanged_and_never_asks_again(graph, silent_on_german):
@@ -860,7 +879,7 @@ def test_skipping_eligibility_continues_unchanged_and_never_asks_again(graph, si
     assert payload["preview"]["gap_analysis"]["eligibility"][0]["status"] == "unclear"
     values = graph.get_state(config).values
     assert "languages" not in values["cv_data"]
-    assert route_after_score(values) == JT_GATE_PRESENT_SCORE
+    assert route_after_score(values) == JT_STEP3_STRATEGY
 
 
 def test_eligibility_answer_typed_as_text_is_understood(graph, silent_on_german):
