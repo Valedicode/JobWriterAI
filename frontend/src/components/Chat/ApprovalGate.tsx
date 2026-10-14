@@ -70,15 +70,15 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
   };
 
   return (
-    <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-primary-surface/25 p-4 shadow-sm sm:p-5">
-      <div className="mb-3 flex items-center gap-2">
+    <div className="mx-auto max-w-3xl rounded-2xl border border-border bg-primary-surface/25 p-4 shadow-sm sm:p-5 lg:mx-0 lg:flex lg:h-full lg:min-h-0 lg:max-w-none lg:flex-col">
+      <div className="mb-3 flex shrink-0 items-center gap-2">
         <span className="text-meta font-semibold uppercase tracking-[0.14em] text-primary-text">
           Approval needed
         </span>
         <span className="text-meta font-medium text-ink-faint">{humanizeStep(gate.step)}</span>
       </div>
 
-      <div className="mb-4 rounded-xl border border-border bg-surface p-4">
+      <div className="mb-4 rounded-xl border border-border bg-surface p-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
         <ErrorBoundary
           fallback={
             <p className="text-sm text-ink-muted">
@@ -91,7 +91,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
       </div>
 
       {showEdit ? (
-        <div className="space-y-2.5">
+        <div className="space-y-2.5 lg:shrink-0">
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
@@ -131,7 +131,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
           </div>
         </div>
       ) : (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 lg:shrink-0">
           {allows('approve') && (
             <button
               type="button"

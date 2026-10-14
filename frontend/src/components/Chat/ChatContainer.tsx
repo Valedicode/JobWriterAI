@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { BulletDecision, Message, OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
 import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
@@ -7,6 +8,7 @@ import { ChoiceGate } from './ChoiceGate';
 import { InputGate } from './InputGate';
 import { EligibilityGate } from './EligibilityGate';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { ReviewPanel } from './ReviewPanel';
 
 interface ChatContainerProps {
   messages: Message[];
@@ -50,6 +52,17 @@ export const ChatContainer = ({
   pendingGate,
   onSubmitGateResolution,
 }: ChatContainerProps) => {
+  // Gate steps shown so far, for the review panel's step list. Updated while
+  // rendering (React's "adjust state on prop change" pattern), not in an effect.
+  const [shownSteps, setShownSteps] = useState<string[]>([]);
+  if (pendingGate && !shownSteps.includes(pendingGate.step)) {
+    setShownSteps([...shownSteps, pendingGate.step]);
+  }
+  const doneSteps = shownSteps.filter((s) => s !== pendingGate?.step);
+  const files = [
+    ...new Map(messages.flatMap((m) => m.generatedFiles ?? []).map((f) => [f.download_url, f])).values(),
+  ];
+
   if (messages.length === 0) {
     return (
       <EmptyState
@@ -65,9 +78,12 @@ export const ChatContainer = ({
   }
 
   return (
-    <div className="flex flex-1 flex-col rounded-2xl border border-border bg-surface shadow-sm animate-fade-in">
+    // Below lg: one column (messages, gate, input). From lg: chat on the left,
+    // review panel on the right, each scrolling on its own.
+    <div className="flex flex-1 flex-col rounded-2xl border border-border bg-surface shadow-sm animate-fade-in lg:grid lg:h-[calc(100dvh-9rem)] lg:min-h-[34rem] lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:overflow-hidden">
+      <div className="contents lg:flex lg:min-h-0 lg:flex-col lg:border-r lg:border-border">
       {/* Chat Messages Area */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="order-1 flex-1 overflow-y-auto p-6 max-lg:min-h-0 lg:min-h-0">
         <div className="mx-auto max-w-3xl">
           <div className="space-y-4" role="log" aria-live="polite" aria-label="Conversation">
             {messages.map((message) => (
@@ -109,41 +125,8 @@ export const ChatContainer = ({
         </div>
       </div>
 
-      {/* Structured gate panel (orchestrator mode only) */}
-      {pendingGate && onSubmitGateResolution && (
-        <div
-          key={pendingGate.step}
-          className="gate-in border-t border-border bg-surface-sunken px-6 py-4"
-        >
-          {pendingGate.step === 'confirm_eligibility' ? (
-            <EligibilityGate
-              gate={pendingGate}
-              isLoading={isLoading}
-              onSubmit={onSubmitGateResolution}
-            />
-          ) : pendingGate.kind === 'choice' ? (
-            <ChoiceGate
-              gate={pendingGate}
-              isLoading={isLoading}
-              onSubmit={onSubmitGateResolution}
-            />
-          ) : pendingGate.kind === 'input' ? (
-            <InputGate
-              gate={pendingGate}
-              isLoading={isLoading}
-              onSubmit={onSubmitGateResolution}
-            />
-          ) : (
-            <ApprovalGate
-              gate={pendingGate}
-              isLoading={isLoading}
-              onSubmit={onSubmitGateResolution}
-            />
-          )}
-        </div>
-      )}
-
       {/* Input Area */}
+      <div className="order-3">
       <ChatInput
         textareaRef={textareaRef}
         inputText={inputText}
@@ -157,6 +140,47 @@ export const ChatContainer = ({
             : 'Ask any question or use voice input'
         }
       />
+      </div>
+      </div>
+
+      {/* Structured gate panel (orchestrator mode only) */}
+      <div
+        className={`order-2 min-h-0 border-border bg-surface-sunken px-6 py-4 max-lg:border-t lg:flex lg:flex-col lg:overflow-y-auto ${
+          pendingGate || shownSteps.length > 0 || isLoading ? '' : 'max-lg:hidden'
+        }`}
+      >
+        <ReviewPanel doneSteps={doneSteps} files={files} isLoading={isLoading}>
+          {pendingGate && onSubmitGateResolution ? (
+            <div key={pendingGate.step} className="gate-in lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+              {pendingGate.step === 'confirm_eligibility' ? (
+                <EligibilityGate
+                  gate={pendingGate}
+                  isLoading={isLoading}
+                  onSubmit={onSubmitGateResolution}
+                />
+              ) : pendingGate.kind === 'choice' ? (
+                <ChoiceGate
+                  gate={pendingGate}
+                  isLoading={isLoading}
+                  onSubmit={onSubmitGateResolution}
+                />
+              ) : pendingGate.kind === 'input' ? (
+                <InputGate
+                  gate={pendingGate}
+                  isLoading={isLoading}
+                  onSubmit={onSubmitGateResolution}
+                />
+              ) : (
+                <ApprovalGate
+                  gate={pendingGate}
+                  isLoading={isLoading}
+                  onSubmit={onSubmitGateResolution}
+                />
+              )}
+            </div>
+          ) : null}
+        </ReviewPanel>
+      </div>
     </div>
   );
 };
