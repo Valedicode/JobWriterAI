@@ -723,6 +723,22 @@ def _format_directives(directives: List[Any]) -> str:
     return "\n".join(lines) if lines else "None provided."
 
 
+def _format_feedback(strategy_data: Dict[str, Any], stages: tuple[str, ...]) -> str:
+    """
+    The user's (and the verifier's) notes for this step, oldest first.
+
+    Gate edits and chat notes are appended to the strategy's ``user_feedback``
+    as {stage, text}; without this they reached the step's state but never
+    its prompt, so "edit with feedback" re-ran the step unchanged.
+    """
+    notes = [
+        str(entry.get("text", "")).strip()
+        for entry in strategy_data.get("user_feedback") or []
+        if isinstance(entry, dict) and entry.get("stage") in stages and str(entry.get("text", "")).strip()
+    ]
+    return "\n".join(f"- {note}" for note in notes) if notes else "None."
+
+
 @tool
 def select_prioritize_content(
     cv_json: str,
@@ -781,6 +797,8 @@ def select_prioritize_content(
                 "Bullet Index:\n{bullet_index}\n\n"
                 "Focus Areas: {focus}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
+                "User Feedback on earlier selections (follow it; it overrides the directives "
+                "where they conflict):\n{feedback}\n\n"
                 "Select and prioritise the most relevant content."
             ))
         ])
@@ -792,6 +810,7 @@ def select_prioritize_content(
             "bullet_index": bullet_index_block or "(not provided)",
             "focus": ", ".join(focus_areas),
             "directives": _format_directives(directives),
+            "feedback": _format_feedback(strategy_data, ("approve_selection", "chat")),
         })
         return result.model_dump_json()
 
@@ -811,6 +830,7 @@ def rewrite_enhance_content(
     selected_content_json: str,
     tailoring_strategy_json: str,
     locked_bullets_json: str = "[]",
+    facts_block: str = "",
 ) -> str:
     """
     Rewrite and enhance resume content to emphasize job relevance.
@@ -824,6 +844,8 @@ def rewrite_enhance_content(
             confidence, keywords_added} for bullets the user has already
             accepted in a previous pass. These must be echoed back verbatim,
             unrewritten - only the remaining selected bullets are rewritten.
+        facts_block: "[fact_id] value" lines from the fact ledger that a
+            rewrite may cite in ``cited_fact_ids``.
 
     Returns:
         JSON string with rewritten bullets, updated summary, and per-bullet confidence scores
@@ -858,6 +880,12 @@ def rewrite_enhance_content(
                 "matches the job, and list keywords actually added.\n"
                 "- Each selected bullet carries a `bullet_id`; copy it verbatim into the matching "
                 "rewrite's `bullet_id` field.\n"
+                "- Every technology, number and date in a rewrite must come from the original "
+                "bullet or from a fact in the Facts list. When a rewrite uses something from the "
+                "Facts list (e.g. a skill from the skills section), put that fact's id in "
+                "`cited_fact_ids`; leave it empty when you only reword the original. Only cite a "
+                "fact when it is plausibly true for that bullet's work. Rewrites are fact-checked "
+                "against this list and anything unsupported is rejected.\n"
                 "- Locked bullets (listed below, already approved by the user in an earlier pass) "
                 "must be echoed back UNCHANGED — do not rewrite them again, just include them as-is "
                 "in the output so the final list stays complete.\n"
@@ -872,7 +900,10 @@ def rewrite_enhance_content(
                 "Job Requirements:\n{job}\n\n"
                 "Selected Content:\n{selected}\n\n"
                 "Locked Bullets (echo back unchanged):\n{locked}\n\n"
+                "Facts (what the CV and the candidate state; cite by id):\n{facts}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
+                "User Feedback on earlier rewrites (follow it; it overrides the directives "
+                "where they conflict, but never the absolute rules):\n{feedback}\n\n"
                 "Rewrite and enhance the content that is not locked."
             ))
         ])
@@ -883,7 +914,9 @@ def rewrite_enhance_content(
             "job": job_json,
             "selected": selected_content_json,
             "locked": json.dumps(locked_bullets) if locked_bullets else "(none)",
+            "facts": facts_block or "(not provided)",
             "directives": _format_directives(directives),
+            "feedback": _format_feedback(strategy_data, ("approve_rewrite", "chat", "verifier")),
         })
 
         # Belt-and-braces: force locked bullets back into the result verbatim
@@ -903,6 +936,7 @@ def rewrite_enhance_content(
                     "confidence": float(locked.get("confidence", 1.0)),
                     "keywords_added": locked.get("keywords_added", []) or [],
                     "bullet_id": locked.get("bullet_id"),
+                    "cited_fact_ids": locked.get("cited_fact_ids", []) or [],
                 })
         result.rewritten_bullets = list(by_key.values())
 

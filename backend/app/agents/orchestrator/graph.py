@@ -68,11 +68,13 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_STEP_SET_COVER_LETTER_RECIPIENT,
     JT_GATE_PRESENT_SCORE,
     JT_GATE_STEP_FAILED,
+    JT_GATE_VERIFIER_FAILED,
     JT_STEP1_SUMMARIZE,
     JT_STEP2_COMPATIBILITY,
     JT_STEP3_STRATEGY,
     JT_STEP4_SELECT,
     JT_STEP5_REWRITE,
+    JT_STEP5B_VERIFY,
     JT_STEP6_ASSEMBLE,
     JT_STEP7_GENERATE_CV_FILES,
     JT_STEP8_COVER_LETTER_CONTENT,
@@ -87,11 +89,13 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     jt_gate_cover_letter_recipient,
     jt_gate_present_score,
     jt_gate_step_failed,
+    jt_gate_verifier_failed,
     jt_step1_summarize_job,
     jt_step2_compute_compatibility,
     jt_step3_decide_strategy,
     jt_step4_select_prioritize,
     jt_step5_rewrite_enhance,
+    jt_step5b_verify,
     jt_step6_assemble_cv,
     jt_step7_generate_cv_files,
     jt_step8_cover_letter_content,
@@ -159,6 +163,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node(JT_STEP3_STRATEGY, jt_step3_decide_strategy)
     graph.add_node(JT_STEP4_SELECT, jt_step4_select_prioritize)
     graph.add_node(JT_STEP5_REWRITE, jt_step5_rewrite_enhance)
+    # Fact check: routes via Command to JT_GATE_APPROVE_REWRITE, back to
+    # JT_STEP5_REWRITE (one retry), or to JT_GATE_VERIFIER_FAILED.
+    graph.add_node(JT_STEP5B_VERIFY, jt_step5b_verify)
     graph.add_node(JT_STEP6_ASSEMBLE, jt_step6_assemble_cv)
     graph.add_node(JT_STEP7_GENERATE_CV_FILES, jt_step7_generate_cv_files)
     graph.add_node(JT_STEP_SET_COVER_LETTER_RECIPIENT, jt_step_set_cover_letter_recipient)
@@ -173,6 +180,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node(JT_GATE_COVER_LETTER, jt_gate_cover_letter)
     graph.add_node(JT_GATE_APPROVE_COVER_LETTER, jt_gate_approve_cover_letter)
     graph.add_node(JT_GATE_STEP_FAILED, jt_gate_step_failed)
+    graph.add_node(JT_GATE_VERIFIER_FAILED, jt_gate_verifier_failed)
     graph.add_node(JT_GATE_CONFIRM_ELIGIBILITY, jt_gate_confirm_eligibility)
     # Reached only through a chat proposal (app.agents.orchestrator.chat_actions),
     # which redirects the paused graph here; it routes on via Command.
@@ -214,7 +222,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_conditional_edges(
         JT_STEP5_REWRITE,
         route_after_rewrite,
-        {JT_GATE_APPROVE_REWRITE: JT_GATE_APPROVE_REWRITE, JT_GATE_STEP_FAILED: JT_GATE_STEP_FAILED},
+        {JT_STEP5B_VERIFY: JT_STEP5B_VERIFY, JT_GATE_STEP_FAILED: JT_GATE_STEP_FAILED},
     )
     # JT_GATE_APPROVE_REWRITE returns Command(goto=JT_STEP6_ASSEMBLE | JT_STEP5_REWRITE | END)
     graph.add_edge(JT_STEP6_ASSEMBLE, JT_STEP7_GENERATE_CV_FILES)

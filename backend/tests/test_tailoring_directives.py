@@ -186,6 +186,41 @@ def test_rewrite_tool_accepts_real_strategy_directives():
     assert "Do not claim Spring Boot" in llm.prompts[0]
 
 
+def _strategy_with_feedback() -> str:
+    strategy = json.loads(_real_strategy_json())
+    strategy["user_feedback"] = [
+        {"stage": "approve_selection", "text": "Leave out the teaching bullets"},
+        {"stage": "approve_rewrite", "text": "Use shorter sentences"},
+        {"stage": "chat", "text": "Focus on backend work"},
+    ]
+    return json.dumps(strategy)
+
+
+def test_gate_feedback_reaches_the_selection_prompt():
+    # Regression: edit feedback was stored in the strategy but never put in a
+    # prompt, so "edit with feedback" re-ran the step unchanged.
+    llm = _RecordingLLM({SelectedContent: SELECTED})
+    with patch("app.agents.writer_agent.chat_model", return_value=llm):
+        select_prioritize_content.invoke({
+            "cv_json": "{}", "job_json": "{}", "tailoring_strategy_json": _strategy_with_feedback(),
+        })
+    assert "Leave out the teaching bullets" in llm.prompts[0]
+    assert "Focus on backend work" in llm.prompts[0]
+    assert "Use shorter sentences" not in llm.prompts[0]  # meant for the rewrite step
+
+
+def test_gate_feedback_reaches_the_rewrite_prompt():
+    llm = _RecordingLLM({RewrittenContent: REWRITTEN})
+    with patch("app.agents.writer_agent.chat_model", return_value=llm):
+        rewrite_enhance_content.invoke({
+            "cv_json": "{}", "job_json": "{}", "selected_content_json": SELECTED.model_dump_json(),
+            "tailoring_strategy_json": _strategy_with_feedback(),
+        })
+    assert "Use shorter sentences" in llm.prompts[0]
+    assert "Focus on backend work" in llm.prompts[0]
+    assert "Leave out the teaching bullets" not in llm.prompts[0]
+
+
 def test_tools_report_llm_failure_as_error_not_as_empty_result():
     class _Boom:
         def with_structured_output(self, schema: type) -> RunnableLambda:

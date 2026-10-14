@@ -37,13 +37,17 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
   // On confirm_change (a re-run or profile update asked for in the chat),
   // approve applies it and reject leaves everything as it was.
   const isConfirmGate = gate.step === 'confirm_change';
+  // On verifier_failed, approve keeps the original wording of the blocked rewrites.
+  const isFactCheckGate = gate.step === 'verifier_failed';
   const approveLabel = isRetryGate
     ? 'Retry'
     : isConfirmGate
       ? 'Confirm'
-      : decisionCount > 0
-        ? `Apply (${decisionCount} customized)`
-        : 'Approve';
+      : isFactCheckGate
+        ? 'Keep my original wording'
+        : decisionCount > 0
+          ? `Apply (${decisionCount} customized)`
+          : 'Approve';
   const rejectLabel = isRetryGate ? 'Stop' : isConfirmGate ? 'Cancel' : 'Reject';
 
   const handleDecisionChange = (bulletId: string, decision: BulletDecision | null) => {
