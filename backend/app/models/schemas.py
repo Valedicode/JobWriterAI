@@ -796,6 +796,13 @@ class OrchestratorResponse(BaseModel):
         description="True when the graph has reached END."
     )
     message: str = Field(default="ok", description="Status message")
+    run_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Id of the graph run this request started, for finding its trace. "
+            "Null when the request answered without running the graph."
+        ),
+    )
 
 
 class OrchestratorStateResponse(BaseModel):
