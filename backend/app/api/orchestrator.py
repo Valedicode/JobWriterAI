@@ -38,7 +38,7 @@ from app.models.schemas import (
 )
 from app.config import get_settings
 from app.services.generic_session_manager import get_session_manager
-from app.services.graph_checkpointer import expire_threads, get_checkpointer
+from app.services.session_retention import expire_sessions
 
 router = APIRouter(prefix="/api/orchestrator", tags=["Orchestrator"])
 
@@ -254,7 +254,7 @@ def orchestrator_start(
     # Opportunistic TTL sweep: delete abandoned sessions from the checkpoint
     # store itself (the registry alone never freed their state, and after a
     # restart it doesn't know the persisted sessions at all).
-    expired = expire_threads(get_checkpointer(), timedelta(hours=get_settings().session_ttl_hours))
+    expired = expire_sessions(timedelta(hours=get_settings().session_ttl_hours))
     _forget_session_locks(expired)
     session_manager = get_session_manager()
     session_manager.cleanup_expired_sessions()

@@ -15,7 +15,7 @@ export const DownloadButton = ({ file }: DownloadButtonProps) => {
     setError(null);
 
     try {
-      const blob = await downloadFile(file.filename);
+      const blob = await downloadFile(file.download_url);
       triggerFileDownload(blob, file.filename);
     } catch (err) {
       const errorMessage = getErrorMessage(err);

@@ -66,6 +66,18 @@ dotenv.load_dotenv()
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "data"
 
+
+def _resolve_output_dir(output_dir: str) -> Path:
+    """The requested output directory, which must lie inside data/ (normally
+    a session folder from app.services.file_store)."""
+    if not output_dir:
+        return DEFAULT_OUTPUT_DIR
+    root = DEFAULT_OUTPUT_DIR.resolve()
+    target = Path(output_dir).resolve()
+    if target != root and root not in target.parents:
+        raise RuntimeError("output_dir must be inside the data directory")
+    return target
+
 # ============================================
 # Tools (Agent Capabilities)
 # ============================================
@@ -276,6 +288,7 @@ def generate_cv_pdf(
     output_filename: str,
     applicant_name: str,
     section_order_json: str = "",
+    output_dir: str = "",
 ) -> str:
     """
     Generate a tailored CV PDF via LaTeX (Harvard-style, JSON Resume taxonomy).
@@ -287,6 +300,8 @@ def generate_cv_pdf(
         output_filename: Filename for the PDF (e.g., "kevin_ha_cv_tailored.pdf")
         applicant_name: Full name for document metadata
         section_order_json: Optional JSON list of section keys for ordering
+        output_dir: Directory to write into (a session folder inside data/);
+            defaults to data/ itself
 
     Returns:
         Success message with the filename for download
@@ -310,12 +325,12 @@ def generate_cv_pdf(
                 pass
 
         tex_content = render_cv_tex(cv_data, section_order=section_order)
-        output_dir = DEFAULT_OUTPUT_DIR
-        output_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = _resolve_output_dir(output_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         stem = Path(output_filename).stem
-        pdf_path = compile_tex_to_pdf(tex_content, output_dir, stem)
-        final_path = output_dir / output_filename
+        pdf_path = compile_tex_to_pdf(tex_content, target_dir, stem)
+        final_path = target_dir / output_filename
         if pdf_path != final_path:
             pdf_path.replace(final_path)
 
@@ -336,11 +351,15 @@ def generate_cover_letter_pdf(
     recipient_info: str = "",
     cv_json: str = "",
     job_json: str = "",
+    output_dir: str = "",
 ) -> str:
     """
     Generate cover letter PDF from structured content via LaTeX.
 
     WARNING: Only call this tool after the user has explicitly approved the cover letter content!
+
+    ``output_dir`` is the directory to write into (a session folder inside
+    data/); it defaults to data/ itself.
     """
     try:
         if not output_filename.lower().endswith(".pdf"):
@@ -391,12 +410,12 @@ def generate_cover_letter_pdf(
             cv_data=cv_data if isinstance(cv_data, dict) else {},
             job_data=job_data if isinstance(job_data, dict) else None,
         )
-        output_dir = DEFAULT_OUTPUT_DIR
-        output_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = _resolve_output_dir(output_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         stem = Path(output_filename).stem
-        pdf_path = compile_tex_to_pdf(tex_content, output_dir, stem)
-        final_path = output_dir / output_filename
+        pdf_path = compile_tex_to_pdf(tex_content, target_dir, stem)
+        final_path = target_dir / output_filename
         if pdf_path != final_path:
             pdf_path.replace(final_path)
 

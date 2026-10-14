@@ -23,6 +23,7 @@ import re
 from typing import Any
 
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from langgraph.types import Command, interrupt
 
@@ -37,6 +38,7 @@ from app.agents.writer_agent import (
     rewrite_enhance_content,
     select_prioritize_content,
 )
+from app.agents.orchestrator.outputs import file_record, session_output_dir
 from app.services.latex_renderer import extract_recipient_name
 from app.agents.scoring_agent import (
     apply_eligibility_answers,
@@ -307,14 +309,6 @@ def _merge_rewrites_into_cv(
             unplaced.append(original if isinstance(original, str) else rewritten)
 
     return merged, unplaced
-
-
-def _file_record(filename: str, file_type: str) -> dict[str, str]:
-    return {
-        "filename": filename,
-        "file_type": file_type,
-        "download_url": f"/api/files/{filename}",
-    }
 
 
 def _extract_filename(tool_message: str) -> str | None:
@@ -1050,7 +1044,7 @@ def jt_step6_assemble_cv(state: OrchestratorState) -> dict[str, Any]:
 # Step 7: generate CV PDF (LaTeX / Harvard template)
 # --------------------------------------------------------------------------- #
 
-def jt_step7_generate_cv_files(state: OrchestratorState) -> dict[str, Any]:
+def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     """Emit a tailored CV PDF from merged structured JSON."""
     cv_data = state.get("cv_data") or {}
     applicant_name = cv_data.get("name", "Applicant")
@@ -1067,10 +1061,11 @@ def jt_step7_generate_cv_files(state: OrchestratorState) -> dict[str, Any]:
         "output_filename": pdf_name,
         "applicant_name": applicant_name,
         "section_order_json": json.dumps(section_order),
+        "output_dir": session_output_dir(config),
     })
     if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
         filename = _extract_filename(pdf_msg) or pdf_name
-        generated.append(_file_record(filename, "cv"))
+        generated.append(file_record(filename, "cv", config))
         messages.append(f"PDF: {filename}")
     else:
         messages.append(f"PDF generation failed: {pdf_msg}")
@@ -1235,7 +1230,7 @@ def jt_gate_approve_cover_letter(state: OrchestratorState) -> Command:
 # Step 9: cover letter PDF (LaTeX)
 # --------------------------------------------------------------------------- #
 
-def jt_step9_cover_letter_files(state: OrchestratorState) -> dict[str, Any]:
+def jt_step9_cover_letter_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     cv_data = state.get("cv_data") or {}
     content = state.get("cover_letter_content") or {}
     language = state.get("cover_letter_language") or "english"
@@ -1262,10 +1257,11 @@ def jt_step9_cover_letter_files(state: OrchestratorState) -> dict[str, Any]:
         "recipient_info": recipient_info,
         "cv_json": json.dumps(cv_data),
         "job_json": json.dumps(state.get("job_data") or {}),
+        "output_dir": session_output_dir(config),
     })
     if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
         filename = _extract_filename(pdf_msg) or pdf_name
-        generated.append(_file_record(filename, "cover_letter"))
+        generated.append(file_record(filename, "cover_letter", config))
         messages.append(f"PDF: {filename}")
     else:
         messages.append(f"Cover-letter PDF failed: {pdf_msg}")
