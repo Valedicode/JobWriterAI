@@ -241,6 +241,14 @@ def _state_context_block(state: dict[str, Any] | None) -> str:
     if rewritten.get("updated_summary"):
         parts.append(f"updated_summary: {rewritten['updated_summary']}")
 
+    alignment = state.get("alignment")
+    if isinstance(alignment, dict) and alignment.get("before") is not None:
+        parts.append(
+            f"Requirement alignment before tailoring {alignment.get('before')}, after {alignment.get('after')} "
+            f"(rewrites kept {alignment.get('preservation')} of the original technologies and numbers); "
+            f"now shown in a bullet: {alignment.get('newly_shown') or 'nothing new'}"
+        )
+
     step_error = state.get("step_error")
     if isinstance(step_error, dict):
         parts.append(f"step_error: {step_error.get('label')} failed - {step_error.get('detail')}")

@@ -436,6 +436,10 @@ class SkillMatch(BaseModel):
         default=True,
         description="True if this skill came from required_skills, False if preferred"
     )
+    scored_by: Optional[Literal["deterministic", "skill_graph", "embedding", "llm_judge"]] = Field(
+        default=None,
+        description="Which stage of the matching cascade decided this match.",
+    )
 
 
 class DimensionScore(BaseModel):
@@ -491,6 +495,32 @@ class GapAnalysis(BaseModel):
     )
 
 
+RequirementStatus = Literal["met", "partial", "learnable_gap", "missing", "unclear"]
+
+
+class RequirementRow(BaseModel):
+    """One requirement from the posting, how the CV meets it, and where it shows."""
+    requirement_id: str = Field(description="'req.<n>' for skills, 'ko.<n>' for knockouts; stable for a posting.")
+    text: str = Field(description="The requirement as written in the posting.")
+    category: Literal["must_have", "nice_to_have", "learnable", "knockout"]
+    alternatives: List[str] = Field(
+        default_factory=list, description="OR-group members when any one of them satisfies it.",
+    )
+    status: RequirementStatus
+    matched_with: Optional[str] = Field(
+        default=None, description="The CV skill that meets it, or the adjacent one for a learnable gap.",
+    )
+    evidence_fact_ids: List[str] = Field(
+        default_factory=list, description="Fact-ledger ids that show the requirement (skills, bullets, languages).",
+    )
+    evidence_bullet_ids: List[str] = Field(
+        default_factory=list, description="The CV bullets among them: where a recruiter would see it.",
+    )
+    reason: str = ""
+    scored_by: Literal["deterministic", "skill_graph", "embedding", "llm_judge"] = "deterministic"
+    judge_model: Optional[str] = Field(default=None, description="Set when an LLM judge decided the status.")
+
+
 class CompatibilityReport(BaseModel):
     """Multi-dimensional compatibility output produced by calculate_compatibility_score_v2."""
     aggregate_score: float = Field(
@@ -516,6 +546,17 @@ class CompatibilityReport(BaseModel):
     warnings: List[str] = Field(
         default_factory=list,
         description="Non-fatal issues encountered while computing the report"
+    )
+    rubric: List[RequirementRow] = Field(
+        default_factory=list,
+        description="Every skill requirement with its status and CV evidence.",
+    )
+    knockouts: List[RequirementRow] = Field(
+        default_factory=list,
+        description=(
+            "Pass/fail conditions (languages, education, work mode, location, hours, "
+            "start date, work permit). Not part of aggregate_score; an unmet one caps the level."
+        ),
     )
 
 
