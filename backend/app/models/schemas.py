@@ -521,6 +521,48 @@ class RequirementRow(BaseModel):
     judge_model: Optional[str] = Field(default=None, description="Set when an LLM judge decided the status.")
 
 
+class KeywordPlanItem(BaseModel):
+    """A posting term the tailored CV may use, and the facts that justify it."""
+    keyword: str = Field(description="The term as the posting writes it, e.g. 'REST APIs'.")
+    requirement_id: str = Field(default="", description="The rubric row it serves, e.g. 'req.0'.")
+    allowed: bool = Field(
+        default=False,
+        description="Set by validation, not trusted from the model: True only when a cited fact names the term.",
+    )
+    evidence_fact_ids: List[str] = Field(
+        default_factory=list, description="Fact-list ids that show the candidate has it.",
+    )
+
+
+class StrategistPlan(BaseModel):
+    """The holistic tailoring plan, reviewed together with the score."""
+    positioning: str = Field(description=(
+        "One short paragraph: how to present this candidate for this role, honestly, "
+        "built on what the CV shows."
+    ))
+    headline: Optional[str] = Field(default=None, description=(
+        "A one-line profile headline for the top of the CV, using only facts from the list; "
+        "null when nothing honest fits."
+    ))
+    cv_language: Literal["english", "german"] = Field(description="Language the tailored CV should be in.")
+    convention: Literal["international", "dach"] = Field(description=(
+        "'dach' for postings in Germany, Austria or Switzerland, otherwise 'international'."
+    ))
+    section_order: List[str] = Field(default_factory=list, description=(
+        "CV sections, most important first, from: experience, projects, education, skills, "
+        "leadership_activities, languages, certificates, awards, publications, interests."
+    ))
+    project_order: List[int] = Field(default_factory=list, description="Indices into the CV's projects, best first.")
+    bullets_to_feature: List[str] = Field(default_factory=list, description=(
+        "bullet_ids from the bullet list that best evidence the must-haves."
+    ))
+    keyword_plan: List[KeywordPlanItem] = Field(default_factory=list)
+    red_flags: List[str] = Field(default_factory=list, description=(
+        "What a recruiter may question (unmet must-haves, unclear knockouts, gaps), "
+        "based only on the report and the CV."
+    ))
+
+
 class CompatibilityReport(BaseModel):
     """Multi-dimensional compatibility output produced by calculate_compatibility_score_v2."""
     aggregate_score: float = Field(

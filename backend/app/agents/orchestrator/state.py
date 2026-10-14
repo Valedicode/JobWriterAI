@@ -90,7 +90,11 @@ class OrchestratorState(TypedDict, total=False):
     bullet_index: dict[str, Any]
     job_summary: dict[str, Any] | None
     compatibility_report: dict[str, Any] | None
+    # Rule-based directives plus "plan" (the validated StrategistPlan, or None
+    # when it couldn't be drafted) and "plan_notes".
     tailoring_strategy: dict[str, Any] | None
+    # The user's notes from editing the plan at the score review.
+    strategy_feedback: list[str]
     selected_content: dict[str, Any] | None
     rewritten_content: dict[str, Any] | None
     locked_rewrites: list[dict[str, Any]] | None

@@ -52,6 +52,7 @@ from tests.test_orchestrator_job_tailoring import (
     CV,
     JOB,
     JOB_SUMMARY,
+    PLAN,
     STRATEGY,
 )
 
@@ -110,6 +111,7 @@ class _Tools:
             "generate_job_summary": tool("generate_job_summary", JOB_SUMMARY),
             "calculate_compatibility_score_v2": tool("calculate_compatibility_score_v2", COMPATIBILITY_REPORT),
             "decide_tailoring_strategy": tool("decide_tailoring_strategy", STRATEGY),
+            "plan_tailoring_strategy": tool("plan_tailoring_strategy", PLAN),
             "select_prioritize_content": tool("select_prioritize_content", SELECTED),
             "rewrite_enhance_content": tool("rewrite_enhance_content", rewrite),
             "generate_cv_pdf": tool(

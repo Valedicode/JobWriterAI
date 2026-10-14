@@ -232,6 +232,14 @@ def _state_context_block(state: dict[str, Any] | None) -> str:
                 f"invented by rewriting): {missing}"
             )
 
+    plan = (state.get("tailoring_strategy") or {}).get("plan")
+    if isinstance(plan, dict):
+        usable = [k.get("keyword") for k in plan.get("keyword_plan") or [] if isinstance(k, dict) and k.get("allowed")]
+        parts.append(
+            f"Tailoring plan: positioning={plan.get('positioning', '')!r}; headline={plan.get('headline')!r}; "
+            f"terms the CV supports={usable}; red flags={plan.get('red_flags') or []}"
+        )
+
     selected = state.get("selected_content") or {}
     rewritten = state.get("rewritten_content") or {}
     bullets_selected = len(selected.get("selected_bullets") or [])

@@ -38,6 +38,7 @@ from tests.test_orchestrator_job_tailoring import (  # noqa: E402
     JOB_SUMMARY,
     REWRITTEN,
     SELECTED,
+    PLAN,
     STRATEGY,
 )
 
@@ -52,6 +53,7 @@ def patched_tools():
         "generate_job_summary": _fake_tool(lambda _: json.dumps(JOB_SUMMARY)),
         "calculate_compatibility_score_v2": _fake_tool(lambda _: json.dumps(COMPATIBILITY_REPORT)),
         "decide_tailoring_strategy": _fake_tool(lambda _: json.dumps(STRATEGY)),
+        "plan_tailoring_strategy": _fake_tool(lambda _: json.dumps(PLAN)),
         "select_prioritize_content": _fake_tool(lambda _: json.dumps(SELECTED)),
         "rewrite_enhance_content": _fake_tool(lambda _: json.dumps(REWRITTEN)),
         "generate_cv_pdf": _fake_tool(
@@ -351,9 +353,9 @@ def _pending_step(client, session_id: str) -> str | None:
 
 
 def test_disallowed_action_is_refused_and_gate_stays(enabled_client, patched_tools):
-    # present_score allows approve/reject; 'edit' used to fall through to END.
+    # present_score is an approval gate: 'choose' belongs to choice gates.
     session_id = _start(enabled_client)
-    resp = _send(enabled_client, session_id, action="edit", feedback="more detail")
+    resp = _send(enabled_client, session_id, action="choose", choice="german")
     assert resp.status_code == 400
     assert "not allowed at gate 'present_score'" in resp.json()["detail"]
     assert _pending_step(enabled_client, session_id) == "present_score"
@@ -397,7 +399,7 @@ def test_resolution_after_flow_end_is_refused(enabled_client, patched_tools):
 
 def test_chat_action_outside_allowed_actions_is_refused(enabled_client, patched_tools):
     session_id = _start(enabled_client)
-    chat_turn = ChatTurn(reply="Re-running.", action=GateResolution(action="edit", feedback="shorter"))
+    chat_turn = ChatTurn(reply="Using German.", action=GateResolution(action="choose", choice="german"))
     with patch("app.api.orchestrator.interpret_chat", return_value=chat_turn):
         resp = enabled_client.post(
             "/api/orchestrator/message",

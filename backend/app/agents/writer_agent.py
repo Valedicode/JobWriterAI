@@ -723,6 +723,33 @@ def _format_directives(directives: List[Any]) -> str:
     return "\n".join(lines) if lines else "None provided."
 
 
+def _format_plan(strategy_data: Dict[str, Any], step: str) -> str:
+    """The parts of the user-approved strategist plan this step acts on.
+    Keywords are only those validation found on the CV."""
+    plan = strategy_data.get("plan")
+    if not isinstance(plan, dict):
+        return "None."
+    lines = [f"Positioning: {plan.get('positioning', '')}"]
+    if step == "select":
+        if plan.get("section_order"):
+            lines.append(f"Section order: {', '.join(plan['section_order'])} (use it as `section_order`)")
+        if plan.get("bullets_to_feature"):
+            lines.append(f"Feature these bullets: {', '.join(plan['bullets_to_feature'])}")
+        if plan.get("project_order"):
+            lines.append(f"Project order (indices, best first): {plan['project_order']}")
+    else:
+        if plan.get("headline"):
+            lines.append(f"Suggested headline for the summary: {plan['headline']}")
+        keywords = [k for k in plan.get("keyword_plan") or [] if isinstance(k, dict)]
+        usable = [k["keyword"] for k in keywords if k.get("allowed")]
+        unusable = [k["keyword"] for k in keywords if not k.get("allowed")]
+        if usable:
+            lines.append(f"Posting terms the CV supports (use where they fit naturally): {', '.join(usable)}")
+        if unusable:
+            lines.append(f"Posting terms the CV does NOT support (never use): {', '.join(unusable)}")
+    return "\n".join(lines)
+
+
 def _format_feedback(strategy_data: Dict[str, Any], stages: tuple[str, ...]) -> str:
     """
     The user's (and the verifier's) notes for this step, oldest first.
@@ -803,6 +830,7 @@ def select_prioritize_content(
                 "Job Data:\n{job}\n\n"
                 "Bullet Index:\n{bullet_index}\n\n"
                 "Evidence Map (requirement -> bullets that show it):\n{evidence}\n\n"
+                "Tailoring Plan (approved by the user):\n{plan}\n\n"
                 "Focus Areas: {focus}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
                 "User Feedback on earlier selections (follow it; it overrides the directives "
@@ -817,6 +845,7 @@ def select_prioritize_content(
             "job": job_json,
             "bullet_index": bullet_index_block or "(not provided)",
             "evidence": evidence_block or "(not provided)",
+            "plan": _format_plan(strategy_data, "select"),
             "focus": ", ".join(focus_areas),
             "directives": _format_directives(directives),
             "feedback": _format_feedback(strategy_data, ("approve_selection", "chat")),
@@ -910,6 +939,7 @@ def rewrite_enhance_content(
                 "Selected Content:\n{selected}\n\n"
                 "Locked Bullets (echo back unchanged):\n{locked}\n\n"
                 "Facts (what the CV and the candidate state; cite by id):\n{facts}\n\n"
+                "Tailoring Plan (approved by the user):\n{plan}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
                 "User Feedback on earlier rewrites (follow it; it overrides the directives "
                 "where they conflict, but never the absolute rules):\n{feedback}\n\n"
@@ -924,6 +954,7 @@ def rewrite_enhance_content(
             "selected": selected_content_json,
             "locked": json.dumps(locked_bullets) if locked_bullets else "(none)",
             "facts": facts_block or "(not provided)",
+            "plan": _format_plan(strategy_data, "rewrite"),
             "directives": _format_directives(directives),
             "feedback": _format_feedback(strategy_data, ("approve_rewrite", "chat", "verifier")),
         })

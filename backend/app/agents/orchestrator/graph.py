@@ -200,16 +200,16 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # --- linear edges for non-routing step nodes ----------------------------
     graph.add_edge(JT_ENTRY, JT_STEP1_SUMMARIZE)
     graph.add_edge(JT_STEP1_SUMMARIZE, JT_STEP2_COMPATIBILITY)
-    # Step 2 asks about eligibility the CV is silent on (once per run) before
-    # the score review; JT_GATE_CONFIRM_ELIGIBILITY then goes to
-    # JT_GATE_PRESENT_SCORE via Command.
+    # Step 2 asks about eligibility the CV is silent on (once per run);
+    # JT_GATE_CONFIRM_ELIGIBILITY then goes to JT_STEP3_STRATEGY via Command.
     graph.add_conditional_edges(
         JT_STEP2_COMPATIBILITY,
         route_after_score,
-        {JT_GATE_CONFIRM_ELIGIBILITY: JT_GATE_CONFIRM_ELIGIBILITY, JT_GATE_PRESENT_SCORE: JT_GATE_PRESENT_SCORE},
+        {JT_GATE_CONFIRM_ELIGIBILITY: JT_GATE_CONFIRM_ELIGIBILITY, JT_STEP3_STRATEGY: JT_STEP3_STRATEGY},
     )
-    # JT_GATE_PRESENT_SCORE returns Command(goto=JT_STEP3_STRATEGY or END)
-    graph.add_edge(JT_STEP3_STRATEGY, JT_STEP4_SELECT)
+    # The strategist's plan is reviewed together with the score.
+    graph.add_edge(JT_STEP3_STRATEGY, JT_GATE_PRESENT_SCORE)
+    # JT_GATE_PRESENT_SCORE returns Command(goto=JT_STEP4_SELECT | JT_STEP3_STRATEGY (edit) | END)
     # Steps 4 and 5 go to their review gate, or to JT_GATE_STEP_FAILED when
     # their tool reported an error. That gate returns Command(goto=<failed
     # step> | END), so a retry passes through the review gate again.

@@ -170,6 +170,85 @@ interface ScorePreview {
   warnings?: string[];
   rubric?: RubricRow[];
   knockouts?: RubricRow[];
+  plan?: ScorePlan | null;
+}
+
+interface ScorePlan {
+  positioning?: string;
+  headline?: string | null;
+  cv_language?: string;
+  convention?: string;
+  section_order?: string[];
+  featured_bullets?: Array<{ bullet_id?: string; text?: string }>;
+  keywords_to_use?: string[];
+  keywords_not_on_cv?: string[];
+  red_flags?: string[];
+  notes?: string[];
+}
+
+/** The strategist's plan, approved together with the score. */
+function TailoringPlan({ plan }: { plan: ScorePlan }) {
+  const featured = asArray<{ bullet_id?: string; text?: string }>(plan.featured_bullets).filter((b) => b?.text);
+  const useTerms = asArray<string>(plan.keywords_to_use);
+  const notOnCv = asArray<string>(plan.keywords_not_on_cv);
+  const redFlags = asArray<string>(plan.red_flags);
+  const notes = asArray<string>(plan.notes);
+  const sections = asArray<string>(plan.section_order).map(humanizeKey);
+  const style = [
+    plan.cv_language ? `${plan.cv_language} CV` : null,
+    plan.convention === 'dach' ? 'DACH conventions' : plan.convention ? 'international conventions' : null,
+  ].filter(Boolean);
+  return (
+    <div className="rounded-lg border border-border bg-surface-sunken/50 p-3">
+      {plan.positioning && <p className="text-body text-ink [overflow-wrap:anywhere]">{plan.positioning}</p>}
+      {plan.headline && (
+        <p className="mt-2 text-sm text-ink [overflow-wrap:anywhere]">
+          <span className="font-medium">Headline:</span> {plan.headline}
+        </p>
+      )}
+      {(style.length > 0 || sections.length > 0) && (
+        <p className="mt-1 text-sm text-ink-muted [overflow-wrap:anywhere]">
+          {[style.join(', '), sections.length > 0 ? `order: ${sections.join(' → ')}` : null].filter(Boolean).join(' · ')}
+        </p>
+      )}
+      {featured.length > 0 && (
+        <div className="mt-3">
+          <h5 className="mb-1 text-meta font-semibold text-ink-muted">Bullets to feature</h5>
+          <Bullets items={featured.map((b) => b.text as string)} />
+        </div>
+      )}
+      {useTerms.length > 0 && (
+        <div className="mt-3">
+          <h5 className="mb-1 text-meta font-semibold text-ink-muted">Posting terms your CV supports</h5>
+          <div className="flex flex-wrap gap-1.5">
+            {useTerms.map((k, i) => (
+              <Pill key={i}>{k}</Pill>
+            ))}
+          </div>
+        </div>
+      )}
+      {notOnCv.length > 0 && (
+        <p className="mt-2 text-sm text-ink-muted [overflow-wrap:anywhere]">
+          <span className="font-medium">Not on your CV, won&apos;t be used:</span> {notOnCv.join(', ')}
+        </p>
+      )}
+      {redFlags.length > 0 && (
+        <div className="mt-3">
+          <h5 className="mb-1 text-meta font-semibold text-ink-muted">What a recruiter may question</h5>
+          <Bullets items={redFlags} />
+        </div>
+      )}
+      {notes.length > 0 && (
+        <ul className="mt-2 space-y-0.5">
+          {notes.map((n, i) => (
+            <li key={i} className="text-meta text-ink-faint [overflow-wrap:anywhere]">
+              {n}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 const rubricStatus: Record<string, { label: string; tone: string }> = {
@@ -352,6 +431,11 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
       {warnings.length > 0 && (
         <Section title="Note">
           <Bullets items={warnings} />
+        </Section>
+      )}
+      {p.plan && (
+        <Section title="Tailoring plan">
+          <TailoringPlan plan={p.plan} />
         </Section>
       )}
       {p.interpretation && (
