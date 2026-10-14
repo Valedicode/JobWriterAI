@@ -31,6 +31,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_GATE_APPROVE_SELECTION,
     JT_GATE_COVER_LETTER,
     JT_GATE_PRESENT_SCORE,
+    route_after_score,
 )
 
 
@@ -695,3 +696,186 @@ def test_rewrite_falls_back_to_original_text_when_model_returns_nothing(graph, p
     rewrites = payload["preview"]["rewritten_bullets"]
     assert len(rewrites) > 0
     assert rewrites[0]["rewritten"] == rewrites[0]["original"]
+
+
+# --------------------------------------------------------------------------- #
+# A tool that reports an error routes to the step_failed gate (retry or stop)
+# instead of being shown as an empty-but-valid result.
+# --------------------------------------------------------------------------- #
+
+def _fails_then(result: dict[str, Any], empty: dict[str, Any]):
+    """Tool stub that reports an error on the first call and succeeds after."""
+    calls = {"n": 0}
+
+    def _invoke(_: Any) -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return json.dumps({"error": "sequence item 0: expected str instance, dict found", **empty})
+        return json.dumps(result)
+
+    return _fake_tool(_invoke)
+
+
+EMPTY_SELECTION = {"selected_bullets": [], "section_order": [], "sections_to_emphasize": [], "items_to_de_emphasize": []}
+EMPTY_REWRITE = {"rewritten_bullets": [], "updated_summary": "", "keywords_inserted": []}
+
+
+def test_selection_error_routes_to_step_failed_and_retry_resumes(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-selection-error-retry"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
+        _fails_then(SELECTED, EMPTY_SELECTION),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+
+        payload = _interrupt_payload(result)
+        assert payload["step"] == "step_failed"
+        assert payload["allowed_actions"] == ["approve", "reject"]
+        assert "expected str instance" in payload["preview"]["error"]
+        narration = result["messages"][-1].content
+        assert "Bullet selection failed" in narration
+        assert "Nothing in your CV was changed" in narration
+
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # retry
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "approve_selection"
+    assert payload["preview"]["selected_bullets"][0]["original_text"] == "Designed the first algorithm"
+    assert not graph.get_state(config).values.get("step_error")
+
+
+def test_selection_error_reject_stops_without_files(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-selection-error-stop"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
+        _fails_then(SELECTED, EMPTY_SELECTION),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        result = graph.invoke(Command(resume={"action": "reject"}), config=config)  # step_failed
+
+    assert "__interrupt__" not in result
+    assert not result.get("generated_files")
+    assert "Stopped after bullet selection failed" in result["last_narration"]
+
+
+def test_rewrite_error_routes_to_step_failed_and_retry_resumes(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-rewrite-error-retry"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fails_then(REWRITTEN, EMPTY_REWRITE),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
+
+        payload = _interrupt_payload(result)
+        assert payload["step"] == "step_failed"
+        assert payload["preview"]["failed_step"] == "Bullet rewriting"
+
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # retry
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "approve_rewrite"
+    assert payload["preview"]["rewritten_bullets"][0]["confidence"] == 0.88
+
+
+def test_chat_context_reports_step_error():
+    from app.agents.orchestrator.chat_agent import _state_context_block
+
+    block = _state_context_block({
+        "cv_data": CV,
+        "step_error": {"step": "jt_step5_rewrite_enhance", "label": "Bullet rewriting", "detail": "boom"},
+    })
+    assert "step_error: Bullet rewriting failed - boom" in block
+
+
+# --------------------------------------------------------------------------- #
+# confirm_eligibility: asked once when the CV is silent on a stated must-have
+# --------------------------------------------------------------------------- #
+
+GERMAN_JOB = {**JOB, "required_languages": ["German (C1)"]}
+SILENT_REPORT = {
+    **COMPATIBILITY_REPORT,
+    "gap_analysis": {
+        **COMPATIBILITY_REPORT["gap_analysis"],
+        "eligibility": [{
+            "requirement": "German (C1)", "kind": "language", "status": "unclear",
+            "rationale": "CV lists no languages.",
+        }],
+    },
+}
+
+
+@pytest.fixture
+def silent_on_german(patched_tools):
+    with patch(
+        "app.agents.orchestrator.nodes_job_tailoring.calculate_compatibility_score_v2",
+        _fake_tool(lambda _: json.dumps(SILENT_REPORT)),
+    ):
+        yield
+
+
+def test_unclear_eligibility_asks_before_the_score_gate(graph, silent_on_german):
+    config = {"configurable": {"thread_id": "test-eligibility-answer"}}
+    result = graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "confirm_eligibility"
+    assert payload["kind"] == "input"
+    [question] = payload["preview"]["questions"]
+    assert question["language"] == "German"
+    assert "I'll ask you about these next." in result["messages"][-1].content
+
+    result = graph.invoke(
+        Command(resume={"action": "edit", "feedback": "German: C1", "answers": {question["id"]: "C1"}}),
+        config=config,
+    )
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "present_score"
+    eligibility = payload["preview"]["gap_analysis"]["eligibility"]
+    assert eligibility[0]["status"] == "met"
+    assert any(d["name"] == "eligibility" for d in payload["preview"]["dimensions"])
+
+    values = graph.get_state(config).values
+    assert values["cv_data"]["languages"] == [{"language": "German", "fluency": "C1"}]
+    assert values["eligibility_asked"] is True
+    assert "German (C1): met" in result["messages"][-1].content
+
+
+def test_skipping_eligibility_continues_unchanged_and_never_asks_again(graph, silent_on_german):
+    config = {"configurable": {"thread_id": "test-eligibility-skip"}}
+    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # skip
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "present_score"
+    assert payload["preview"]["gap_analysis"]["eligibility"][0]["status"] == "unclear"
+    values = graph.get_state(config).values
+    assert "languages" not in values["cv_data"]
+    assert route_after_score(values) == JT_GATE_PRESENT_SCORE
+
+
+def test_eligibility_answer_typed_as_text_is_understood(graph, silent_on_german):
+    config = {"configurable": {"thread_id": "test-eligibility-chat"}}
+    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    result = graph.invoke(
+        Command(resume={"action": "edit", "feedback": "I'm a native German speaker"}), config=config
+    )
+    assert _interrupt_payload(result)["step"] == "present_score"
+    assert graph.get_state(config).values["cv_data"]["languages"][0]["fluency"] == "native"
+
+
+def test_unreadable_text_answer_asks_again(graph, silent_on_german):
+    config = {"configurable": {"thread_id": "test-eligibility-unreadable"}}
+    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    result = graph.invoke(Command(resume={"action": "edit", "feedback": "not sure"}), config=config)
+    assert _interrupt_payload(result)["step"] == "confirm_eligibility"
+    assert "couldn't match" in result["messages"][-1].content

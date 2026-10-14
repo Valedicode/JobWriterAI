@@ -32,6 +32,8 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
 
   const allows = (a: OrchestratorGateAction) => gate.allowed_actions.includes(a);
   const decisionCount = Object.keys(decisions).length;
+  // On the step_failed gate, approve re-runs the failed step and reject stops.
+  const isRetryGate = gate.step === 'step_failed';
 
   const handleDecisionChange = (bulletId: string, decision: BulletDecision | null) => {
     setDecisions((prev) => {
@@ -128,7 +130,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
               disabled={isLoading}
               className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-fg transition hover:bg-primary-hover active:scale-[0.97] disabled:opacity-50"
             >
-              {decisionCount > 0 ? `Apply (${decisionCount} customized)` : 'Approve'}
+              {isRetryGate ? 'Retry' : decisionCount > 0 ? `Apply (${decisionCount} customized)` : 'Approve'}
             </button>
           )}
           {allows('edit') && (
@@ -148,7 +150,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
               disabled={isLoading}
               className="rounded-full border border-border-strong px-4 py-1.5 text-sm font-medium text-ink-muted transition-colors hover:bg-surface-sunken hover:text-ink disabled:opacity-50"
             >
-              Reject
+              {isRetryGate ? 'Stop' : 'Reject'}
             </button>
           )}
         </div>

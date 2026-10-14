@@ -494,21 +494,23 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
     directives: List[Dict[str, Any]] = []
     focus_areas: List[str] = []
 
-    # Hard skills: emit per-transferable directives with bridge bullets
-    for sk in gap.transferable_skills:
+    # Hard skills: point the writer at the adjacent experience the CV already
+    # has. No drafted bullet text goes in here - the scorer's bridge_bullet is
+    # a claim about the required skill, and handing it to the rewriter as an
+    # instruction is how a skill the CV never mentions ends up on it.
+    adjacent = gap.transferable_skills + gap.learnable_skills
+    for sk in adjacent:
+        if not sk.matched_with:
+            continue
         directives.append({
-            "type": "inject_bridge_bullet",
+            "type": "surface_adjacent_experience",
             "section": "experience_or_projects",
             "required_skill": sk.required_skill,
             "candidate_skill": sk.matched_with,
-            "kind": sk.kind,
-            "transferability": sk.transferability,
-            "bullet": sk.bridge_bullet or (
-                f"Leveraged {sk.matched_with} on prior work; "
-                f"{sk.matched_with} and {sk.required_skill} share core paradigms."
-                if sk.matched_with else f"Highlight transferable experience related to {sk.required_skill}."
+            "guidance": (
+                f"Where an existing bullet already shows {sk.matched_with}, make that experience "
+                f"explicit. Do not claim {sk.required_skill}: the CV does not show it."
             ),
-            "rationale": sk.rationale,
         })
 
     if gap.matched_skills:
@@ -519,8 +521,8 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
             "rationale": "These job-required skills are explicitly held by the candidate; surface them prominently.",
         })
 
-    if gap.transferable_skills:
-        focus_areas.append("inject_bridge_bullets")
+    if any(sk.matched_with for sk in adjacent):
+        focus_areas.append("surface_adjacent_experience")
 
     if gap.missing_skills:
         focus_areas.append("address_missing_skills")
@@ -552,12 +554,21 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
             "section": "experience",
             "guidance": "Where truthful, use scope/leadership verbs (led, owned, mentored, drove) and add team/scope sizing.",
         })
-    if dim_lookup.get("ats_keywords") and dim_lookup["ats_keywords"].score < 0.55:
-        focus_areas.append("inject_ats_keywords")
+    # Exact posting wording only for skills the CV already has (e.g. the CV
+    # says "Postgres", the posting says "PostgreSQL"); inserting required-skill
+    # terms the CV lacks would be keyword stuffing of skills the candidate
+    # doesn't hold.
+    posting_terms = [m.required_skill for m in gap.matched_skills if m.required_skill]
+    if dim_lookup.get("ats_keywords") and dim_lookup["ats_keywords"].score < 0.55 and posting_terms:
+        focus_areas.append("use_posting_terms")
         directives.append({
-            "type": "inject_keywords",
+            "type": "use_posting_terms",
             "section": "skills_and_summary",
-            "guidance": "Insert exact-match required-skill terms in the skills section and summary so ATS keyword filters pass.",
+            "skills": posting_terms,
+            "guidance": (
+                "Where the CV already shows these skills, use the posting's exact wording for them. "
+                "Never add a skill the CV does not already show."
+            ),
         })
     if dim_lookup.get("domain") and dim_lookup["domain"].score < 0.5:
         focus_areas.append("reframe_domain_language")
@@ -586,6 +597,7 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
         "summary": {
             "matched_skills_count": len(gap.matched_skills),
             "transferable_skills_count": len(gap.transferable_skills),
+            "learnable_skills_count": len(gap.learnable_skills),
             "missing_skills_count": len(gap.missing_skills),
             "over_qualified_signals_count": len(gap.over_qualified_signals),
         },
@@ -599,11 +611,14 @@ def decide_tailoring_strategy(compatibility_score_json: str, cv_json: str, job_j
     compatibility score response.
 
     Produces concrete per-skill directives:
-    - inject_bridge_bullet for each transferable skill (with draft bullet)
+    - surface_adjacent_experience for each transferable skill (no drafted
+      bullet text, and never a claim of the required skill itself)
     - emphasize_skills_section listing directly matched skills
     - handle_missing_skills with omit/soften guidance
-    - amplify_outcomes / strengthen_seniority_language / inject_keywords /
-      reframe_domain when those dimensions score low
+    - amplify_outcomes / strengthen_seniority_language / reframe_domain when
+      those dimensions score low
+    - use_posting_terms (exact posting wording, matched skills only) when the
+      ATS keyword dimension scores low
     - temper_seniority if over-qualification signals were detected
 
     These directives are consumed directly by select_prioritize_content and
@@ -665,6 +680,30 @@ def decide_tailoring_strategy(compatibility_score_json: str, cv_json: str, job_j
 
     return json.dumps(_build_directives_from_report(report), indent=2)
 
+
+def _format_directives(directives: List[Any]) -> str:
+    """
+    Render step 3's directives as one readable line each for a prompt.
+
+    decide_tailoring_strategy emits dicts ({"type": ..., "guidance": ...}). A
+    bare "\\n".join() on them raised TypeError before the LLM was ever called,
+    and the tools' blanket except turned that into an empty result.
+    """
+    lines: List[str] = []
+    for directive in directives or []:
+        if isinstance(directive, dict):
+            details = "; ".join(
+                f"{key}: {', '.join(str(v) for v in value) if isinstance(value, list) else value}"
+                for key, value in directive.items()
+                if key != "type" and value not in (None, "", [])
+            )
+            kind = directive.get("type", "directive")
+            lines.append(f"- {kind}: {details}" if details else f"- {kind}")
+        elif directive:
+            lines.append(f"- {directive}")
+    return "\n".join(lines) if lines else "None provided."
+
+
 @tool
 def select_prioritize_content(
     cv_json: str,
@@ -691,7 +730,7 @@ def select_prioritize_content(
     try:
         strategy_data = json.loads(tailoring_strategy_json)
         focus_areas: List[str] = strategy_data.get("focus_areas", [])
-        directives: List[str] = strategy_data.get("directives", [])
+        directives: List[Dict[str, Any]] = strategy_data.get("directives", [])
 
         llm = chat_model("writer", temperature=0)
         structured_llm = llm.with_structured_output(SelectedContent)
@@ -733,7 +772,7 @@ def select_prioritize_content(
             "job": job_json,
             "bullet_index": bullet_index_block or "(not provided)",
             "focus": ", ".join(focus_areas),
-            "directives": "\n".join(directives) if directives else "None provided."
+            "directives": _format_directives(directives),
         })
         return result.model_dump_json()
 
@@ -774,7 +813,7 @@ def rewrite_enhance_content(
     """
     try:
         strategy_data = json.loads(tailoring_strategy_json)
-        directives: List[str] = strategy_data.get("directives", [])
+        directives: List[Dict[str, Any]] = strategy_data.get("directives", [])
         try:
             locked_bullets = json.loads(locked_bullets_json) or []
         except json.JSONDecodeError:
@@ -790,6 +829,8 @@ def rewrite_enhance_content(
                 "Apply the strategy directives precisely.\n\n"
                 "ABSOLUTE RULES:\n"
                 "- Reword EXISTING content only — never fabricate experience, metrics, or skills.\n"
+                "- Never add a skill, tool, or technology that the original bullet and CV do not "
+                "already mention, even when a directive or the job asks for it.\n"
                 "- Weave in job keywords naturally — forced keyword stuffing degrades ATS scores.\n"
                 "- Lead each bullet with a strong action verb.\n"
                 "- Keep the candidate's authentic voice.\n"
@@ -823,7 +864,7 @@ def rewrite_enhance_content(
             "job": job_json,
             "selected": selected_content_json,
             "locked": json.dumps(locked_bullets) if locked_bullets else "(none)",
-            "directives": "\n".join(directives) if directives else "None provided."
+            "directives": _format_directives(directives),
         })
 
         # Belt-and-braces: force locked bullets back into the result verbatim

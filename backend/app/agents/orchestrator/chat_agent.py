@@ -109,16 +109,18 @@ _SYSTEM_PROMPT = (
     "missing_skills, or zero selected/rewritten bullets means there IS room "
     "to improve - say so plainly instead of reassuring.\n"
     "- When asked what to improve, or whether there's anything to improve, "
-    "read `missing_skills` and `transferable_skills` from the context and "
+    "read `missing_skills`, `learnable_skills` and `transferable_skills` from the context and "
     "answer with the SPECIFIC skill names, not a generic 'looks good'. If a "
     "missing skill has no transferable bridge in the CV, say the pipeline "
     "cannot invent that experience, and suggest the user add it themselves "
     "if they genuinely have it (a course, a side project, brief exposure) - "
     "that unlocks real rewriting on the next pass.\n"
     "- If `bullets_selected` or `bullets_rewritten` is 0, say plainly that "
-    "nothing was actually changed in the CV at that step, and why (usually: "
-    "nothing in the CV was relevant enough), rather than implying the CV was "
-    "already good."
+    "nothing was actually changed in the CV at that step, rather than implying "
+    "the CV was already good. Do not guess a reason the context does not give.\n"
+    "- If `step_error` is present, the last step failed: say so, say that "
+    "nothing was changed, and that it can be retried. Never present a failure "
+    "as the CV being fine or as nothing in it being relevant."
 )
 
 
@@ -155,21 +157,28 @@ def _state_context_block(state: dict[str, Any] | None) -> str:
         )
         gap = report.get("gap_analysis") or {}
         missing = _skill_names(gap.get("missing_skills") or [])
-        transferable = gap.get("transferable_skills") or []
         matched = _skill_names(gap.get("matched_skills") or [])
+
+        def _via(items: list[Any]) -> list[dict[str, Any]]:
+            return [
+                {"required_skill": t.get("required_skill"), "via": t.get("matched_with")}
+                for t in items
+                if isinstance(t, dict)
+            ]
+
+        transferable = _via(gap.get("transferable_skills") or [])
+        learnable = _via(gap.get("learnable_skills") or [])
         if matched:
             parts.append(f"matched_skills: {matched}")
         if transferable:
             parts.append(
-                "transferable_skills (real gaps the CV can partially bridge): "
-                + json.dumps(
-                    [
-                        {"required_skill": t.get("required_skill"), "bridge_bullet": t.get("bridge_bullet")}
-                        for t in transferable
-                        if isinstance(t, dict)
-                    ],
-                    default=str,
-                )[:1500]
+                "transferable_skills (covered via a closely related skill the CV shows): "
+                + json.dumps(transferable, default=str)[:1500]
+            )
+        if learnable:
+            parts.append(
+                "learnable_skills (real gaps: NOT on the CV, only adjacent experience - "
+                "never describe these as covered): " + json.dumps(learnable, default=str)[:1500]
             )
         if missing:
             parts.append(
@@ -185,6 +194,10 @@ def _state_context_block(state: dict[str, Any] | None) -> str:
     parts.append(f"bullets_rewritten: {bullets_rewritten}")
     if rewritten.get("updated_summary"):
         parts.append(f"updated_summary: {rewritten['updated_summary']}")
+
+    step_error = state.get("step_error")
+    if isinstance(step_error, dict):
+        parts.append(f"step_error: {step_error.get('label')} failed - {step_error.get('detail')}")
 
     files = state.get("generated_files") or []
     if files:
