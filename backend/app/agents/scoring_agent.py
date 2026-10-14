@@ -1486,9 +1486,61 @@ _YEARS_RE = re.compile(
     r"(?:experience|exp\b|berufserfahrung|erfahrung)",
     re.IGNORECASE,
 )
-_DATE_RANGE_RE = re.compile(
-    r"(\d{4})\s*(?:-|–|—|to|bis)\s*(present|current|now|today|heute|\d{4})", re.IGNORECASE
+# One end of a date range: "2024", "March 2024", "Sep. 2023", "März 2021",
+# "10/2023", "03.2021". Month names in English and German, matched on their
+# first three letters.
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "mär": 3, "apr": 4, "may": 5, "mai": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "okt": 10, "nov": 11, "dec": 12, "dez": 12,
+}
+_MONTH_NAME = (
+    r"jan(?:uary|uar)?|feb(?:ruary|ruar)?|m(?:ar|är)(?:ch|z)?|apr(?:il)?|ma[yi]|jun[ei]?|jul[iy]?"
+    r"|aug(?:ust)?|sep(?:t(?:ember)?)?|o[ck]t(?:ober)?|nov(?:ember)?|de[cz](?:ember)?"
 )
+_DATE_POINT = (
+    r"(?:(?:(?P<{p}mon>" + _MONTH_NAME.replace("{", "{{").replace("}", "}}") + r")\.?\s+)"
+    r"|(?:(?P<{p}mm>\d{{1,2}})[./]))?(?P<{p}y>(?:19|20)\d{{2}})"
+)
+_OPEN_END = r"(?P<open>present|current|now|today|ongoing|heute|aktuell|jetzt|dato)"
+# The separator accepts the LaTeX "--" that the CV extraction schema itself
+# asks for ("March 2026 -- August 2026"); the old single-dash-then-year
+# pattern read every such range as zero years.
+_DATE_RANGE_RE = re.compile(
+    _DATE_POINT.format(p="s") + r"\s*(?:-{1,2}|–|—|to|until|bis)\s*(?:"
+    + _OPEN_END + "|" + _DATE_POINT.format(p="e") + r")\b",
+    re.IGNORECASE,
+)
+# "since 2022", "seit März 2021": an ongoing role written without an end.
+_SINCE_RE = re.compile(r"\b(?:since|seit)\s+" + _DATE_POINT.format(p="s") + r"\b", re.IGNORECASE)
+
+
+def _month_of(name: Optional[str], number: Optional[str]) -> Optional[int]:
+    """Month 1-12 from a month name or number, or None when absent/invalid."""
+    if name:
+        return _MONTHS.get(name.casefold()[:3])
+    if number and 1 <= int(number) <= 12:
+        return int(number)
+    return None
+
+
+def _range_months(match: "re.Match[str]", now: datetime) -> Tuple[int, int]:
+    """
+    (start, end) of a matched range as absolute month indices (year * 12 +
+    month - 1), end exclusive. A missing month counts as January at both ends,
+    so year-only ranges keep their old meaning ("2022 - 2024" is two years);
+    a named end month is included ("Mar 2024 -- Aug 2024" is six months).
+    """
+    groups = match.groupdict()
+    start_month = _month_of(groups.get("smon"), groups.get("smm")) or 1
+    start = int(groups["sy"]) * 12 + start_month - 1
+    if groups.get("ey"):
+        end_month = _month_of(groups.get("emon"), groups.get("emm"))
+        # "March -- August" includes August; a bare end year keeps the old
+        # year-only arithmetic.
+        end = int(groups["ey"]) * 12 + (end_month if end_month else 0)
+    else:  # open end ("present") or a "since" phrase
+        end = now.year * 12 + now.month - 1
+    return start, end
 
 
 def _experience_entries(cv_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1509,29 +1561,28 @@ def _estimate_candidate_years(cv_data: Dict[str, Any]) -> float:
     if explicit:
         return float(max(explicit))
 
-    current_year = datetime.now().year
+    now = datetime.now()
+    latest = now.year * 12 + now.month - 1
     intervals: List[Tuple[int, int]] = []
     for exp in _experience_entries(cv_data):
         text = " ".join(str(exp.get(k) or "") for k in ("duration", "dates", "start_date", "end_date"))
-        for match in _DATE_RANGE_RE.finditer(text):
-            try:
-                start = int(match.group(1))
-                end_token = match.group(2).lower()
-                end = current_year if not end_token.isdigit() else int(end_token)
-            except (ValueError, AttributeError):
-                continue
-            if start <= end <= current_year and end - start <= 50:
+        matches = list(_DATE_RANGE_RE.finditer(text)) or list(_SINCE_RE.finditer(text))
+        for match in matches:
+            start, end = _range_months(match, now)
+            # A contracted end date in the future counts only up to today.
+            end = min(end, latest)
+            if start <= end and end - start <= 50 * 12:
                 intervals.append((start, end))
 
-    total = 0.0
+    total_months = 0
     covered_until: Optional[int] = None
     for start, end in sorted(intervals):
         if covered_until is not None and start < covered_until:
             start = covered_until
         if end > start:
-            total += end - start
+            total_months += end - start
         covered_until = end if covered_until is None else max(covered_until, end)
-    return total
+    return total_months / 12.0
 
 
 def _score_experience(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tuple[float, str]:
