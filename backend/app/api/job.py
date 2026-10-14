@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, status
 import json
 import logging
 
+import requests
+
 from app.models.schemas import (
     JobURLRequest,
     JobTextRequest,
@@ -17,6 +19,7 @@ from app.models.schemas import (
     JobRequirements,
     CompanyInfo
 )
+from app.services.url_safety import UnsafeURLError
 from app.agents.job_agent import (
     retrieve_web,
     retrieve_text,
@@ -33,7 +36,7 @@ logger = logging.getLogger(__name__)
     summary="Extract Job from URL",
     description="Extract structured job requirements from one or more job posting URLs."
 )
-async def extract_job_from_url(request: JobURLRequest):
+def extract_job_from_url(request: JobURLRequest):
     """
     Extract job requirements from URL(s).
     
@@ -82,6 +85,13 @@ async def extract_job_from_url(request: JobURLRequest):
         
     except HTTPException:
         raise
+    except UnsafeURLError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"URL not allowed: {e}")
+    except requests.RequestException as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not fetch the job posting: {type(e).__name__}",
+        )
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -101,7 +111,7 @@ async def extract_job_from_url(request: JobURLRequest):
     summary="Extract Job from Text",
     description="Extract structured job requirements from pasted job description text."
 )
-async def extract_job_from_text(request: JobTextRequest):
+def extract_job_from_text(request: JobTextRequest):
     """
     Extract job requirements from raw text.
     
@@ -156,7 +166,7 @@ async def extract_job_from_text(request: JobTextRequest):
     summary="Research Company Information",
     description="Search the web for company information including values, culture, mission, and recent news."
 )
-async def research_company(request: CompanyResearchRequest):
+def research_company(request: CompanyResearchRequest):
     """
     Research company information using web search.
     

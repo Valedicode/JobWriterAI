@@ -15,7 +15,7 @@ Architecture:
 - Returns JSON strings for easy integration
 
 Tools:
-- retrieve_web: Extract job info from URLs (WebBaseLoader + LLM extraction)
+- retrieve_web: Extract job info from URLs (SSRF-safe fetch + LLM extraction)
 - retrieve_text: Extract job info from pasted text (LLM extraction)
 - collect_company_info: Research company using Tavily search (web search + LLM extraction)
 
@@ -28,8 +28,10 @@ from langchain.agents import create_agent
 from langchain_core.tools import tool
 from app.openai_llm import chat_openai_mini
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_community.document_loaders import WebBaseLoader
 from langchain_tavily import TavilySearch
+
+from app.config import get_settings
+from app.services.url_safety import fetch_public_page
 
 # Import models from centralized schemas
 from app.models.schemas import JobRequirements, CompanyInfo
@@ -40,8 +42,6 @@ import threading
 from collections import OrderedDict
 
 import dotenv
-
-from app.config import get_settings
 
 dotenv.load_dotenv()
 
@@ -202,9 +202,11 @@ def retrieve_web(web_urls: list[str]) -> str:
     Returns:
         JSON string with structured job requirements information
     """
-    loader = WebBaseLoader(web_urls)
-    docs = loader.load()
-    text_content = "\n\n".join([page.page_content for page in docs])
+    # Fetched through the SSRF-safe fetcher: only public hosts, redirects
+    # re-checked hop by hop, time and size capped (WebBaseLoader fetched
+    # whatever URL it was given, internal addresses included).
+    user_agent = get_settings().user_agent
+    text_content = "\n\n".join(fetch_public_page(url, user_agent) for url in web_urls)
 
     return _extract_job_requirements(text_content)
 

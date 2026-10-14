@@ -2,10 +2,12 @@
 FastAPI application entry point
 """
 
+import logging
+from datetime import timedelta
+
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from app.api import (
     audio_router,
@@ -14,21 +16,46 @@ from app.api import (
     orchestrator_router,
     writer_router,
 )
+from app.config import get_settings
+from app.services.file_store import get_file_store
 from app.services.generic_session_manager import get_session_manager
+from app.services.graph_checkpointer import configure_checkpointer, postgres_checkpointer
+from app.services.session_retention import expire_sessions
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Lifespan context manager for startup and shutdown events.
+
+    With DATABASE_URL set, orchestrator sessions are stored in Postgres and
+    survive restarts; a configured database that can't be reached stops
+    startup. Without it they live in memory only.
     """
-    # Startup: Initialize services
     print("\n" + "="*70)
     print("Starting JobWriterAI API...")
     print("="*70 + "\n")
+
+    settings = get_settings()
+    close_checkpointer = None
+    if settings.database_url:
+        saver, close_checkpointer = postgres_checkpointer(settings.database_url)
+        configure_checkpointer(saver)
+        logger.info("Orchestrator sessions are stored in Postgres.")
+    else:
+        logger.warning("DATABASE_URL is not set: orchestrator sessions live in memory and are lost on restart.")
+
+    expired = expire_sessions(timedelta(hours=settings.session_ttl_hours))
+    if expired:
+        logger.info("Deleted %d expired session(s) at startup.", len(expired))
+
     yield
-    # Shutdown: Cleanup
+
     print("\nShutting down JobWriterAI API...")
+    if close_checkpointer is not None:
+        close_checkpointer()
 
 
 app = FastAPI(
@@ -63,11 +90,6 @@ app.include_router(job_router)
 app.include_router(writer_router)
 app.include_router(audio_router)
 app.include_router(orchestrator_router)
-
-# Configure file serving directory
-DATA_DIR = Path(__file__).parent.parent / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
 
 @app.get("/")
 async def root():
@@ -111,102 +133,33 @@ async def health_check():
 
 
 @app.get(
-    "/api/files/{filename}",
+    "/api/files/{session_id}/{filename}",
     response_class=FileResponse,
     summary="Download Generated File",
-    description="Download generated PDF files (CVs, cover letters) from the server."
+    description="Download a PDF (CV or cover letter) generated in one orchestrator session.",
 )
-async def download_file(filename: str):
+async def download_file(session_id: str, filename: str):
     """
-    Download a generated file.
-    
-    **Purpose:**
-    Serves generated PDF files (CVs, cover letters) to the frontend for download.
-    
-    **Security:**
-    - Validates filename to prevent directory traversal attacks
-    - Only serves files from the data directory
-    - Returns 404 if file doesn't exist
-    
-    **Parameters:**
-    - `filename`: Name of the file to download (e.g., "john_doe_cv.pdf")
-    
-    **Returns:**
-    - PDF file with appropriate content-type headers
-    
-    **Usage:**
-    ```javascript
-    // Frontend example
-    const response = await fetch(`/api/files/${filename}`);
-    const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    ```
+    Serve a generated PDF from its session's folder in the file store.
+
+    The URL is the ``download_url`` the orchestrator returns with each
+    generated file. Files are only looked up inside the named session's
+    folder, so the session id (a random UUID) is required to fetch one.
+    There are no user accounts yet; once they exist (plan item 14) this
+    route should also check that the session belongs to the caller.
     """
-    try:
-        # Security: Validate filename (prevent directory traversal)
-        if ".." in filename or "/" in filename or "\\" in filename:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid filename. Filename cannot contain path separators or '..'."
-            )
-        
-        # Security: Only allow PDF files
-        if not filename.lower().endswith('.pdf'):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only PDF files can be downloaded."
-            )
-        
-        # Construct file path
-        file_path = DATA_DIR / filename
-        
-        # Check if file exists
-        if not file_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"File not found: {filename}"
-            )
-        
-        # Security: Verify file is actually in DATA_DIR (resolve symlinks)
-        try:
-            resolved_path = file_path.resolve()
-            if not str(resolved_path).startswith(str(DATA_DIR.resolve())):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Access denied."
-                )
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied."
-            )
-        
-        media_type = "application/pdf"
-        
-        # Return file
-        return FileResponse(
-            path=str(file_path),
-            filename=filename,
-            media_type=media_type,
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error serving file: {str(e)}"
-        )
+    path = get_file_store().path_for(session_id, filename)
+    if path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found.")
+    return FileResponse(
+        path=str(path),
+        filename=filename,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 if __name__ == "__main__":
