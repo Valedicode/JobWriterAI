@@ -534,6 +534,12 @@ class KeywordPlanItem(BaseModel):
     )
 
 
+class SkillGroup(BaseModel):
+    """One labelled line of the CV's Skills section."""
+    label: str = Field(description="Group label in the CV's language, e.g. 'Programming languages'.")
+    skills: List[str] = Field(default_factory=list, description="Skills exactly as the CV lists them.")
+
+
 class StrategistPlan(BaseModel):
     """The holistic tailoring plan, reviewed together with the score."""
     positioning: str = Field(description=(
@@ -541,8 +547,12 @@ class StrategistPlan(BaseModel):
         "built on what the CV shows."
     ))
     headline: Optional[str] = Field(default=None, description=(
-        "A one-line profile headline for the top of the CV, using only facts from the list; "
-        "null when nothing honest fits."
+        "A one-line profile headline for the top of the CV, using only facts from the list, "
+        "written in the language the CV is currently in; null when nothing honest fits."
+    ))
+    skill_groups: List["SkillGroup"] = Field(default_factory=list, description=(
+        "The CV's skills in 3-4 labelled groups (e.g. programming languages, backend/frontend, "
+        "ML/agents, tools), most relevant group first. Only skills from the CV's skills list."
     ))
     cv_language: Literal["english", "german"] = Field(description="Language the tailored CV should be in.")
     convention: Literal["international", "dach"] = Field(description=(

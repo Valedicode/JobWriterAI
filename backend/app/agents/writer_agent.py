@@ -342,8 +342,6 @@ def generate_cv_pdf(
 
         message = f"CV PDF generated successfully! The file '{output_filename}' is ready for download."
         notes = [f"{problem}; consider shortening or removing a section." for problem in layout["problems"]]
-        if layout["merged_languages"] and not layout["problems"]:
-            notes.append("Languages were folded into Skills so they don't sit alone on the last page.")
         return message + "".join(f"\nLayout note: {note}" for note in notes)
 
     except RuntimeError as e:
@@ -749,7 +747,10 @@ def _format_plan(strategy_data: Dict[str, Any], step: str) -> str:
             lines.append(f"Project order (indices, best first): {plan['project_order']}")
     else:
         if plan.get("headline"):
-            lines.append(f"Suggested headline for the summary: {plan['headline']}")
+            lines.append(
+                f"Headline (printed on its own line under the name; do NOT repeat it in the summary): "
+                f"{plan['headline']}"
+            )
         keywords = [k for k in plan.get("keyword_plan") or [] if isinstance(k, dict)]
         usable = [k["keyword"] for k in keywords if k.get("allowed")]
         unusable = [k["keyword"] for k in keywords if not k.get("allowed")]
@@ -922,6 +923,9 @@ def rewrite_enhance_content(
                 "already mention, even when a directive or the job asks for it.\n"
                 "- Weave in job keywords naturally — forced keyword stuffing degrades ATS scores.\n"
                 "- Lead each bullet with a strong action verb.\n"
+                "- Write every rewrite and the summary in the language the CV is written in, even "
+                "when the posting or the plan uses another language: a later step translates the "
+                "whole CV at once, so a single translated part would leave the CV mixed.\n"
                 "- Keep the candidate's authentic voice.\n"
                 "- Only enhance descriptions — do not replace their substance.\n"
                 "- For each bullet, report a confidence score (0–1) for how well the rewrite "
