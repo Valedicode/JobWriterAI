@@ -463,7 +463,18 @@ interface SelectionBullet {
   relevance_score: number;
   reason?: string;
   bullet_id?: string | null;
+  /** Word form of the model's relevance estimate: users see this, not the number. */
+  match?: 'strong' | 'partial' | 'weak' | null;
+  /** Posting requirements this bullet shows, from the requirement rubric. */
+  shows?: string[];
+  leave_out_recommended?: boolean;
 }
+
+const MATCH_LABEL: Record<string, { label: string; tone: string }> = {
+  strong: { label: 'Strong match', tone: 'bg-success-surface text-success-text border-success-border' },
+  partial: { label: 'Partial match', tone: 'bg-primary-surface text-primary-text border-border' },
+  weak: { label: 'Weak match', tone: 'bg-warning-surface text-warning-text border-warning-border' },
+};
 
 interface SelectionPreview {
   selected_bullets?: SelectionBullet[];
@@ -498,48 +509,68 @@ function ApproveSelection({ preview, decisions, onDecisionChange }: { preview: P
       )}
       {bullets.length > 0 && (
         <Section title={`Selected bullets (${bullets.length})`}>
+          <p className="mb-2 text-meta text-ink-muted">
+            Tailor it: rewritten for this posting. Keep as is: stays in your CV unchanged. Leave out:
+            removed from the tailored CV (your saved CV keeps it).
+          </p>
           <ul className="space-y-2">
             {bullets.map((b, i) => {
               const bulletId = b?.bullet_id ?? null;
-              const isExcluded = bulletId ? decisions?.[bulletId]?.choice === 'exclude' : false;
+              const choice = bulletId ? decisions?.[bulletId]?.choice ?? 'include' : 'include';
+              const match = b?.match ? MATCH_LABEL[b.match] : null;
+              const shows = asArray<string>(b?.shows);
               return (
                 <MiniCard key={bulletId ?? i}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-meta uppercase tracking-[0.08em] tabular-nums text-ink-faint">
-                        {b?.section ?? '—'} · relevance{' '}
-                        {typeof b?.relevance_score === 'number' ? b.relevance_score.toFixed(2) : '?'}
-                      </div>
-                      <div
-                        className={`mt-1 text-body text-ink [overflow-wrap:anywhere] ${
-                          isExcluded ? 'text-ink-faint line-through' : ''
-                        }`}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-meta uppercase tracking-[0.08em] text-ink-faint">{b?.section ?? '—'}</span>
+                    {match && (
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-label font-medium ${match.tone}`}
                       >
-                        {b?.original_text ?? ''}
-                      </div>
-                      {b?.reason && (
-                        <div className="mt-1 text-meta text-ink-faint [overflow-wrap:anywhere]">
-                          {b.reason}
-                        </div>
-                      )}
-                    </div>
-                    {bulletId && onDecisionChange && (
-                      <div className="flex shrink-0 gap-1.5">
-                        <ToggleButton
-                          active={!isExcluded}
-                          onClick={() => onDecisionChange(bulletId, null)}
-                        >
-                          Include
-                        </ToggleButton>
-                        <ToggleButton
-                          active={isExcluded}
-                          onClick={() => onDecisionChange(bulletId, { choice: 'exclude' })}
-                        >
-                          Exclude
-                        </ToggleButton>
-                      </div>
+                        {match.label}
+                      </span>
                     )}
                   </div>
+                  <div
+                    className={`mt-1 text-body text-ink [overflow-wrap:anywhere] ${
+                      choice === 'leave_out' ? 'text-ink-faint line-through' : ''
+                    }`}
+                  >
+                    {b?.original_text ?? ''}
+                  </div>
+                  {shows.length > 0 && (
+                    <div className="mt-1 text-meta text-ink-muted [overflow-wrap:anywhere]">
+                      Shows: {shows.join(', ')}
+                    </div>
+                  )}
+                  {b?.reason && (
+                    <div className="mt-1 text-meta text-ink-faint [overflow-wrap:anywhere]">{b.reason}</div>
+                  )}
+                  {b?.leave_out_recommended && (
+                    <div className="mt-1 text-meta font-medium text-warning-text [overflow-wrap:anywhere]">
+                      Suggestion: leave this out. It barely relates to the posting and shows none of its
+                      requirements.
+                    </div>
+                  )}
+                  {bulletId && onDecisionChange && (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      <ToggleButton active={choice === 'include'} onClick={() => onDecisionChange(bulletId, null)}>
+                        Tailor it
+                      </ToggleButton>
+                      <ToggleButton
+                        active={choice === 'exclude'}
+                        onClick={() => onDecisionChange(bulletId, { choice: 'exclude' })}
+                      >
+                        Keep as is
+                      </ToggleButton>
+                      <ToggleButton
+                        active={choice === 'leave_out'}
+                        onClick={() => onDecisionChange(bulletId, { choice: 'leave_out' })}
+                      >
+                        Leave out
+                      </ToggleButton>
+                    </div>
+                  )}
                 </MiniCard>
               );
             })}
@@ -603,18 +634,15 @@ function RewriteBulletCard({
 
   return (
     <MiniCard>
-      <div className="flex items-start justify-between gap-3">
-        <div className="text-meta uppercase tracking-[0.08em] tabular-nums text-ink-faint">
-          confidence {typeof bullet.confidence === 'number' ? bullet.confidence.toFixed(2) : '?'}
+      {/* The rewriter's "confidence" was its own guess at the match, which
+          readers took for accuracy; the fact-check notes below cover truth. */}
+      {keywords.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {keywords.map((k, i) => (
+            <Pill key={i}>{k}</Pill>
+          ))}
         </div>
-        {keywords.length > 0 && (
-          <div className="flex flex-wrap justify-end gap-1">
-            {keywords.map((k, i) => (
-              <Pill key={i}>{k}</Pill>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
       <div className="mt-1.5">
         {choice === 'keep_original' ? (
           <div className="rounded bg-surface-sunken px-1.5 py-0.5 text-body text-ink [overflow-wrap:anywhere]">

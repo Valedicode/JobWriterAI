@@ -98,6 +98,9 @@ class OrchestratorState(TypedDict, total=False):
     selected_content: dict[str, Any] | None
     rewritten_content: dict[str, Any] | None
     locked_rewrites: list[dict[str, Any]] | None
+    # Bullets the user chose to leave out of the tailored CV at the selection
+    # review; step 6 removes them (cv_data keeps them).
+    left_out_bullet_ids: list[str] | None
     cover_letter_content: dict[str, Any] | None
     cover_letter_language: CoverLetterLanguage | None
     cover_letter_recipient: str | None
