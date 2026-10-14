@@ -908,6 +908,13 @@ class OrchestratorStartRequest(BaseModel):
         default=None,
         description="Optional company info from company research."
     )
+    cv_language: Optional[Literal["english", "german"]] = Field(
+        default=None,
+        description=(
+            "The CV language, when the user already chose it. Without it, the "
+            "flow asks after scoring (job_tailoring only)."
+        ),
+    )
 
 
 class OrchestratorMessageRequest(BaseModel):

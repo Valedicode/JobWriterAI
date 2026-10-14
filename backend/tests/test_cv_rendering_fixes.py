@@ -21,7 +21,7 @@ from app.agents.orchestrator.nodes_job_tailoring import _with_skill_groups
 from app.agents.strategist_agent import validate_plan
 from app.agents.writer_agent import _format_plan
 from app.models.schemas import SkillGroup, StrategistPlan
-from app.services.resume_adapter import build_harvard_sections, group_skills
+from app.services.resume_adapter import build_harvard_sections, group_skills, normalize_skill_list
 
 BASE = {
     "name": "Alex Example",
@@ -50,16 +50,16 @@ def test_contact_line_skips_invisible_values_and_repeats():
     assert _header(cv)["contact_parts"] == ["Aachen, 52070", "alex@example.com", "https://github.com/example"]
 
 
-def test_a_headline_that_opens_the_summary_is_not_printed_twice():
-    summary = "Computer science student with web experience in Python and Java. Seeks a working student role."
-    assert _header({**BASE, "label": "Computer science student with web experience in Python and Java",
-                    "summary": summary})["label"] == ""
-    assert _header({**BASE, "label": "Backend engineer", "summary": summary})["label"] == "Backend engineer"
+def test_a_headline_is_printed_only_without_a_summary():
+    # A headline next to a summary repeated it, even when only paraphrased.
+    summary = "M.Sc. student at RWTH Aachen with web development experience in Python and Java."
+    assert _header({**BASE, "label": "Computer science student with web experience", "summary": summary})["label"] == ""
+    assert _header({**BASE, "label": "Backend engineer", "summary": ""})["label"] == "Backend engineer"
 
 
-def test_the_rewriter_is_told_not_to_repeat_the_headline_and_to_keep_the_cv_language():
+def test_the_headline_becomes_the_summarys_opening_idea():
     plan = {"plan": {"positioning": "p", "headline": "Backend engineer"}}
-    assert "do NOT repeat it in the summary" in _format_plan(plan, "rewrite")
+    assert "Headline idea for the summary's opening" in _format_plan(plan, "rewrite")
 
 
 def test_flat_skills_are_grouped_by_family_with_languages_as_a_line():
@@ -119,3 +119,31 @@ def test_a_german_grade_label_is_not_prefixed_again():
     _, sections = build_harvard_sections(cv, language="german")
     rows = next(s for s in sections if s["type"] == "education")["entries"][0]["rows"]
     assert [r["left"] for r in rows if "1,0" in r["left"]] == ["Note: 1,0"]
+
+
+def test_category_labels_inside_skill_items_are_removed():
+    # As extracted from a real CV: labels inside items, one split at its comma.
+    raw = ['ML / Agent Frameworks: LangChain', 'LangGraph', 'Whisper', 'Backend',
+           'Frontend & Tools: FastAPI', 'Django', 'Programming Languages: Python', 'Java', 'langchain']
+    assert normalize_skill_list(raw) == ['LangChain', 'LangGraph', 'Whisper', 'FastAPI', 'Django', 'Python', 'Java']
+    assert normalize_skill_list(['Python', 'Go', 'Docker']) == ['Python', 'Go', 'Docker']
+
+
+def test_a_run_starts_with_clean_skill_names():
+    from app.agents.orchestrator.nodes_job_tailoring import jt_entry
+
+    update = jt_entry({'cv_data': {**BASE, 'skills': ['Backend', 'Frontend & Tools: FastAPI']}, 'job_data': {}})
+    assert update['cv_data']['skills'] == ['FastAPI']
+    assert update['original_cv_data']['skills'] == ['Backend', 'Frontend & Tools: FastAPI']  # as extracted
+
+
+def test_the_writing_prompts_ask_for_natural_text_and_no_job_seeking_lines():
+    import inspect
+
+    from app.agents import translator_agent, writer_agent
+
+    rewrite = inspect.getsource(writer_agent.rewrite_enhance_content.func)
+    assert 'Never state that they are looking for a job' in rewrite
+    assert 'no anglicisms in German' in rewrite
+    assert 'always return an improved `updated_summary`' in rewrite
+    assert 'not "speist dessen Newsletter"' in translator_agent._SYSTEM_PROMPT

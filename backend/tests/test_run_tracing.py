@@ -96,7 +96,7 @@ def test_responses_return_the_run_id_of_their_graph_run(enabled_client, patched_
 
     with patch.object(orchestrator_module, "_run_config", recording_run_config):
         start = enabled_client.post(
-            "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}
+            "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}
         ).json()
         session_id = start["session_id"]
         resumed = enabled_client.post("/api/orchestrator/message", json={

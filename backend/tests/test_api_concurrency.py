@@ -62,7 +62,7 @@ def test_a_running_step_does_not_block_other_requests(client, patched_tools):  #
         _blocking_tool(JOB_SUMMARY, started, release),
     ):
         thread, box = _in_thread(lambda: client.post(
-            "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+            "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
         ))
         try:
             assert started.wait(timeout=10)
@@ -80,7 +80,7 @@ def test_a_running_step_does_not_block_other_requests(client, patched_tools):  #
 
 def test_second_request_for_a_busy_session_is_refused(client, patched_tools):  # noqa: F811
     session_id = client.post(
-        "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()["session_id"]
 
     def approve():

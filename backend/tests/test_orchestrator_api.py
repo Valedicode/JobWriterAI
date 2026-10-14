@@ -94,7 +94,7 @@ def enabled_client():
 def test_start_pauses_at_first_gate(enabled_client, patched_tools):
     resp = enabled_client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -109,7 +109,7 @@ def test_start_pauses_at_first_gate(enabled_client, patched_tools):
 def test_start_rejects_job_tailoring_without_job_data(enabled_client):
     resp = enabled_client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV},
     )
     assert resp.status_code == 400
     assert "job_data" in resp.json()["detail"]
@@ -120,7 +120,7 @@ def test_full_round_trip_through_every_gate(enabled_client, patched_tools):
 
     start = client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()
     session_id = start["session_id"]
     assert start["pending_gate"]["step"] == "present_score"
@@ -156,7 +156,7 @@ def test_state_endpoint_returns_snapshot(enabled_client, patched_tools):
     client = enabled_client
     start = client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()
     session_id = start["session_id"]
 
@@ -176,7 +176,7 @@ def test_chat_message_is_folded_in_as_edit_feedback_for_editable_gate(enabled_cl
     client = enabled_client
     start = client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()
     session_id = start["session_id"]
     assert start["pending_gate"]["step"] == "present_score"
@@ -221,7 +221,7 @@ def test_chat_message_with_valid_choice_resumes_choice_gate(enabled_client, patc
     client = enabled_client
     start = client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()
     session_id = start["session_id"]
 
@@ -257,7 +257,7 @@ def test_chat_question_leaves_gate_pending_without_resuming(enabled_client, patc
     client = enabled_client
     start = client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()
     session_id = start["session_id"]
     assert start["pending_gate"]["step"] == "present_score"
@@ -283,7 +283,7 @@ def test_message_rejects_bad_gate_resolution(enabled_client, patched_tools):
     client = enabled_client
     start = client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()
     session_id = start["session_id"]
 
@@ -308,7 +308,7 @@ def test_eligibility_answers_pass_through_the_api(enabled_client, patched_tools)
     ):
         start = enabled_client.post(
             "/api/orchestrator/start",
-            json={"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB},
+            json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": GERMAN_JOB},
         ).json()
     assert start["pending_gate"]["step"] == "confirm_eligibility"
     [question] = start["pending_gate"]["preview"]["questions"]
@@ -334,7 +334,7 @@ def test_eligibility_answers_pass_through_the_api(enabled_client, patched_tools)
 def _start(client) -> str:
     start = client.post(
         "/api/orchestrator/start",
-        json={"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
     ).json()
     assert start["pending_gate"]["step"] == "present_score"
     return start["session_id"]

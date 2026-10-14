@@ -1,14 +1,18 @@
 """
-Translator: the whole tailored CV in the plan's language, reviewed first.
+CV language: asked after scoring, and the whole CV translated (and reviewed)
+into it before the plan and rewriting.
 
-Regression: the plan chose German, only the rewritten summary came out German,
-and education, titles and bullets stayed English.
+Regression: the plan chose German, a source CV that was already mixed (German
+summary, English entries) looked German enough to skip translation, and the
+result was half German, half English.
 
 - every free-text field is translated; proper nouns are not;
 - a translation that adds or drops a technology, number or year is rejected
   for that field, which keeps its original text;
-- the approve_translation gate uses it, keeps the original language, or
-  translates again with the user's notes; a failed call can be retried.
+- the cv_language gate asks in the posting's language first; picking a
+  language the CV isn't (wholly) in translates it, reviewed at
+  approve_translation: use it, keep the CV as it is, or translate again;
+  a failed call can be retried. Every later step then sees one language.
 
 Run with::
 
@@ -29,6 +33,7 @@ from app.agents.translator_agent import (
     TranslatedFields,
     apply_translation,
     check_translation,
+    needs_translation,
     translatable_fields,
     translate_cv,
     translate_cv_fields,
@@ -127,14 +132,23 @@ def test_the_tool_returns_the_models_fields():
 
 
 # --------------------------------------------------------------------------- #
+# Which fields need it
+# --------------------------------------------------------------------------- #
+
+def test_a_mixed_cv_needs_translation_either_way():
+    mixed = {**TCV, "summary": "Informatik-Student mit Erfahrung in der Webentwicklung und in der Teamarbeit."}
+    assert needs_translation(mixed, "german") and needs_translation(mixed, "english")
+    assert not needs_translation(TCV, "english")
+
+
+# --------------------------------------------------------------------------- #
 # In the graph
 # --------------------------------------------------------------------------- #
 
-# Bullet 0 was rewritten earlier in the flow to mention Python, so its
-# translation has to keep Python (the fact check rejects it otherwise).
+GERMAN_POSTING = {**JOB, "posting_language": "de"}
 GERMAN = {
     "experience.0.position": "Ingenieur",
-    "experience.0.responsibilities.0": "Entwarf und validierte den ersten veröffentlichten Algorithmus in Python.",
+    "experience.0.responsibilities.0": "Entwarf den ersten Algorithmus",
     "experience.0.responsibilities.1": "Schrieb technische Notizen",
 }
 
@@ -149,79 +163,97 @@ def _translator(calls: list, error: str | None = None):
     return _fake_tool(translate)
 
 
-def _to_translation_gate(graph, thread, calls, error=None):  # noqa: F811
-    german_plan = {**PLAN, "cv_language": "german"}
-    patches = [
-        patch("app.agents.orchestrator.nodes_job_tailoring.plan_tailoring_strategy",
-              _fake_tool(lambda _: json.dumps(german_plan))),
-        patch("app.agents.orchestrator.nodes_job_tailoring.translate_cv_fields", _translator(calls, error)),
-    ]
-    for p in patches:
-        p.start()
-    config = {"configurable": {"thread_id": thread}}
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
-    result = None
-    for _ in range(3):  # score + plan, selection, rewrite
-        result = graph.invoke(Command(resume={"action": "approve"}), config=config)
-    return config, result, patches
-
-
 @pytest.fixture
-def translating(graph, patched_tools):  # noqa: F811
+def run(graph, patched_tools):  # noqa: F811
+    """Start a run (no CV language preset) with the translator stubbed."""
     started: list = []
 
-    def go(thread, calls, error=None):
-        config, result, patches = _to_translation_gate(graph, thread, calls, error)
-        started.extend(patches)
-        return config, result
+    def go(thread, job=GERMAN_POSTING, calls=None, error=None):
+        p = patch("app.agents.orchestrator.nodes_job_tailoring.translate_cv_fields",
+                  _translator(calls if calls is not None else [], error))
+        p.start()
+        started.append(p)
+        config = {"configurable": {"thread_id": thread}}
+        return config, graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": job}, config=config)
 
     yield go
     for p in started:
         p.stop()
 
 
-def test_the_translation_is_reviewed_and_then_rendered(graph, patched_tools, translating):  # noqa: F811
-    calls: list = []
-    config, result = translating("translate-approve", calls)
+def _choose(graph, config, language):  # noqa: F811
+    return graph.invoke(Command(resume={"action": "choose", "choice": language}), config=config)
+
+
+def test_the_cv_language_is_asked_with_the_postings_language_first(graph, run):  # noqa: F811
+    _, result = run("lang-ask")
     payload = _interrupt_payload(result)
+    assert payload["step"] == "cv_language" and payload["kind"] == "choice"
+    assert payload["choices"] == ["german", "english"]
+    assert "The posting is in German" in payload["narration"]
+    _, result = run("lang-ask-en", job={**JOB, "posting_language": "en"})
+    assert _interrupt_payload(result)["choices"] == ["english", "german"]
+
+
+def test_choosing_german_translates_the_cv_before_the_plan(graph, run):  # noqa: F811
+    calls: list = []
+    config, _ = run("lang-de", calls=calls)
+    payload = _interrupt_payload(_choose(graph, config, "german"))
     assert payload["step"] == "approve_translation"
-    assert payload["preview"]["target_language"] == "German"
     assert {c["path"] for c in payload["preview"]["changes"]} == set(GERMAN)
     assert calls[0]["language"] == "german"
 
-    rendered: dict = {}
-
-    def render(kwargs):
-        rendered["cv"] = json.loads(kwargs["cv_json"])
-        return f"CV PDF generated successfully! The file '{kwargs['output_filename']}' is ready for download."
-
-    with patch("app.agents.orchestrator.nodes_job_tailoring.generate_cv_pdf", _fake_tool(render)):
-        result = graph.invoke(Command(resume={"action": "approve"}), config=config)
-    assert _interrupt_payload(result)["step"] == "cover_letter_language"
-    assert rendered["cv"]["experience"][0]["responsibilities"][1] == "Schrieb technische Notizen"
-    assert graph.get_state(config).values["cv_data"]["experience"][0]["position"] == "Engineer"  # yours untouched
+    result = graph.invoke(Command(resume={"action": "approve"}), config=config)
+    assert _interrupt_payload(result)["step"] == "present_score"  # then the plan and the score review
+    values = graph.get_state(config).values
+    assert values["cv_language"] == "german"
+    assert values["cv_data"]["experience"][0]["position"] == "Ingenieur"
+    assert values["bullet_index"]["experience.0.responsibilities.1"]["text"] == "Schrieb technische Notizen"
+    assert values["fact_ledger"]["experience.0.responsibilities.1"]["value"] == "Schrieb technische Notizen"
+    assert values["original_cv_data"]["experience"][0]["position"] == "Engineer"  # as extracted
+    assert values["tailoring_strategy"]["plan"]["cv_language"] == "german"  # the user's choice wins
 
 
-def test_rejecting_keeps_the_original_language(graph, patched_tools, translating):  # noqa: F811
-    config, _ = translating("translate-reject", [])
-    graph.invoke(Command(resume={"action": "reject"}), config=config)
-    tailored = graph.get_state(config).values["tailored_cv_data"]
-    assert tailored["experience"][0]["position"] == "Engineer"
-
-
-def test_edit_translates_again_with_the_users_notes(graph, patched_tools, translating):  # noqa: F811
+def test_a_cv_already_in_the_chosen_language_is_not_translated(graph, run):  # noqa: F811
     calls: list = []
-    config, _ = translating("translate-edit", calls)
+    config, _ = run("lang-en", calls=calls)
+    assert _interrupt_payload(_choose(graph, config, "english"))["step"] == "present_score"
+    assert calls == []
+    assert graph.get_state(config).values["cv_language"] == "english"
+
+
+def test_rejecting_the_translation_keeps_the_cv(graph, run):  # noqa: F811
+    config, _ = run("lang-reject")
+    _choose(graph, config, "german")
+    result = graph.invoke(Command(resume={"action": "reject"}), config=config)
+    assert _interrupt_payload(result)["step"] == "present_score"
+    values = graph.get_state(config).values
+    assert values["cv_data"]["experience"][0]["position"] == "Engineer"
+    assert values["cv_language"] == "english"
+
+
+def test_edit_translates_again_with_the_users_notes(graph, run):  # noqa: F811
+    calls: list = []
+    config, _ = run("lang-edit", calls=calls)
+    _choose(graph, config, "german")
     result = graph.invoke(Command(resume={"action": "edit", "feedback": "Use Werkstudent"}), config=config)
     assert _interrupt_payload(result)["step"] == "approve_translation"
     assert len(calls) == 2 and calls[1]["feedback"] == "- Use Werkstudent"
 
 
-def test_a_failed_translation_can_be_retried(graph, patched_tools, translating):  # noqa: F811
+def test_a_failed_translation_can_be_retried(graph, run):  # noqa: F811
     calls: list = []
-    config, result = translating("translate-retry", calls, error="provider timeout")
-    payload = _interrupt_payload(result)
+    config, _ = run("lang-retry", calls=calls, error="provider timeout")
+    payload = _interrupt_payload(_choose(graph, config, "german"))
     assert payload["step"] == "step_failed" and payload["preview"]["failed_step"] == "Translation"
     result = graph.invoke(Command(resume={"action": "approve"}), config=config)
     assert _interrupt_payload(result)["step"] == "approve_translation"
     assert len(calls) == 2
+
+
+def test_the_language_is_asked_once_per_session(graph, run):  # noqa: F811
+    from app.agents.orchestrator.nodes_job_tailoring import route_after_score
+
+    config, _ = run("lang-once")
+    _choose(graph, config, "english")
+    assert route_after_score(graph.get_state(config).values) == "jt_step3_decide_strategy"

@@ -290,6 +290,7 @@ def orchestrator_start(
         "cv_data": request.cv_data,
         "job_data": request.job_data,
         "company_data": request.company_data,
+        "cv_language": request.cv_language,
         "review_outputs": {},
         "bullet_index": {},
         "generated_files": [],

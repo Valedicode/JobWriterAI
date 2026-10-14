@@ -238,7 +238,7 @@ def test_full_happy_path_emits_all_five_gates_and_generates_files(graph, patched
 
     # 1. Initial invocation runs entry + steps 1-2, then interrupts at present_score.
     result = graph.invoke(
-        {"flow": "job_tailoring", "cv_data": CV, "job_data": JOB},
+        {"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
         config=config,
     )
     payload = _interrupt_payload(result)
@@ -292,7 +292,7 @@ def test_edit_at_approve_selection_reruns_step_4(graph, patched_tools):
     """An 'edit' action on approve_selection should loop back to step 4."""
     config = {"configurable": {"thread_id": "test-edit-selection"}}
 
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
     graph.invoke(Command(resume={"action": "approve"}), config=config)  # past present_score
 
     # Now we're paused at approve_selection. Edit it.
@@ -315,7 +315,7 @@ def test_reject_at_present_score_terminates_without_files(graph, patched_tools):
     """A 'reject' on the first soft gate should end the graph immediately."""
     config = {"configurable": {"thread_id": "test-reject-score"}}
 
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
     result = graph.invoke(Command(resume={"action": "reject"}), config=config)
 
     assert "__interrupt__" not in result
@@ -330,7 +330,7 @@ def test_missing_recipient_prompts_input_gate(graph, patched_tools):
     job_without_recipient = {k: v for k, v in JOB.items() if k != "recipient_name"}
 
     graph.invoke(
-        {"flow": "job_tailoring", "cv_data": CV, "job_data": job_without_recipient},
+        {"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": job_without_recipient},
         config=config,
     )
     graph.invoke(Command(resume={"action": "approve"}), config=config)
@@ -357,7 +357,7 @@ def test_skip_cover_letter_after_cv_generation(graph, patched_tools):
     """Picking 'skip' at the cover-letter gate should end after CV files only."""
     config = {"configurable": {"thread_id": "test-skip-cover"}}
 
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
     graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
     graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
     graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_rewrite
@@ -423,7 +423,7 @@ def test_rewrite_merges_by_bullet_id_even_when_echoed_text_drifts(graph, patched
         "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
         _fake_tool(lambda _: json.dumps(rewritten_with_id)),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_rewrite
@@ -457,7 +457,7 @@ def test_rewrite_with_unmatchable_bullet_is_dropped_and_narrated(graph, patched_
         "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
         _fake_tool(lambda _: json.dumps(rewritten_bogus)),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_rewrite
@@ -482,7 +482,7 @@ def test_updated_summary_is_applied_to_cv_data(graph, patched_tools):
         "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
         _fake_tool(lambda _: json.dumps(rewritten_with_summary)),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)
@@ -541,7 +541,7 @@ def test_approve_rewrite_keep_original_decision_reverts_one_bullet(graph, patche
         "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
         _fake_tool(lambda _: json.dumps(TWO_BULLET_REWRITTEN)),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
         graph.invoke(
@@ -568,7 +568,7 @@ def test_approve_rewrite_custom_text_decision_overrides_rewrite(graph, patched_t
         "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
         _fake_tool(lambda _: json.dumps(TWO_BULLET_REWRITTEN)),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)
         graph.invoke(
@@ -602,7 +602,7 @@ def test_edit_at_approve_rewrite_locks_accepted_bullets(graph, patched_tools):
         "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
         _fake_tool(_rewrite_stub),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection -> step5 runs once
         graph.invoke(
@@ -642,7 +642,7 @@ def test_approve_selection_exclude_decision_drops_bullet(graph, patched_tools):
         "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
         _fake_tool(lambda _: json.dumps(two_selected)),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         graph.invoke(
             Command(resume={
@@ -685,7 +685,7 @@ def test_selection_falls_back_to_cv_bullets_when_model_returns_nothing(graph, pa
         "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
         _fake_tool(lambda _: json.dumps(empty_selection)),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
 
     payload = _interrupt_payload(result)
@@ -705,7 +705,7 @@ def test_rewrite_falls_back_to_original_text_when_model_returns_nothing(graph, p
         "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
         _fake_tool(lambda _: json.dumps(empty_rewrite)),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
 
@@ -747,7 +747,7 @@ def test_selection_error_routes_to_step_failed_and_retry_resumes(graph, patched_
         "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
         _fails_then(SELECTED, EMPTY_SELECTION),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
 
         payload = _interrupt_payload(result)
@@ -774,7 +774,7 @@ def test_selection_error_reject_stops_without_files(graph, patched_tools):
         "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
         _fails_then(SELECTED, EMPTY_SELECTION),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         result = graph.invoke(Command(resume={"action": "reject"}), config=config)  # step_failed
 
@@ -791,7 +791,7 @@ def test_rewrite_error_routes_to_step_failed_and_retry_resumes(graph, patched_to
         "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
         _fails_then(REWRITTEN, EMPTY_REWRITE),
     ):
-        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
 
@@ -844,7 +844,7 @@ def silent_on_german(patched_tools):
 
 def test_unclear_eligibility_asks_before_the_score_gate(graph, silent_on_german):
     config = {"configurable": {"thread_id": "test-eligibility-answer"}}
-    result = graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    result = graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
 
     payload = _interrupt_payload(result)
     assert payload["step"] == "confirm_eligibility"
@@ -871,7 +871,7 @@ def test_unclear_eligibility_asks_before_the_score_gate(graph, silent_on_german)
 
 def test_skipping_eligibility_continues_unchanged_and_never_asks_again(graph, silent_on_german):
     config = {"configurable": {"thread_id": "test-eligibility-skip"}}
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
     result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # skip
 
     payload = _interrupt_payload(result)
@@ -884,7 +884,7 @@ def test_skipping_eligibility_continues_unchanged_and_never_asks_again(graph, si
 
 def test_eligibility_answer_typed_as_text_is_understood(graph, silent_on_german):
     config = {"configurable": {"thread_id": "test-eligibility-chat"}}
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
     result = graph.invoke(
         Command(resume={"action": "edit", "feedback": "I'm a native German speaker"}), config=config
     )
@@ -894,7 +894,7 @@ def test_eligibility_answer_typed_as_text_is_understood(graph, silent_on_german)
 
 def test_unreadable_text_answer_asks_again(graph, silent_on_german):
     config = {"configurable": {"thread_id": "test-eligibility-unreadable"}}
-    graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": GERMAN_JOB}, config=config)
     result = graph.invoke(Command(resume={"action": "edit", "feedback": "not sure"}), config=config)
     assert _interrupt_payload(result)["step"] == "confirm_eligibility"
     assert "couldn't match" in result["messages"][-1].content

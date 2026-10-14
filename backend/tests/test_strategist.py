@@ -164,7 +164,7 @@ def test_selection_and_rewriting_see_their_parts_of_the_plan():
 
 def _start(graph, thread):  # noqa: F811
     config = {"configurable": {"thread_id": thread}}
-    return config, graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+    return config, graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
 
 
 def test_the_plan_is_reviewed_with_the_score(graph, patched_tools):  # noqa: F811

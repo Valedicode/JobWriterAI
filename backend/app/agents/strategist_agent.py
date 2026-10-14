@@ -45,13 +45,14 @@ requirement, its status, and the bullets that evidence it), a fact list, and the
 Produce:
 - positioning: one short paragraph on how to present this candidate for this role. Build on what \
 the CV actually shows; name real strengths, and be honest about the main gap.
-- headline: one line for the top of the CV (e.g. "Backend engineer working with Python and \
-PostgreSQL"), using only facts from the list, in the language the CV is written in now (a later \
-step translates the whole CV if cv_language differs). Null if nothing honest fits.
+- headline: one line positioning the candidate (e.g. "Backend engineer working with Python and \
+PostgreSQL"), using only facts from the list, in the CV's language. It opens the summary, or \
+stands under the name when the CV has no summary. Never a job-seeking statement. Null if \
+nothing honest fits.
 - skill_groups: the CV's skills sorted into 3-4 labelled groups, most relevant to this role \
 first, e.g. "Programming languages", "Backend & frontend", "ML & agents", "Tools". Labels in the \
 CV's current language. Use only skills exactly as the CV lists them; never add one.
-- cv_language: the posting's language unless the user's notes say otherwise.
+- cv_language: the language the user chose for the CV (given below); the CV is already in it.
 - convention: "dach" when the job is in Germany, Austria or Switzerland, else "international".
 - section_order: the CV's sections, most important for this role first. For a student or \
 junior role, education and projects may lead; for experienced candidates, experience leads.
@@ -75,6 +76,7 @@ def plan_tailoring_strategy(
     facts_block: str = "",
     bullet_index_block: str = "",
     feedback: str = "",
+    cv_language: str = "",
 ) -> str:
     """
     Draft the holistic tailoring plan.
@@ -86,6 +88,7 @@ def plan_tailoring_strategy(
         facts_block: "[fact_id] value" lines from the fact ledger.
         bullet_index_block: "[bullet_id] text" lines for every CV bullet.
         feedback: The user's notes on earlier plans, one per line.
+        cv_language: The language the user chose for the CV ("english"/"german").
 
     Returns:
         StrategistPlan JSON, or {"error": ...} when the model call fails.
@@ -100,6 +103,7 @@ def plan_tailoring_strategy(
                 "Compatibility report:\n{report}\n\n"
                 "Facts (cite by id):\n{facts}\n\n"
                 "Bullets:\n{bullets}\n\n"
+                "CV language chosen by the user: {cv_language}\n\n"
                 "User notes on earlier plans:\n{feedback}"
             )),
         ])
@@ -110,6 +114,7 @@ def plan_tailoring_strategy(
             "facts": facts_block or "(none)",
             "bullets": bullet_index_block or "(none)",
             "feedback": feedback or "None.",
+            "cv_language": cv_language or "the language the CV is written in",
         })
         return plan.model_dump_json()
     except Exception as e:  # noqa: BLE001 - reported to the node as a step failure
