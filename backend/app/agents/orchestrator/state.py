@@ -21,6 +21,11 @@ This state holds three classes of data:
    - cover_letter_language
    - step_error                 : set when a step's tool failed; read by the
                                   step_failed gate (retry or stop).
+   - base_cv_data               : the untailored CV plus user-confirmed
+                                  additions; re-runs start from it.
+   - chat_proposal              : a chat-requested change awaiting the
+                                  confirm_change gate.
+   - chat_history               : the last few chat turns.
 
    CV-review branch:
    - review_outputs
@@ -96,6 +101,20 @@ class OrchestratorState(TypedDict, total=False):
     # True once the confirm_eligibility gate has been shown, so it is asked
     # at most once per run (answered or skipped).
     eligibility_asked: bool
+    # The user's CV before tailoring, including what they confirmed since
+    # (eligibility answers, chat profile updates). Step 6 overwrites cv_data
+    # with the tailored CV; a re-run from an earlier step starts from this.
+    base_cv_data: dict[str, Any]
+    # Facts the user added through the chat ({kind, value, source_text}),
+    # kept for the fact ledger.
+    user_added_facts: list[dict[str, Any]]
+
+    # --- chat --------------------------------------------------------------
+    # A change the chat proposed (re-run, profile update), waiting at the
+    # confirm_change gate: {kind, summary, details, goto, return_to, restore}.
+    chat_proposal: dict[str, Any] | None
+    # Short-term chat memory: the last few {role, content} turns.
+    chat_history: list[dict[str, str]]
 
     # --- cv-review artifacts -----------------------------------------------
     review_outputs: dict[str, dict[str, Any]]

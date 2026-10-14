@@ -74,6 +74,7 @@ JT_GATE_APPROVE_COVER_LETTER = "jt_gate_approve_cover_letter"
 JT_STEP9_COVER_LETTER_FILES = "jt_step9_cover_letter_files"
 JT_GATE_STEP_FAILED = "jt_gate_step_failed"
 JT_GATE_CONFIRM_ELIGIBILITY = "jt_gate_confirm_eligibility"
+JT_GATE_CONFIRM_CHANGE = "jt_gate_confirm_change"
 
 
 # --------------------------------------------------------------------------- #
@@ -339,7 +340,10 @@ def jt_entry(state: OrchestratorState) -> dict[str, Any]:
         "strategy, then walk you through bullet selection and rewriting "
         "with explicit approvals before any documents are generated."
     )
-    return _narrate({"bullet_index": _index_cv_bullets(cv_data)}, narration)
+    return _narrate(
+        {"bullet_index": _index_cv_bullets(cv_data), "base_cv_data": copy.deepcopy(cv_data)},
+        narration,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -590,6 +594,8 @@ def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
         update=_narrate(
             {
                 "cv_data": cv_data,
+                # Step 6 hasn't run yet, so cv_data is still the untailored CV.
+                "base_cv_data": copy.deepcopy(cv_data),
                 "compatibility_report": rescored.model_dump(),
                 "eligibility_asked": True,
             },
@@ -1032,6 +1038,42 @@ def jt_gate_step_failed(state: OrchestratorState) -> Command:
     return Command(
         update=_narrate({"step_error": None}, f"Stopped after {label.lower()} failed. No documents were generated."),
         goto=END,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Gate: confirm a change the chat proposed (re-run from a step, profile update)
+#
+# The API never changes the graph's state for these itself: it stores the
+# proposal and routes here. Only an explicit approve applies it, and applying
+# means restoring the state from before the target step and running forward
+# from there - so every gate after that step is shown again. Reject returns to
+# the gate the user was on.
+# --------------------------------------------------------------------------- #
+
+def jt_gate_confirm_change(state: OrchestratorState) -> Command:
+    proposal = state.get("chat_proposal") or {}
+    payload = GatePayload(
+        step="confirm_change",
+        kind="approval",
+        narration=f"{proposal.get('summary') or 'Apply this change'}? Confirm to go ahead, or cancel to keep things as they are.",
+        preview={
+            "change": proposal.get("summary", ""),
+            "what_happens": proposal.get("details", []),
+        },
+        allowed_actions=["approve", "reject"],
+    ).model_dump()
+
+    raw = interrupt(payload)
+    resolution = GateResolution.model_validate(raw)
+
+    goto = proposal.get("goto")
+    if resolution.action == "approve" and goto:
+        update = {**(proposal.get("restore") or {}), "chat_proposal": None}
+        return Command(update=_narrate(update, proposal.get("on_approve") or "Going ahead."), goto=goto)
+    return Command(
+        update=_narrate({"chat_proposal": None}, "Cancelled. Nothing was changed."),
+        goto=proposal.get("return_to") or END,
     )
 
 
