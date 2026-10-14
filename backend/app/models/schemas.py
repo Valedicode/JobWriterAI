@@ -13,15 +13,6 @@ from typing import Optional, List, Dict, Any, Literal, Union
 # CV Agent Models
 # ============================================
 
-class CVUploadRequest(BaseModel):
-    """Request to extract CV information from a PDF file."""
-    pdf_path: str = Field(
-        ...,
-        description="Path to the PDF resume file",
-        example="C:/Documents/resume.pdf"
-    )
-
-
 class ExperienceEntry(BaseModel):
     """One work-experience entry. OpenAI structured output requires explicit
     fields with ``extra='forbid'`` — ``Dict[str, Any]`` unions are rejected."""
@@ -715,6 +706,13 @@ class OrchestratorGateResolution(BaseModel):
     """Client reply to a pending OrchestratorGatePayload."""
     action: Literal["approve", "reject", "edit", "choose"] = Field(
         description="Selected action. Must be in the gate's allowed_actions."
+    )
+    step: Optional[str] = Field(
+        default=None,
+        description=(
+            "The `step` of the gate this answers. When set and it does not match "
+            "the pending gate, the answer is stale and is refused with 409."
+        ),
     )
     feedback: Optional[str] = Field(
         default=None,

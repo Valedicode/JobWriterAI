@@ -96,6 +96,16 @@ OPENROUTER_API_KEY=your_openrouter_api_key_here
 # GROQ_API_KEY=your_groq_api_key_here
 ```
 
+5. **Session storage (optional, recommended)**
+
+Without `DATABASE_URL`, tailoring sessions live in memory and are lost whenever the backend restarts (including every `--reload`). To keep them, point the backend at a Postgres database; the checkpoint tables are created on startup:
+
+```bash
+# backend/.env
+DATABASE_URL=postgresql://user:password@localhost:5432/jobwriterai
+# SESSION_TTL_HOURS=24   # sessions and their CV data are deleted after this much inactivity
+```
+
 ### Frontend setup
 
 1. **Install frontend dependencies**
