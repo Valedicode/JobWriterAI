@@ -3,12 +3,15 @@ Generic Session Manager (slim)
 
 A minimal in-process registry of active orchestrator sessions. The LangGraph
 checkpointer owns all per-session data; this module only tracks which
-session IDs are currently live so the application can:
+session IDs this process has seen so the application can:
 
-- report an "active sessions" count from /health,
-- evict stale sessions after a TTL (so the checkpointer's memory does not
-  grow without bound), and
+- report an "active sessions" count from /health, and
 - inject a different registry in tests.
+
+Expiring session *data* is not done here: evicting a registry row frees
+nothing in the checkpointer. ``graph_checkpointer.expire_threads`` deletes
+stale threads from the store itself, including persisted ones this process
+has never seen.
 
 This module replaces the older ``GenericSessionManager`` which mirrored CV /
 job / message state on top of the (now-deleted) Writer chat endpoints. After
@@ -114,7 +117,10 @@ def get_session_manager() -> GenericSessionManager:
     if _session_manager is None:
         with _session_manager_lock:
             if _session_manager is None:
-                _session_manager = GenericSessionManager(ttl_minutes=60)
+                from app.config import get_settings
+                _session_manager = GenericSessionManager(
+                    ttl_minutes=int(get_settings().session_ttl_hours * 60)
+                )
     return _session_manager
 
 

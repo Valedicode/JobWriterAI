@@ -5,6 +5,7 @@ Provides endpoints for speech-to-text transcription and translation using OpenAI
 """
 
 from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form, Query
+from fastapi.concurrency import run_in_threadpool
 from pathlib import Path
 from typing import Optional, List
 import tempfile
@@ -182,7 +183,8 @@ async def transcribe_audio(
                 transcription_params["chunking_strategy"] = chunking_strategy
             
             # Call OpenAI Audio API
-            transcription = client.audio.transcriptions.create(**transcription_params)
+            # Blocking HTTP call: keep it off the event loop.
+            transcription = await run_in_threadpool(client.audio.transcriptions.create, **transcription_params)
             
             # Parse response based on format
             if response_format == "text":
@@ -337,7 +339,8 @@ async def translate_audio(
                 translation_params["temperature"] = temperature
             
             # Call OpenAI Audio API
-            translation = client.audio.translations.create(**translation_params)
+            # Blocking HTTP call: keep it off the event loop.
+            translation = await run_in_threadpool(client.audio.translations.create, **translation_params)
             
             # Parse response based on format
             if response_format == "text":

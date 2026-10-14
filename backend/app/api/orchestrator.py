@@ -15,8 +15,11 @@ across requests. Per-session isolation is provided by the checkpointer.
 
 from __future__ import annotations
 
+import threading
 import uuid
-from typing import Any
+from contextlib import contextmanager
+from datetime import timedelta
+from typing import Any, Iterator
 
 from fastapi import APIRouter, HTTPException, status
 from langchain_core.messages import AIMessage
@@ -33,7 +36,9 @@ from app.models.schemas import (
     OrchestratorStartRequest,
     OrchestratorStateResponse,
 )
+from app.config import get_settings
 from app.services.generic_session_manager import get_session_manager
+from app.services.session_retention import expire_sessions
 
 router = APIRouter(prefix="/api/orchestrator", tags=["Orchestrator"])
 
@@ -51,6 +56,45 @@ def _get_graph():
     if _graph is None:
         _graph = build_graph()
     return _graph
+
+
+# --------------------------------------------------------------------------- #
+# One request per session at a time
+# --------------------------------------------------------------------------- #
+#
+# Routes run in a thread pool, so two requests for the same session (a double
+# click, a chat message sent while a gate answer is still running) could both
+# read the same pending gate and both resume it. A second request is refused
+# with 409 instead of queued: it was made against a screen that is about to
+# change. The lock is per process; several worker processes sharing Postgres
+# would need a database-level lock (pg_advisory_lock) instead.
+
+_session_locks: dict[str, threading.Lock] = {}
+_session_locks_guard = threading.Lock()
+
+
+@contextmanager
+def _session_turn(session_id: str) -> Iterator[None]:
+    with _session_locks_guard:
+        lock = _session_locks.setdefault(session_id, threading.Lock())
+    if not lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This session is still working on the previous request. Try again when it finishes.",
+        )
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _forget_session_locks(session_ids: list[str]) -> None:
+    """Drop the locks of deleted sessions so the table doesn't grow forever."""
+    with _session_locks_guard:
+        for session_id in session_ids:
+            lock = _session_locks.get(session_id)
+            if lock is not None and not lock.locked():
+                del _session_locks[session_id]
 
 
 # --------------------------------------------------------------------------- #
@@ -154,7 +198,7 @@ def _snapshot_response(
         "Use the returned session_id with /message to resolve subsequent gates."
     ),
 )
-async def orchestrator_start(
+def orchestrator_start(
     request: OrchestratorStartRequest,
 ) -> OrchestratorResponse:
     if request.flow == "job_tailoring" and not request.job_data:
@@ -164,8 +208,11 @@ async def orchestrator_start(
         )
 
     session_id = str(uuid.uuid4())
-    # Run an opportunistic TTL sweep so long-lived dev servers do not leak
-    # checkpointer state for abandoned sessions.
+    # Opportunistic TTL sweep: delete abandoned sessions from the checkpoint
+    # store itself (the registry alone never freed their state, and after a
+    # restart it doesn't know the persisted sessions at all).
+    expired = expire_sessions(timedelta(hours=get_settings().session_ttl_hours))
+    _forget_session_locks(expired)
     session_manager = get_session_manager()
     session_manager.cleanup_expired_sessions()
     session_manager.register(session_id, request.flow)
@@ -211,9 +258,16 @@ async def orchestrator_start(
         "next pending gate (if any)."
     ),
 )
-async def orchestrator_message(
+def orchestrator_message(
     request: OrchestratorMessageRequest,
 ) -> OrchestratorResponse:
+    # A plain `def` route: FastAPI runs it in its thread pool, so the graph's
+    # blocking LLM and LaTeX work never stalls the event loop for other users.
+    with _session_turn(request.session_id):
+        return _handle_message(request)
+
+
+def _handle_message(request: OrchestratorMessageRequest) -> OrchestratorResponse:
     graph = _get_graph()
     config = _thread_config(request.session_id)
 
@@ -224,7 +278,10 @@ async def orchestrator_message(
             detail="Session not found or expired. Start a new session with /start.",
         )
 
-    get_session_manager().touch(request.session_id)
+    session_manager = get_session_manager()
+    if not session_manager.touch(request.session_id):
+        # A persisted session resumed after a restart: this process hasn't seen it yet.
+        session_manager.register(request.session_id, snapshot.values.get("flow") or "unknown")
 
     if request.kind == "gate_resolution":
         if request.resolution is None:
@@ -317,7 +374,7 @@ async def orchestrator_message(
     summary="Inspect orchestrator session state",
     description="Debug-only snapshot of the latest checkpointed state for a session.",
 )
-async def orchestrator_state(
+def orchestrator_state(
     session_id: str,
 ) -> OrchestratorStateResponse:
     graph = _get_graph()
