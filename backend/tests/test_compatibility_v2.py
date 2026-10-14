@@ -630,3 +630,40 @@ def test_ats_score_is_verbatim_term_coverage():
     # Java + Spring Boot present verbatim; Quarkus, WildFly, Kubernetes, Kafka, Terraform absent
     assert score == pytest.approx(2 / 7)
     assert "Quarkus" in rationale
+
+
+@pytest.mark.parametrize(
+    ("duration", "years"),
+    [
+        ("2022 - 2024", 2.0),                        # year-only keeps its old meaning
+        ("March 2024 -- August 2025", 1.5),          # the schema's own "--" format; end month included
+        ("Oct 2023 -- Jan 2026", 2 + 4 / 12),
+        ("10/2023 – 01/2026", 2 + 4 / 12),      # numeric months, en dash
+        ("03.2021 - 12.2022", 1 + 10 / 12),
+        ("Sept. 2022 to June 2023", 10 / 12),
+        ("März 2021 – Dezember 2022", 1 + 10 / 12),  # German month names
+        ("from 2020 to 2022", 2.0),                  # "from" is not read as a month
+    ],
+)
+def test_candidate_years_reads_month_year_ranges(duration, years):
+    cv = {**MINIMAL_CV, "experience": [{"position": "Dev", "company": "A", "duration": duration}]}
+    assert _estimate_candidate_years(cv) == pytest.approx(years, abs=1e-6)
+
+
+def test_candidate_years_open_and_future_ends_count_until_today():
+    from datetime import datetime
+
+    now = datetime.now()
+    months_since_2020 = (now.year - 2020) * 12 + now.month - 1
+    for duration in ("Januar 2020 bis heute", "Jan 2020 -- present", "seit Januar 2020"):
+        cv = {**MINIMAL_CV, "experience": [{"position": "Dev", "company": "A", "duration": duration}]}
+        assert _estimate_candidate_years(cv) == pytest.approx(months_since_2020 / 12), duration
+
+    # A contract that ends in the future counts up to today, not zero.
+    future = {**MINIMAL_CV, "experience": [{"position": "Dev", "company": "A",
+                                            "duration": f"Jan 2020 -- Dec {now.year + 3}"}]}
+    assert _estimate_candidate_years(future) == pytest.approx(months_since_2020 / 12)
+    # A range that has not started yet counts nothing.
+    upcoming = {**MINIMAL_CV, "experience": [{"position": "Dev", "company": "A",
+                                              "duration": f"{now.year + 1} - {now.year + 2}"}]}
+    assert _estimate_candidate_years(upcoming) == 0.0
