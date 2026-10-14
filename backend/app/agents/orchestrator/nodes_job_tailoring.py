@@ -47,6 +47,7 @@ from app.agents.scoring_agent import (
     eligibility_questions,
 )
 from app.agents.strategist_agent import plan_tailoring_strategy, validate_plan
+from app.agents.translator_agent import translatable_fields, translate_cv, translate_cv_fields
 from app.models.schemas import CompatibilityReport, StrategistPlan, VerifierResult
 from app.services.bullet_index import index_cv_bullets as _index_cv_bullets
 from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
@@ -82,6 +83,8 @@ JT_GATE_CONFIRM_ELIGIBILITY = "jt_gate_confirm_eligibility"
 JT_GATE_CONFIRM_CHANGE = "jt_gate_confirm_change"
 JT_STEP5B_VERIFY = "jt_step5b_verify"
 JT_GATE_VERIFIER_FAILED = "jt_gate_verifier_failed"
+JT_STEP6B_TRANSLATE = "jt_step6b_translate_cv"
+JT_GATE_APPROVE_TRANSLATION = "jt_gate_approve_translation"
 
 
 # --------------------------------------------------------------------------- #
@@ -1236,7 +1239,7 @@ def jt_gate_approve_rewrite(state: OrchestratorState) -> Command:
 # reported an error, so a failure is never shown as an empty-but-valid result.
 # --------------------------------------------------------------------------- #
 
-_RETRYABLE_STEPS = (JT_STEP4_SELECT, JT_STEP5_REWRITE)
+_RETRYABLE_STEPS = (JT_STEP4_SELECT, JT_STEP5_REWRITE, JT_STEP6B_TRANSLATE)
 
 
 def route_after_select(state: OrchestratorState) -> str:
@@ -1382,6 +1385,109 @@ def _alignment_narration(alignment: dict[str, Any]) -> str:
     if alignment.get("preservation") is not None:
         line += f" The rewrites kept {alignment['preservation']:.0%} of your original technologies and numbers."
     return line
+
+
+# --------------------------------------------------------------------------- #
+# Step 6b: translate the tailored CV into the plan's language, then review
+# --------------------------------------------------------------------------- #
+
+_LANGUAGE_NAMES = {"english": "English", "german": "German"}
+
+
+def _translation_target(state: OrchestratorState) -> str | None:
+    """The plan's CV language when the tailored CV's content is in another."""
+    plan = (state.get("tailoring_strategy") or {}).get("plan") or {}
+    target = plan.get("cv_language")
+    tailored = state.get("tailored_cv_data")
+    if target not in _LANGUAGE_NAMES or not tailored:
+        return None
+    return target if cv_content_language(tailored) != target else None
+
+
+def route_after_assemble(state: OrchestratorState) -> str:
+    return JT_STEP6B_TRANSLATE if _translation_target(state) else JT_STEP7_GENERATE_CV_FILES
+
+
+def route_after_translate(state: OrchestratorState) -> str:
+    return JT_GATE_STEP_FAILED if state.get("step_error") else JT_GATE_APPROVE_TRANSLATION
+
+
+def jt_step6b_translate_cv(state: OrchestratorState) -> dict[str, Any]:
+    target = _translation_target(state) or ((state.get("tailoring_strategy") or {}).get("plan") or {}).get("cv_language")
+    tailored = state.get("tailored_cv_data") or {}
+    feedback = "\n".join(f"- {note}" for note in state.get("translation_feedback") or [] if note)
+    raw = _safe_json_loads(translate_cv_fields.invoke({
+        "fields_json": json.dumps(translatable_fields(tailored), ensure_ascii=False),
+        "language": target,
+        "feedback": feedback,
+    }), None)
+    error = _tool_error(raw, "translation")
+    if error:
+        return _fail_step(JT_STEP6B_TRANSLATE, "Translation", error)
+
+    translated_cv, rows = translate_cv(tailored, raw.get("fields") or [])
+    kept = [r for r in rows if r["problem"]]
+    language = _LANGUAGE_NAMES.get(target, target)
+    narration = f"Translated your CV into {language}: {len(rows) - len(kept)} of {len(rows)} fields."
+    if kept:
+        narration += f" {len(kept)} kept their original text because the translation changed a fact; they're marked below."
+    return _narrate(
+        {"translation": {"target_language": target, "rows": rows, "translated_cv": translated_cv},
+         "step_error": None},
+        narration,
+    )
+
+
+def _translation_preview(translation: dict[str, Any]) -> dict[str, Any]:
+    rows = translation.get("rows") or []
+    return {
+        "target_language": _LANGUAGE_NAMES.get(translation.get("target_language"), ""),
+        "changes": [
+            {"path": r["path"], "original": r["original"], "translated": r["translated"]}
+            for r in rows if not r["problem"] and r["translated"] != r["original"]
+        ],
+        "kept_original": [f"{r['path']}: {r['original']} ({r['problem']})" for r in rows if r["problem"]],
+    }
+
+
+def jt_gate_approve_translation(state: OrchestratorState) -> Command:
+    """
+    approve: use the translated CV; reject: keep the CV in its original
+    language; edit: translate again with the user's notes.
+    """
+    translation = state.get("translation") or {}
+    language = _LANGUAGE_NAMES.get(translation.get("target_language"), "the plan's language")
+    payload = GatePayload(
+        step="approve_translation",
+        kind="approval",
+        narration=(
+            f"Review the {language} translation of your CV. Approve to use it, edit with notes to "
+            "translate again, or reject to keep your CV in its original language."
+        ),
+        preview=_translation_preview(translation),
+        allowed_actions=["approve", "edit", "reject"],
+    ).model_dump()
+
+    raw = interrupt(payload)
+    resolution = GateResolution.model_validate(raw)
+
+    if resolution.action == "approve":
+        return Command(
+            update=_narrate({"tailored_cv_data": translation.get("translated_cv") or state.get("tailored_cv_data")},
+                            f"Using the {language} version. Generating the PDF."),
+            goto=JT_STEP7_GENERATE_CV_FILES,
+        )
+    if resolution.action == "edit":
+        notes = list(state.get("translation_feedback") or []) + [resolution.feedback or ""]
+        return Command(
+            update=_narrate({"translation_feedback": notes, "translation": None},
+                            f"Translating again with your notes: {resolution.feedback}"),
+            goto=JT_STEP6B_TRANSLATE,
+        )
+    return Command(
+        update=_narrate({"translation": None}, "Keeping your CV in its original language. Generating the PDF."),
+        goto=JT_STEP7_GENERATE_CV_FILES,
+    )
 
 
 def _tailored_cv(state: OrchestratorState) -> dict[str, Any]:

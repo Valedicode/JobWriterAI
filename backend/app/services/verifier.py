@@ -79,9 +79,14 @@ _NUMBER_WORDS = {
 }
 
 
-def _metric_set(texts: Iterable[str]) -> set[str]:
+def numbers_in(texts: Iterable[str]) -> set[str]:
     """Numbers in ``texts``, normalised. Number words count as their digits,
     so rewriting 'two teams' as '2 teams' adds nothing."""
+    return _metric_set(texts)
+
+
+def _metric_set(texts: Iterable[str]) -> set[str]:
+    """See ``numbers_in``."""
     found: set[str] = set()
     for text in texts:
         found.update(normalize_metric(m) for m in metrics_in(text))
