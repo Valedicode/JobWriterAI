@@ -21,8 +21,10 @@ This state holds three classes of data:
    - cover_letter_language
    - step_error                 : set when a step's tool failed; read by the
                                   step_failed gate (retry or stop).
-   - base_cv_data               : the untailored CV plus user-confirmed
-                                  additions; re-runs start from it.
+   - original_cv_data           : the CV as extracted (frozen).
+   - tailored_cv_data           : the tailored CV from step 6; cv_data
+                                  itself is never overwritten.
+   - fact_ledger                : facts the CV and the user state.
    - chat_proposal              : a chat-requested change awaiting the
                                   confirm_change gate.
    - chat_history               : the last few chat turns.
@@ -101,13 +103,15 @@ class OrchestratorState(TypedDict, total=False):
     # True once the confirm_eligibility gate has been shown, so it is asked
     # at most once per run (answered or skipped).
     eligibility_asked: bool
-    # The user's CV before tailoring, including what they confirmed since
-    # (eligibility answers, chat profile updates). Step 6 overwrites cv_data
-    # with the tailored CV; a re-run from an earlier step starts from this.
-    base_cv_data: dict[str, Any]
-    # Facts the user added through the chat ({kind, value, source_text}),
-    # kept for the fact ledger.
-    user_added_facts: list[dict[str, Any]]
+    # cv_data is the user's CV plus what they confirmed during the session
+    # (eligibility answers, chat profile updates); it is never tailored.
+    # original_cv_data is the CV as extracted, frozen at jt_entry.
+    # tailored_cv_data is written by step 6 and rendered by steps 7-9.
+    original_cv_data: dict[str, Any]
+    tailored_cv_data: dict[str, Any] | None
+    # fact_id -> FactEntry dump: what the CV and the user state
+    # (app.services.fact_ledger). Rewrites may only claim these.
+    fact_ledger: dict[str, dict[str, Any]]
 
     # --- chat --------------------------------------------------------------
     # A change the chat proposed (re-run, profile update), waiting at the

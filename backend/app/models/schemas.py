@@ -135,6 +135,37 @@ class ResumeInfo(BaseModel):
     )
 
 
+FactKind = Literal[
+    "bullet", "skill", "language", "education", "employer", "title",
+    "date_range", "metric", "certification", "user_stated",
+]
+
+
+class FactEntry(BaseModel):
+    """
+    One thing the candidate's CV (or the candidate, in this session) states.
+    The fact ledger is the set of these; rewrites may only claim what some
+    fact supports.
+    """
+    fact_id: str = Field(description=(
+        "Stable id. Bullet facts reuse the bullet_id; others look like "
+        "'skill.python', 'lang.german', 'experience.0.dates', 'experience.0.responsibilities.1.metric.0'."
+    ))
+    kind: FactKind
+    value: str = Field(description="Canonical value, e.g. 'Python', 'German (native)', 'Jan 2022 - Aug 2024'.")
+    source: Literal["cv_extraction", "user_confirmed", "user_added"]
+    source_text: str = Field(description="The CV text it came from, or the user's own words.")
+    bullet_id: Optional[str] = None
+    entities: List[str] = Field(
+        default_factory=list,
+        description="Technologies named in this fact, as skill_graph.normalize() forms.",
+    )
+    user_verified: bool = Field(
+        default=False,
+        description="True when the user explicitly confirmed it in this session (an answer or a confirm gate).",
+    )
+
+
 class CVExtractionResponse(BaseModel):
     """Response from CV extraction."""
     success: bool
