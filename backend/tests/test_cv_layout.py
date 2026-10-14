@@ -132,7 +132,7 @@ def test_section_titles_follow_the_language_of_the_cv_content():
     german["experience"][0]["responsibilities"] = ["Entwicklung der API mit Python und die Betreuung der Kunden"]
     assert cv_content_language(german) == "german"
     assert cv_content_language(cv_with(1, 1)) == "english"
-    _, sections = build_harvard_sections(german, ORDER, language="german")
+    _, sections = build_harvard_sections(german, ORDER, language="german", merge_languages=False)
     assert [s["title"] for s in sections] == ["Berufserfahrung", "Ausbildung", "Projekte", "Kenntnisse", "Sprachen"]
     grade_row = sections[1]["entries"][0]["rows"][-1]
     assert grade_row["left"] == "Note: 1.7"

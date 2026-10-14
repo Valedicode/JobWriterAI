@@ -39,7 +39,7 @@ from app.agents.writer_agent import (
     select_prioritize_content,
 )
 from app.agents.orchestrator.outputs import file_record, session_output_dir
-from app.services.latex_renderer import extract_recipient_name
+from app.services.latex_renderer import cv_content_language, extract_recipient_name
 from app.agents.scoring_agent import (
     apply_eligibility_answers,
     calculate_compatibility_score_v2,
@@ -588,6 +588,10 @@ def _plan_preview(state: OrchestratorState) -> dict[str, Any] | None:
             {"bullet_id": b, "text": (bullet_index.get(b) or {}).get("text", "")}
             for b in plan.get("bullets_to_feature") or []
         ],
+        "skill_groups": [
+            {"label": g.get("label", ""), "skills": g.get("skills", [])}
+            for g in plan.get("skill_groups") or [] if isinstance(g, dict)
+        ],
         "keywords_to_use": [k["keyword"] for k in keywords if k.get("allowed")],
         "keywords_not_on_cv": [k["keyword"] for k in keywords if not k.get("allowed")],
         "red_flags": plan.get("red_flags") or [],
@@ -713,9 +717,11 @@ def _draft_plan(state: OrchestratorState) -> tuple[dict[str, Any] | None, list[s
     except Exception as exc:  # noqa: BLE001 - a malformed plan is reported, not raised
         return None, [], f"the plan was malformed: {exc}"[:200]
     projects = cv_data.get("projects") if isinstance(cv_data.get("projects"), list) else []
+    skills = cv_data.get("skills") if isinstance(cv_data.get("skills"), list) else []
     cleaned, notes = validate_plan(
         plan, rubric=report.get("rubric") or [], ledger=ledger,
         bullet_index=bullet_index, project_count=len(projects),
+        cv_skills=[s for s in skills if isinstance(s, str)],
     )
     return cleaned.model_dump(), notes, None
 
@@ -1388,6 +1394,20 @@ def _tailored_cv(state: OrchestratorState) -> dict[str, Any]:
 # Step 7: generate CV PDF (LaTeX / Harvard template)
 # --------------------------------------------------------------------------- #
 
+def _with_skill_groups(cv_data: dict[str, Any], groups: list[dict[str, Any]]) -> dict[str, Any]:
+    """The CV with its skills as the plan's labelled groups (validated to hold
+    only the CV's own skills). Without groups the renderer groups by skill
+    family itself."""
+    groups = [g for g in groups or [] if isinstance(g, dict) and g.get("skills")]
+    if not groups:
+        return cv_data
+    other = "Weitere" if cv_content_language(cv_data) == "german" else "Other"
+    return {**cv_data, "skills": [
+        {"name": other if g.get("label") == "Other" else g.get("label", ""), "keywords": list(g["skills"])}
+        for g in groups
+    ]}
+
+
 def _with_project_order(cv_data: dict[str, Any], order: list[int]) -> dict[str, Any]:
     """The CV with its projects in the plan's order; projects the plan didn't
     rank keep their place after the ranked ones."""
@@ -1415,7 +1435,9 @@ def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig)
 
     pdf_name = f"{base}_cv_tailored.pdf"
     pdf_msg = generate_cv_pdf.invoke({
-        "cv_json": json.dumps(_with_project_order(cv_data, plan.get("project_order") or [])),
+        "cv_json": json.dumps(_with_skill_groups(
+            _with_project_order(cv_data, plan.get("project_order") or []), plan.get("skill_groups") or []
+        )),
         "output_filename": pdf_name,
         "applicant_name": applicant_name,
         "section_order_json": json.dumps(section_order),

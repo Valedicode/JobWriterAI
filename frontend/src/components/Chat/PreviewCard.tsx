@@ -180,6 +180,7 @@ interface ScorePlan {
   convention?: string;
   section_order?: string[];
   featured_bullets?: Array<{ bullet_id?: string; text?: string }>;
+  skill_groups?: Array<{ label?: string; skills?: string[] }>;
   keywords_to_use?: string[];
   keywords_not_on_cv?: string[];
   red_flags?: string[];
@@ -189,6 +190,9 @@ interface ScorePlan {
 /** The strategist's plan, approved together with the score. */
 function TailoringPlan({ plan }: { plan: ScorePlan }) {
   const featured = asArray<{ bullet_id?: string; text?: string }>(plan.featured_bullets).filter((b) => b?.text);
+  const skillGroups = asArray<{ label?: string; skills?: string[] }>(plan.skill_groups)
+    .filter((g) => g && asArray<string>(g.skills).length > 0)
+    .map((g) => (g.label ? `${g.label}: ${asArray<string>(g.skills).join(', ')}` : asArray<string>(g.skills).join(', ')));
   const useTerms = asArray<string>(plan.keywords_to_use);
   const notOnCv = asArray<string>(plan.keywords_not_on_cv);
   const redFlags = asArray<string>(plan.red_flags);
@@ -215,6 +219,12 @@ function TailoringPlan({ plan }: { plan: ScorePlan }) {
         <div className="mt-3">
           <h5 className="mb-1 text-meta font-semibold text-ink-muted">Bullets to feature</h5>
           <Bullets items={featured.map((b) => b.text as string)} />
+        </div>
+      )}
+      {skillGroups.length > 0 && (
+        <div className="mt-3">
+          <h5 className="mb-1 text-meta font-semibold text-ink-muted">Skills section</h5>
+          <Bullets items={skillGroups} />
         </div>
       )}
       {useTerms.length > 0 && (

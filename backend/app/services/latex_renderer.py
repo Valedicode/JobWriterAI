@@ -206,7 +206,7 @@ def render_cv_tex(
     *,
     layout: str = "normal",
     convention: str = "international",
-    merge_languages: bool = False,
+    merge_languages: bool = True,
     break_before_block: int | None = None,
 ) -> str:
     """Render a Harvard-style CV LaTeX document from structured CV JSON.
@@ -302,9 +302,9 @@ def render_cv_pdf(
 ) -> tuple[Path, dict[str, Any]]:
     """
     Compile the CV, check the page rules on the PDF, and re-render until they
-    hold: first compact spacing, then Languages folded into Skills. Returns the
-    PDF and a report ({pages, layout, merged_languages, problems}); problems
-    left after the last attempt are reported, not hidden.
+    hold: first compact spacing, then whole blocks moved to page 2. Returns the
+    PDF and a report ({pages, layout, page_break_before_block, problems});
+    problems left after the last attempt are reported, not hidden.
     """
     results: list[tuple[tuple[str, bool, int | None], dict[str, Any], str]] = []
 
@@ -317,21 +317,20 @@ def render_cv_pdf(
         results.append(((layout, merge, break_before_block), analysis, name))
         return not layout_problems(analysis)
 
-    # 1. As designed; 2. compact, to fit on one page; 3. compact with Languages
-    # folded into Skills, so a short Languages section can't be stranded.
-    done = attempt("normal", False, None) or attempt("compact", False, None)
-    if not done and cv_data.get("languages") and cv_data.get("skills"):
-        done = attempt("compact", True, None)
+    # Spoken languages are a line in Skills (when there is a Skills section),
+    # so a short Languages section can't be stranded on the last page.
+    # 1. As designed; 2. compact, to fit on one page.
+    done = attempt("normal", True, None) or attempt("compact", True, None)
     # 4. Balance two pages: move whole blocks (a section, or entries of a long
     # one) from the end of page 1 to page 2 by breaking one to three blocks
     # earlier than LaTeX did.
     if not done and results[0][1]["pages"] == 2:
         _, _, anchors = _cv_context(cv_data, section_order, convention=convention,
-                                    merge_languages=False, break_before_block=None)
+                                    merge_languages=True, break_before_block=None)
         first_on_two = _first_block_on_page_two(results[0][1]["page_two_first_line"], anchors)
         if first_on_two:
             for back in range(1, BALANCE_CANDIDATES + 1):
-                if first_on_two - back <= 0 or attempt("normal", False, first_on_two - back):
+                if first_on_two - back <= 0 or attempt("normal", True, first_on_two - back):
                     break
 
     # The first attempt that keeps every rule, else the least bad one.
