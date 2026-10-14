@@ -105,6 +105,19 @@ def _thread_config(session_id: str) -> dict[str, Any]:
     return {"configurable": {"thread_id": session_id}}
 
 
+def _run_config(session_id: str, flow: str | None, run_id: uuid.UUID) -> dict[str, Any]:
+    """Config for one graph run. Tags and metadata are inherited by every node
+    and every tool or LLM call inside it, so a trace can be filtered by session;
+    the run id is returned to the client to find this request's trace."""
+    return {
+        **_thread_config(session_id),
+        "run_id": run_id,
+        "run_name": f"orchestrator.{flow or 'unknown'}",
+        "tags": [f"session:{session_id}", f"flow:{flow or 'unknown'}"],
+        "metadata": {"session_id": session_id, "flow": flow},
+    }
+
+
 def _pending_gate_from_invoke_result(result: dict[str, Any]) -> OrchestratorGatePayload | None:
     """Extract the gate payload from the ``__interrupt__`` slot, if present."""
     interrupts = result.get("__interrupt__") if isinstance(result, dict) else None
@@ -185,6 +198,7 @@ def _snapshot_response(
     session_id: str,
     invoke_result: dict[str, Any],
     messages_before: int = 0,
+    run_id: uuid.UUID | None = None,
 ) -> OrchestratorResponse:
     """
     Build an OrchestratorResponse from a graph.invoke() return value.
@@ -225,6 +239,7 @@ def _snapshot_response(
         generated_files=files,
         done=gate is None,
         message="ok",
+        run_id=str(run_id) if run_id else None,
     )
 
 
@@ -273,8 +288,9 @@ def orchestrator_start(
         "pending_gate": None,
     }
 
+    run_id = uuid.uuid4()
     try:
-        result = graph.invoke(initial_state, config=_thread_config(session_id))
+        result = graph.invoke(initial_state, config=_run_config(session_id, request.flow, run_id))
     except GraphInterrupt as exc:
         # Defensive: graph.invoke() normally returns a state with __interrupt__
         # rather than raising, but we surface it cleanly either way.
@@ -283,7 +299,7 @@ def orchestrator_start(
             detail=f"Graph raised an unhandled interrupt: {exc}",
         ) from exc
 
-    return _snapshot_response(session_id=session_id, invoke_result=result, messages_before=0)
+    return _snapshot_response(session_id=session_id, invoke_result=result, messages_before=0, run_id=run_id)
 
 
 # --------------------------------------------------------------------------- #
@@ -349,8 +365,12 @@ def _handle_message(request: OrchestratorMessageRequest) -> OrchestratorResponse
         )
 
         messages_before = len(snapshot.values.get("messages") or [])
+        run_id = uuid.uuid4()
         try:
-            result = graph.invoke(Command(resume=internal.model_dump()), config=config)
+            result = graph.invoke(
+                Command(resume=internal.model_dump()),
+                config=_run_config(request.session_id, snapshot.values.get("flow"), run_id),
+            )
         except GraphInterrupt as exc:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -358,7 +378,8 @@ def _handle_message(request: OrchestratorMessageRequest) -> OrchestratorResponse
             ) from exc
 
         return _snapshot_response(
-            session_id=request.session_id, invoke_result=result, messages_before=messages_before
+            session_id=request.session_id, invoke_result=result, messages_before=messages_before,
+            run_id=run_id,
         )
 
     # kind == "chat"
@@ -399,8 +420,12 @@ def _handle_message(request: OrchestratorMessageRequest) -> OrchestratorResponse
     _check_resolution_against_gate(internal, pending)
 
     messages_before = len(snapshot.values.get("messages") or [])
+    run_id = uuid.uuid4()
     try:
-        result = graph.invoke(Command(resume=internal.model_dump()), config=config)
+        result = graph.invoke(
+            Command(resume=internal.model_dump()),
+            config=_run_config(request.session_id, snapshot.values.get("flow"), run_id),
+        )
     except GraphInterrupt as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -408,7 +433,8 @@ def _handle_message(request: OrchestratorMessageRequest) -> OrchestratorResponse
         ) from exc
 
     response = _snapshot_response(
-        session_id=request.session_id, invoke_result=result, messages_before=messages_before
+        session_id=request.session_id, invoke_result=result, messages_before=messages_before,
+        run_id=run_id,
     )
     if turn.reply:
         response.narrations = [turn.reply, *response.narrations]

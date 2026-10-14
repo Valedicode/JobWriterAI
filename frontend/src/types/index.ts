@@ -384,6 +384,8 @@ export interface OrchestratorResponse {
   generated_files: DownloadableFile[];
   done: boolean;
   message: string;
+  /** Id of the graph run this request started, for finding its trace. */
+  run_id?: string | null;
 }
 
 export interface OrchestratorStateResponse {
