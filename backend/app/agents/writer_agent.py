@@ -55,6 +55,7 @@ from app.agents.scoring_agent import (
 from app.services.latex_renderer import (
     compile_tex_to_pdf,
     render_cover_letter_tex,
+    render_cv_pdf,
     render_cv_tex,
 )
 
@@ -289,6 +290,7 @@ def generate_cv_pdf(
     applicant_name: str,
     section_order_json: str = "",
     output_dir: str = "",
+    convention: str = "international",
 ) -> str:
     """
     Generate a tailored CV PDF via LaTeX (Harvard-style, JSON Resume taxonomy).
@@ -302,9 +304,11 @@ def generate_cv_pdf(
         section_order_json: Optional JSON list of section keys for ordering
         output_dir: Directory to write into (a session folder inside data/);
             defaults to data/ itself
+        convention: "dach" for DACH date style, else "international"
 
     Returns:
-        Success message with the filename for download
+        Success message with the filename for download, then one
+        "Layout note: ..." line per page-layout problem that couldn't be fixed
     """
     try:
         if not output_filename.lower().endswith(".pdf"):
@@ -324,17 +328,23 @@ def generate_cv_pdf(
             except json.JSONDecodeError:
                 pass
 
-        tex_content = render_cv_tex(cv_data, section_order=section_order)
         target_dir = _resolve_output_dir(output_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
 
         stem = Path(output_filename).stem
-        pdf_path = compile_tex_to_pdf(tex_content, target_dir, stem)
+        pdf_path, layout = render_cv_pdf(
+            cv_data, target_dir, stem, section_order=section_order,
+            convention="dach" if convention == "dach" else "international",
+        )
         final_path = target_dir / output_filename
         if pdf_path != final_path:
             pdf_path.replace(final_path)
 
-        return f"CV PDF generated successfully! The file '{output_filename}' is ready for download."
+        message = f"CV PDF generated successfully! The file '{output_filename}' is ready for download."
+        notes = [f"{problem}; consider shortening or removing a section." for problem in layout["problems"]]
+        if layout["merged_languages"] and not layout["problems"]:
+            notes.append("Languages were folded into Skills so they don't sit alone on the last page.")
+        return message + "".join(f"\nLayout note: {note}" for note in notes)
 
     except RuntimeError as e:
         return f"Error: {str(e)}"

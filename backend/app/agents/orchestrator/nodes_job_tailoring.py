@@ -1318,6 +1318,11 @@ def jt_step6_assemble_cv(state: OrchestratorState) -> dict[str, Any]:
 
     if rewritten.get("updated_summary"):
         merged_cv["summary"] = rewritten["updated_summary"]
+    # The plan's headline went through the fact check and the user approved
+    # it with the plan; it becomes the line under the name.
+    headline = ((state.get("tailoring_strategy") or {}).get("plan") or {}).get("headline")
+    if headline and not merged_cv.get("label"):
+        merged_cv["label"] = headline
 
     narration = "Assembled the tailored CV. Generating PDF export."
     if unplaced:
@@ -1383,6 +1388,17 @@ def _tailored_cv(state: OrchestratorState) -> dict[str, Any]:
 # Step 7: generate CV PDF (LaTeX / Harvard template)
 # --------------------------------------------------------------------------- #
 
+def _with_project_order(cv_data: dict[str, Any], order: list[int]) -> dict[str, Any]:
+    """The CV with its projects in the plan's order; projects the plan didn't
+    rank keep their place after the ranked ones."""
+    projects = cv_data.get("projects")
+    if not order or not isinstance(projects, list):
+        return cv_data
+    ranked = [projects[i] for i in order if isinstance(i, int) and 0 <= i < len(projects)]
+    rest = [p for i, p in enumerate(projects) if i not in set(order)]
+    return {**cv_data, "projects": ranked + rest}
+
+
 def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     """Emit a tailored CV PDF from merged structured JSON."""
     cv_data = _tailored_cv(state)
@@ -1399,16 +1415,18 @@ def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig)
 
     pdf_name = f"{base}_cv_tailored.pdf"
     pdf_msg = generate_cv_pdf.invoke({
-        "cv_json": json.dumps(cv_data),
+        "cv_json": json.dumps(_with_project_order(cv_data, plan.get("project_order") or [])),
         "output_filename": pdf_name,
         "applicant_name": applicant_name,
         "section_order_json": json.dumps(section_order),
         "output_dir": session_output_dir(config),
+        "convention": plan.get("convention") or "international",
     })
     if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
         filename = _extract_filename(pdf_msg) or pdf_name
         generated.append(file_record(filename, "cv", config))
         messages.append(f"PDF: {filename}")
+        messages.extend(line for line in pdf_msg.splitlines() if line.startswith("Layout note:"))
     else:
         messages.append(f"PDF generation failed: {pdf_msg}")
 

@@ -4,7 +4,13 @@
 \usepackage{latexsym}
 \usepackage[empty]{fullpage}
 \usepackage[margin=1cm]{geometry}
+\usepackage{iftex}
+\ifPDFTeX
+% Map glyphs back to Unicode so the PDF's text layer is searchable.
+\usepackage{cmap}
+\fi
 \usepackage[T1]{fontenc}
+\usepackage{lmodern}
 \usepackage[utf8]{inputenc}
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
