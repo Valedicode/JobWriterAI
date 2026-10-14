@@ -145,6 +145,16 @@ interface ScoreEligibility {
   rationale?: string;
 }
 
+interface RubricRow {
+  requirement_id?: string;
+  text?: string;
+  category?: 'must_have' | 'nice_to_have' | 'learnable' | 'knockout' | string;
+  status?: 'met' | 'partial' | 'learnable_gap' | 'missing' | 'unclear' | string;
+  matched_with?: string | null;
+  evidence_bullet_ids?: string[];
+  reason?: string;
+}
+
 interface ScorePreview {
   aggregate_score?: number;
   level?: string;
@@ -158,6 +168,55 @@ interface ScorePreview {
   };
   interpretation?: string;
   warnings?: string[];
+  rubric?: RubricRow[];
+  knockouts?: RubricRow[];
+}
+
+const rubricStatus: Record<string, { label: string; tone: string }> = {
+  met: { label: 'met', tone: 'bg-success-surface text-success-text border-success-border' },
+  partial: { label: 'related', tone: 'bg-primary-surface text-primary-text border-border' },
+  learnable_gap: { label: 'learnable', tone: 'bg-surface-sunken text-ink-muted border-border' },
+  missing: { label: 'missing', tone: 'bg-warning-surface text-warning-text border-warning-border' },
+  unclear: { label: 'check', tone: 'bg-surface-sunken text-ink-muted border-border' },
+};
+
+const RUBRIC_GROUPS: Array<[string, string]> = [
+  ['must_have', 'Must-have'],
+  ['nice_to_have', 'Nice-to-have'],
+  ['learnable', 'Taught on the job'],
+];
+
+/** Where a requirement shows on the CV: bullets demonstrate it, the skills list only names it. */
+function evidenceNote(row: RubricRow): string | null {
+  if (row.status === 'missing' || row.status === 'unclear') return null;
+  const bullets = asArray<string>(row.evidence_bullet_ids).length;
+  const via = row.matched_with && row.matched_with !== row.text ? `via ${row.matched_with}` : null;
+  const where = bullets > 0 ? `shown in ${bullets} bullet${bullets === 1 ? '' : 's'}` : 'only in your skills list';
+  return [via, where].filter(Boolean).join(' · ');
+}
+
+function RubricList({ rows, showEvidence }: { rows: RubricRow[]; showEvidence: boolean }) {
+  return (
+    <ul className="space-y-1.5">
+      {rows.map((row, i) => {
+        const status = rubricStatus[String(row.status)] ?? rubricStatus.unclear;
+        const note = showEvidence ? evidenceNote(row) : row.reason || null;
+        return (
+          <li key={row.requirement_id ?? i} className="flex items-start gap-2 text-sm">
+            <span
+              className={`mt-0.5 inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-label font-medium ${status.tone}`}
+            >
+              {status.label}
+            </span>
+            <span className="min-w-0 text-ink [overflow-wrap:anywhere]">
+              {row.text}
+              {note ? <span className="block text-ink-muted">{note}</span> : null}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 const skillNames = (items: unknown, required: boolean) =>
@@ -175,7 +234,10 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
   const p = preview as ScorePreview;
   const score = typeof p.aggregate_score === 'number' ? p.aggregate_score : null;
   const level = p.level ?? 'unknown';
-  const dimensions = Array.isArray(p.dimensions) ? p.dimensions : [];
+  // Weight-0 dimensions (eligibility) are pass/fail knockouts, shown below.
+  const dimensions = (Array.isArray(p.dimensions) ? p.dimensions : []).filter((d) => Number(d?.weight) > 0);
+  const rubric = asArray<RubricRow>(p.rubric).filter((r) => r && r.text);
+  const knockouts = asArray<RubricRow>(p.knockouts).filter((r) => r && r.text);
   const gap = p.gap_analysis ?? {};
   const missingRequired = skillNames(gap.missing_skills, true);
   const missingPreferred = skillNames(gap.missing_skills, false);
@@ -233,23 +295,36 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
           <span>Learnable {learnable.length}</span>
           <span>Missing {(gap.missing_skills || []).length}</span>
         </div>
-        {missingRequired.length > 0 && (
+        {rubric.length === 0 && missingRequired.length > 0 && (
           <p className="mt-2 text-sm text-ink [overflow-wrap:anywhere]">
             <span className="font-medium">Missing required:</span> {missingRequired.join(', ')}
           </p>
         )}
-        {missingPreferred.length > 0 && (
+        {rubric.length === 0 && missingPreferred.length > 0 && (
           <p className="mt-1 text-sm text-ink-muted [overflow-wrap:anywhere]">
             <span className="font-medium">Missing nice-to-haves:</span> {missingPreferred.join(', ')}
           </p>
         )}
-        {learnable.length > 0 && (
+        {rubric.length === 0 && learnable.length > 0 && (
           <p className="mt-1 text-sm text-ink-muted [overflow-wrap:anywhere]">
             <span className="font-medium">Not on your CV, learnable:</span> {learnable.join(', ')}
           </p>
         )}
       </Section>
-      {eligibility.length > 0 && (
+      {RUBRIC_GROUPS.map(([category, title]) => {
+        const rows = rubric.filter((r) => r.category === category);
+        return rows.length > 0 ? (
+          <Section key={category} title={title}>
+            <RubricList rows={rows} showEvidence />
+          </Section>
+        ) : null;
+      })}
+      {knockouts.length > 0 && (
+        <Section title="Knockouts">
+          <RubricList rows={knockouts} showEvidence={false} />
+        </Section>
+      )}
+      {knockouts.length === 0 && eligibility.length > 0 && (
         <Section title="Eligibility">
           <ul className="space-y-1.5">
             {eligibility.map((e, i) => {
