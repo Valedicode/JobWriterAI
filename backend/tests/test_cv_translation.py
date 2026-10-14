@@ -89,10 +89,17 @@ def test_apply_translation_writes_each_path():
     ("1.6 (German System)", "Note: 1,6", None),                       # decimal comma is the same number
     ("Built a Django app used by 30 people", "Django-App für 30 Personen entwickelt", None),
     ("Led two teams", "Leitete zwei Teams", None),
-    ("Built a Django app", "Eine Flask-App entwickelt", "technologies changed (django, flask)"),
-    ("Used by 30 people", "Von 300 Personen genutzt", "a number changed"),
-    ("Since 2021", "Seit 2022", "a year changed"),
-    ("Something", "", "the translation is empty"),
+    ("Built a Django app", "Eine Flask-App entwickelt", "the translation changed a technology name (django, flask)"),
+    ("Used by 30 people", "Von 300 Personen genutzt", "the translation changed a number"),
+    ("Since 2021", "Seit 2022", "the translation changed a year"),
+    ("Something", "", "the translation came back empty"),
+    # Regressions from a real review: German articles ("ein", "eine") read as
+    # the number 1, so correct translations were rejected.
+    ("Led a 5-person team building an AI sentiment platform for the club, feeding its newsletter",
+     "Leitete ein 5-köpfiges Team beim Aufbau einer KI-Plattform, die Analysen für den Newsletter liefert", None),
+    ("One-on-one digital literacy support for senior citizens",
+     "Individuelle Unterstützung für Senioren bei digitalen Themen", None),
+    ("Combines YOLOv8 with Gemma 4 reasoning agents", "Kombiniert YOLOv8 mit Gemma-4-Reasoning-Agenten", None),
 ])
 def test_each_field_must_keep_its_facts(original, translated, problem):
     assert check_translation(original, translated) == problem
@@ -107,8 +114,15 @@ def test_a_field_that_changes_a_fact_keeps_its_original_text():
     assert cv["education"][0]["degree"] == "Abitur"
     assert cv["experience"][0]["responsibilities"][0] == "Built a Django app used by 30 people"
     by_path = {r["path"]: r for r in rows}
-    assert by_path["experience.0.responsibilities.0"]["problem"].startswith("technologies changed")
-    assert by_path["summary"]["problem"] == "not translated"
+    assert by_path["experience.0.responsibilities.0"]["problem"].startswith("the translation changed a technology")
+    assert by_path["summary"]["problem"] == "it wasn't translated"
+
+
+def test_the_summary_may_drop_a_job_seeking_sentence_but_never_add():
+    original = "Python developer. Seeking Django roles."
+    assert check_translation(original, "Python-Entwickler.", may_omit=True) is None
+    assert check_translation(original, "Python-Entwickler.") is not None  # elsewhere nothing may go
+    assert check_translation(original, "Python- und Rust-Entwickler.", may_omit=True) is not None
 
 
 def test_the_tool_reports_failures_as_errors():
@@ -257,3 +271,42 @@ def test_the_language_is_asked_once_per_session(graph, run):  # noqa: F811
     config, _ = run("lang-once")
     _choose(graph, config, "english")
     assert route_after_score(graph.get_state(config).values) == "jt_step3_decide_strategy"
+
+
+def test_failed_fields_are_retried_once_before_the_review(graph, patched_tools):  # noqa: F811
+    calls: list = []
+
+    def translate(kwargs):
+        calls.append(kwargs)
+        fields = json.loads(kwargs['fields_json'])
+        if len(calls) == 1:  # first pass: bullet 1 loses its fact (a made-up number)
+            out = {**GERMAN, 'experience.0.responsibilities.1': 'Schrieb 3 technische Notizen'}
+        else:
+            out = GERMAN
+        return json.dumps({'fields': [{'path': f['path'], 'text': out.get(f['path'], f['text'])} for f in fields]})
+
+    with patch('app.agents.orchestrator.nodes_job_tailoring.translate_cv_fields', _fake_tool(translate)):
+        config = {'configurable': {'thread_id': 'lang-retry-fields'}}
+        graph.invoke({'flow': 'job_tailoring', 'cv_data': CV, 'job_data': GERMAN_POSTING}, config=config)
+        payload = _interrupt_payload(_choose(graph, config, 'german'))
+    assert payload['step'] == 'approve_translation'
+    assert len(calls) == 2
+    assert [f['path'] for f in json.loads(calls[1]['fields_json'])] == ['experience.0.responsibilities.1']
+    assert 'changed a number' in calls[1]['feedback']
+    assert payload['preview']['kept_original'] == []
+
+
+def test_fields_still_wrong_after_the_retry_are_shown_plainly(graph, patched_tools):  # noqa: F811
+    def translate(kwargs):
+        fields = json.loads(kwargs['fields_json'])
+        out = {**GERMAN, 'experience.0.responsibilities.1': 'Schrieb 3 technische Notizen'}
+        return json.dumps({'fields': [{'path': f['path'], 'text': out.get(f['path'], f['text'])} for f in fields]})
+
+    with patch('app.agents.orchestrator.nodes_job_tailoring.translate_cv_fields', _fake_tool(translate)):
+        config = {'configurable': {'thread_id': 'lang-kept'}}
+        graph.invoke({'flow': 'job_tailoring', 'cv_data': CV, 'job_data': GERMAN_POSTING}, config=config)
+        payload = _interrupt_payload(_choose(graph, config, 'german'))
+    assert payload['preview']['kept_original'] == [{
+        'path': 'experience.0.responsibilities.1', 'original': 'Wrote technical notes',
+        'translated': 'Schrieb 3 technische Notizen', 'problem': 'the translation changed a number',
+    }]

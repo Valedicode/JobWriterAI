@@ -1561,7 +1561,23 @@ def jt_step_translate_cv(state: OrchestratorState) -> dict[str, Any]:
     if error:
         return _fail_step(JT_STEP_TRANSLATE_CV, "Translation", error)
 
-    translated_cv, rows = translate_cv(cv_data, raw.get("fields") or [])
+    fields = {f.get("path"): f for f in raw.get("fields") or [] if isinstance(f, dict)}
+    translated_cv, rows = translate_cv(cv_data, list(fields.values()))
+    failed = [r for r in rows if r["problem"]]
+    if failed:
+        # One more try for just those fields, told what went wrong, so the
+        # review doesn't show (and the CV doesn't keep) English leftovers that
+        # a later step would translate anyway.
+        notes = [f"- {r['path']}: {r['problem']}. Keep every technology name, number and year exactly."
+                 for r in failed]
+        retry = _safe_json_loads(translate_cv_fields.invoke({
+            "fields_json": json.dumps([{"path": r["path"], "text": r["original"]} for r in failed], ensure_ascii=False),
+            "language": target,
+            "feedback": "\n".join(filter(None, [feedback, *notes])),
+        }), None)
+        if not _tool_error(retry, "translation"):
+            fields.update({f.get("path"): f for f in retry.get("fields") or [] if isinstance(f, dict)})
+            translated_cv, rows = translate_cv(cv_data, list(fields.values()))
     kept = [r for r in rows if r["problem"]]
     changed = [r for r in rows if not r["problem"] and r["translated"] != r["original"]]
     narration = f"Translated your CV into {_LANGUAGE_NAMES.get(target, target)}: {len(changed)} field(s) changed."
@@ -1582,7 +1598,12 @@ def _translation_preview(translation: dict[str, Any]) -> dict[str, Any]:
             {"path": r["path"], "original": r["original"], "translated": r["translated"]}
             for r in rows if not r["problem"] and r["translated"] != r["original"]
         ],
-        "kept_original": [f"{r['path']}: {r['original']} ({r['problem']})" for r in rows if r["problem"]],
+        # Shown as "Projects 2 · description" with the proposed translation and
+        # a plain reason, not as an internal path and a code.
+        "kept_original": [
+            {"path": r["path"], "original": r["original"], "translated": r["translated"], "problem": r["problem"]}
+            for r in rows if r["problem"]
+        ],
     }
 
 
