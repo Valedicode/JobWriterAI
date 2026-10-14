@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, status
 import json
 import logging
 
+import requests
+
 from app.models.schemas import (
     JobURLRequest,
     JobTextRequest,
@@ -17,6 +19,7 @@ from app.models.schemas import (
     JobRequirements,
     CompanyInfo
 )
+from app.services.url_safety import UnsafeURLError
 from app.agents.job_agent import (
     retrieve_web,
     retrieve_text,
@@ -82,6 +85,13 @@ def extract_job_from_url(request: JobURLRequest):
         
     except HTTPException:
         raise
+    except UnsafeURLError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"URL not allowed: {e}")
+    except requests.RequestException as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Could not fetch the job posting: {type(e).__name__}",
+        )
     except json.JSONDecodeError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

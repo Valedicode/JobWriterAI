@@ -13,15 +13,6 @@ from typing import Optional, List, Dict, Any, Literal, Union
 # CV Agent Models
 # ============================================
 
-class CVUploadRequest(BaseModel):
-    """Request to extract CV information from a PDF file."""
-    pdf_path: str = Field(
-        ...,
-        description="Path to the PDF resume file",
-        example="C:/Documents/resume.pdf"
-    )
-
-
 class ExperienceEntry(BaseModel):
     """One work-experience entry. OpenAI structured output requires explicit
     fields with ``extra='forbid'`` — ``Dict[str, Any]`` unions are rejected."""
