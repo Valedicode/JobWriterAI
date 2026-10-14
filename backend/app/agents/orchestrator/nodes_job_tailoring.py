@@ -49,6 +49,7 @@ from app.agents.scoring_agent import (
 from app.models.schemas import CompatibilityReport, VerifierResult
 from app.services.bullet_index import index_cv_bullets as _index_cv_bullets
 from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
+from app.services.requirement_rubric import evidence_prompt_block, refresh_evidence, rubric_alignment
 from app.services.verifier import issue_notes, retry_feedback, verify_rewrites
 
 
@@ -579,6 +580,8 @@ def jt_gate_present_score(state: OrchestratorState) -> Command:
             "gap_analysis": report.get("gap_analysis", {}),
             "interpretation": report.get("interpretation", ""),
             "warnings": report.get("warnings", []),
+            "rubric": report.get("rubric", []),
+            "knockouts": report.get("knockouts", []),
         },
         allowed_actions=["approve", "reject"],
     ).model_dump()
@@ -644,6 +647,7 @@ def jt_step4_select_prioritize(state: OrchestratorState) -> dict[str, Any]:
         "job_json": job_json,
         "tailoring_strategy_json": strategy_json,
         "bullet_index_block": _bullet_index_prompt_block(bullet_index),
+        "evidence_block": evidence_prompt_block((state.get("compatibility_report") or {}).get("rubric") or []),
     })
     selected = _safe_json_loads(selected_json, None)
     error = _tool_error(selected, "selection")
@@ -1232,12 +1236,53 @@ def jt_step6_assemble_cv(state: OrchestratorState) -> dict[str, Any]:
         preview = "; ".join(t[:80] for t in unplaced[:3])
         narration += f"\n\nNote: {len(unplaced)} rewrite(s) could not be matched to a CV bullet and were skipped: {preview}"
 
+    update: dict[str, Any] = {"tailored_cv_data": merged_cv}
+    alignment = _alignment_after_tailoring(state, merged_cv)
+    if alignment:
+        update.update(alignment)
+        narration += "\n\n" + _alignment_narration(alignment["alignment"])
+
     # cv_data stays the user's own CV: re-runs, the fact ledger and the
     # verifier compare against it.
-    return _narrate(
-        {"tailored_cv_data": merged_cv},
-        narration,
-    )
+    return _narrate(update, narration)
+
+
+def _alignment_after_tailoring(state: OrchestratorState, tailored: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    The rubric with its evidence searched again in the tailored CV, and the
+    alignment before and after. Statuses don't change (the verifier stops a
+    rewrite from adding a skill); what rewriting can do is show a skill the
+    CV already has in a bullet, which the alignment rewards.
+    """
+    rubric = (state.get("compatibility_report") or {}).get("rubric") or []
+    before = rubric_alignment(rubric)
+    if not rubric or before is None:
+        return None
+    after_rows = refresh_evidence(rubric, build_fact_ledger(tailored, _index_cv_bullets(tailored)))
+    newly_shown = [
+        row.text for row, old in zip(after_rows, rubric)
+        if row.category == "must_have" and row.evidence_bullet_ids and not old.get("evidence_bullet_ids")
+    ]
+    verifier = state.get("verifier_result") or {}
+    return {
+        "requirement_rubric_after": [row.model_dump() for row in after_rows],
+        "alignment": {
+            "before": before,
+            "after": rubric_alignment(after_rows),
+            "preservation": verifier.get("preservation_score"),
+            "newly_shown": newly_shown,
+        },
+    }
+
+
+def _alignment_narration(alignment: dict[str, Any]) -> str:
+    before, after = alignment["before"], alignment["after"]
+    line = f"Requirement alignment: {before:.2f} -> {after:.2f} ({after - before:+.2f})."
+    if alignment.get("newly_shown"):
+        line += " Now shown in a bullet: " + ", ".join(alignment["newly_shown"]) + "."
+    if alignment.get("preservation") is not None:
+        line += f" The rewrites kept {alignment['preservation']:.0%} of your original technologies and numbers."
+    return line
 
 
 def _tailored_cv(state: OrchestratorState) -> dict[str, Any]:

@@ -745,6 +745,7 @@ def select_prioritize_content(
     job_json: str,
     tailoring_strategy_json: str,
     bullet_index_block: str = "",
+    evidence_block: str = "",
 ) -> str:
     """
     Select and prioritize the most relevant resume content based on job requirements.
@@ -756,6 +757,8 @@ def select_prioritize_content(
         bullet_index_block: Numbered "[bullet_id] text" list of every bullet
             in the CV. When provided, each selected bullet must echo the
             matching bullet_id verbatim so downstream steps can address it.
+        evidence_block: The requirement rubric as "[req.N] category skill
+            (status): bullet ids that show it" lines, from the scorer.
 
     Returns:
         JSON string with selected bullets, recommended section order, and emphasis plan
@@ -782,6 +785,10 @@ def select_prioritize_content(
                 "- A numbered bullet index (`[bullet_id] text`) may be provided below. When it is, "
                 "set `bullet_id` on every selected bullet to the exact id of the matching line — "
                 "never invent an id or alter its text.\n"
+                "- An evidence map may be provided: for each job requirement, the bullets that "
+                "already show it. Prefer bullets that evidence must-have requirements, then "
+                "nice-to-haves; when several bullets show the same requirement, the strongest one "
+                "is usually enough. Say in `reason` which requirement a bullet evidences.\n"
                 "- NEVER return an empty `selected_bullets` list if the CV has any bullets at all. "
                 "Even on a weak or poor fit, select the CV's best-available bullets (aim for at "
                 "least 3-5, or every bullet if the CV has fewer): the strongest, most quantified, "
@@ -795,6 +802,7 @@ def select_prioritize_content(
                 "CV Data:\n{cv}\n\n"
                 "Job Data:\n{job}\n\n"
                 "Bullet Index:\n{bullet_index}\n\n"
+                "Evidence Map (requirement -> bullets that show it):\n{evidence}\n\n"
                 "Focus Areas: {focus}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
                 "User Feedback on earlier selections (follow it; it overrides the directives "
@@ -808,6 +816,7 @@ def select_prioritize_content(
             "cv": cv_json,
             "job": job_json,
             "bullet_index": bullet_index_block or "(not provided)",
+            "evidence": evidence_block or "(not provided)",
             "focus": ", ".join(focus_areas),
             "directives": _format_directives(directives),
             "feedback": _format_feedback(strategy_data, ("approve_selection", "chat")),

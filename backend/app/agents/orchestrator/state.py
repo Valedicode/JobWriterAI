@@ -116,6 +116,10 @@ class OrchestratorState(TypedDict, total=False):
     # which attempt the next check is (1 = first pass, reset when it passes).
     verifier_result: dict[str, Any] | None
     verify_attempt: int | None
+    # Step 6: the rubric's evidence searched again in the tailored CV, and
+    # {before, after, preservation, newly_shown} alignment figures.
+    requirement_rubric_after: list[dict[str, Any]] | None
+    alignment: dict[str, Any] | None
 
     # --- chat --------------------------------------------------------------
     # A change the chat proposed (re-run, profile update), waiting at the
