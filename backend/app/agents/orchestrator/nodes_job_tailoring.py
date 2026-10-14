@@ -47,6 +47,7 @@ from app.agents.scoring_agent import (
     eligibility_questions,
 )
 from app.models.schemas import CompatibilityReport, VerifierResult
+from app.services.bullet_index import index_cv_bullets as _index_cv_bullets
 from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
 from app.services.verifier import issue_notes, retry_feedback, verify_rewrites
 
@@ -161,28 +162,12 @@ def _required_skills(job_data: dict[str, Any] | None) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Bullet identity
 #
-# Every bullet-like string in the CV gets a stable id of the form
-# "<section>.<entry_idx>.<field>.<idx>" (or "summary" for the top-level
-# summary). The id survives selection -> rewrite -> merge so a rewrite is
-# matched to its source bullet even if the model's echoed `original` text
-# drifts slightly, and so the UI can address individual bullets for
-# accept/keep-original/custom decisions.
-#
-# Field coverage mirrors what `resume_adapter.build_harvard_sections` (the
-# LaTeX renderer's input) actually reads, so every id here is guaranteed to
-# land somewhere in the generated PDF.
+# Every bullet-like string in the CV gets a stable id (built by
+# app.services.bullet_index). The id survives selection -> rewrite -> merge so
+# a rewrite is matched to its source bullet even if the model's echoed
+# `original` text drifts slightly, and so the UI can address individual
+# bullets for accept/keep-original/custom decisions.
 # --------------------------------------------------------------------------- #
-
-_BULLET_FIELDS_BY_SECTION: dict[str, tuple[str, ...]] = {
-    "experience": ("responsibilities",),
-    "projects": ("outcomes",),
-    "leadership_activities": ("highlights",),
-}
-_TEXT_FIELDS_BY_SECTION: dict[str, tuple[str, ...]] = {
-    "projects": ("description",),
-    "leadership_activities": ("description",),
-}
-
 
 def _normalize_bullet_text(text: str) -> str:
     """Casefold, collapse whitespace, strip trailing punctuation - used as a
@@ -190,56 +175,6 @@ def _normalize_bullet_text(text: str) -> str:
     the echoed original slightly."""
     collapsed = re.sub(r"\s+", " ", text).strip()
     return collapsed.rstrip(".,;: ").casefold()
-
-
-def _index_cv_bullets(cv_data: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
-    """
-    Build {bullet_id: {section, entry_idx, field, idx, text}} for every
-    bullet/description string in the CV, plus the top-level summary.
-    """
-    index: dict[str, dict[str, Any]] = {}
-    if not isinstance(cv_data, dict):
-        return index
-
-    for section, fields in _BULLET_FIELDS_BY_SECTION.items():
-        entries = cv_data.get(section)
-        if not isinstance(entries, list):
-            continue
-        for entry_idx, entry in enumerate(entries):
-            if not isinstance(entry, dict):
-                continue
-            for field in fields:
-                values = entry.get(field)
-                if not isinstance(values, list):
-                    continue
-                for idx, text in enumerate(values):
-                    if not isinstance(text, str) or not text.strip():
-                        continue
-                    bullet_id = f"{section}.{entry_idx}.{field}.{idx}"
-                    index[bullet_id] = {
-                        "section": section,
-                        "entry_idx": entry_idx,
-                        "field": field,
-                        "idx": idx,
-                        "text": text,
-                    }
-            for field in _TEXT_FIELDS_BY_SECTION.get(section, ()):
-                text = entry.get(field)
-                if isinstance(text, str) and text.strip():
-                    bullet_id = f"{section}.{entry_idx}.{field}"
-                    index[bullet_id] = {
-                        "section": section,
-                        "entry_idx": entry_idx,
-                        "field": field,
-                        "idx": None,
-                        "text": text,
-                    }
-
-    summary = cv_data.get("summary")
-    if isinstance(summary, str) and summary.strip():
-        index["summary"] = {"section": "summary", "entry_idx": None, "field": "summary", "idx": None, "text": summary}
-
-    return index
 
 
 def _bullet_index_prompt_block(bullet_index: dict[str, dict[str, Any]]) -> str:
