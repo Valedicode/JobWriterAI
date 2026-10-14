@@ -25,7 +25,7 @@ Key Features:
 # sequencing explicitly via graph nodes that invoke the @tool functions in
 # this module directly.
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from app.openai_llm import chat_openai_mini
 from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
 import json
@@ -40,6 +40,7 @@ from app.models.schemas import (
     JobSummary,
     SelectedContent,
     RewrittenContent,
+    BulletRewrite,
 )
 from app.agents.scoring_agent import (
     calculate_semantic_similarity,
@@ -91,7 +92,7 @@ def analyze_cv_job_alignment(cv_json: str, job_json: str) -> str:
         >>> plan = analyze_cv_job_alignment(cv_data, job_data)
         >>> # Returns detailed plan with matching experiences, skills, keywords, etc.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_openai_mini(temperature=0)
     structured_llm = llm.with_structured_output(CVTailoringPlan)
     
     prompt = ChatPromptTemplate.from_messages([
@@ -170,7 +171,7 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
         - Schlussteil: Motivation summary, request for interview
         - Grußformel: Formal valediction
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.4)
+    llm = chat_openai_mini(temperature=0.4)
     structured_llm = llm.with_structured_output(CoverLetterContent)
 
     # Build context with optional company info
@@ -430,7 +431,7 @@ def generate_job_summary(job_json: str) -> str:
         - preferred_skills: Nice-to-have skills
         - key_notes: Other important points
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_openai_mini(temperature=0)
     structured_llm = llm.with_structured_output(JobSummary)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -665,7 +666,12 @@ def decide_tailoring_strategy(compatibility_score_json: str, cv_json: str, job_j
     return json.dumps(_build_directives_from_report(report), indent=2)
 
 @tool
-def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_json: str) -> str:
+def select_prioritize_content(
+    cv_json: str,
+    job_json: str,
+    tailoring_strategy_json: str,
+    bullet_index_block: str = "",
+) -> str:
     """
     Select and prioritize the most relevant resume content based on job requirements.
 
@@ -673,17 +679,21 @@ def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_js
         cv_json: ResumeInfo JSON string
         job_json: JobRequirements JSON string
         tailoring_strategy_json: JSON string from decide_tailoring_strategy
+        bullet_index_block: Numbered "[bullet_id] text" list of every bullet
+            in the CV. When provided, each selected bullet must echo the
+            matching bullet_id verbatim so downstream steps can address it.
 
     Returns:
         JSON string with selected bullets, recommended section order, and emphasis plan
-        (fields: selected_bullets, section_order, sections_to_emphasize, items_to_de_emphasize)
+        (fields: selected_bullets[{section, original_text, relevance_score, reason, bullet_id}],
+         section_order, sections_to_emphasize, items_to_de_emphasize)
     """
     try:
         strategy_data = json.loads(tailoring_strategy_json)
         focus_areas: List[str] = strategy_data.get("focus_areas", [])
         directives: List[str] = strategy_data.get("directives", [])
 
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        llm = chat_openai_mini(temperature=0)
         structured_llm = llm.with_structured_output(SelectedContent)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -694,11 +704,23 @@ def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_js
                 "- Only work with content that EXISTS in the CV — do not invent bullets.\n"
                 "- Score each bullet 0–1 for relevance to the job requirements.\n"
                 "- Recommend a section ordering that puts the most impactful sections first.\n"
-                "- Mark low-value items for de-emphasis (do not delete — the candidate reviews first)."
+                "- Mark low-value items for de-emphasis (do not delete — the candidate reviews first).\n"
+                "- A numbered bullet index (`[bullet_id] text`) may be provided below. When it is, "
+                "set `bullet_id` on every selected bullet to the exact id of the matching line — "
+                "never invent an id or alter its text.\n"
+                "- NEVER return an empty `selected_bullets` list if the CV has any bullets at all. "
+                "Even on a weak or poor fit, select the CV's best-available bullets (aim for at "
+                "least 3-5, or every bullet if the CV has fewer): the strongest, most quantified, "
+                "most senior-sounding ones, and ones that use ANY vocabulary adjacent to the job's "
+                "required/preferred skills, even loosely. Low relevance is still worth reporting as "
+                "a low `relevance_score` with an honest `reason` (e.g. 'no direct overlap, included "
+                "as the strongest available bullet') - it is never a reason to select nothing. The "
+                "user relies on this step to see their CV's best foot forward, not silence."
             )),
             ("user", (
                 "CV Data:\n{cv}\n\n"
                 "Job Data:\n{job}\n\n"
+                "Bullet Index:\n{bullet_index}\n\n"
                 "Focus Areas: {focus}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
                 "Select and prioritise the most relevant content."
@@ -709,6 +731,7 @@ def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_js
         result: SelectedContent = chain.invoke({
             "cv": cv_json,
             "job": job_json,
+            "bullet_index": bullet_index_block or "(not provided)",
             "focus": ", ".join(focus_areas),
             "directives": "\n".join(directives) if directives else "None provided."
         })
@@ -724,7 +747,13 @@ def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_js
         })
 
 @tool
-def rewrite_enhance_content(cv_json: str, job_json: str, selected_content_json: str, tailoring_strategy_json: str) -> str:
+def rewrite_enhance_content(
+    cv_json: str,
+    job_json: str,
+    selected_content_json: str,
+    tailoring_strategy_json: str,
+    locked_bullets_json: str = "[]",
+) -> str:
     """
     Rewrite and enhance resume content to emphasize job relevance.
 
@@ -733,17 +762,26 @@ def rewrite_enhance_content(cv_json: str, job_json: str, selected_content_json: 
         job_json: JobRequirements JSON string
         selected_content_json: JSON string from select_prioritize_content
         tailoring_strategy_json: JSON string from decide_tailoring_strategy
+        locked_bullets_json: JSON list of {bullet_id, original, rewritten,
+            confidence, keywords_added} for bullets the user has already
+            accepted in a previous pass. These must be echoed back verbatim,
+            unrewritten - only the remaining selected bullets are rewritten.
 
     Returns:
         JSON string with rewritten bullets, updated summary, and per-bullet confidence scores
-        (fields: rewritten_bullets[{original, rewritten, confidence, keywords_added}],
+        (fields: rewritten_bullets[{original, rewritten, confidence, keywords_added, bullet_id}],
          updated_summary, keywords_inserted)
     """
     try:
         strategy_data = json.loads(tailoring_strategy_json)
         directives: List[str] = strategy_data.get("directives", [])
+        try:
+            locked_bullets = json.loads(locked_bullets_json) or []
+        except json.JSONDecodeError:
+            locked_bullets = []
+        locked_ids = {b.get("bullet_id") for b in locked_bullets if isinstance(b, dict) and b.get("bullet_id")}
 
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+        llm = chat_openai_mini(temperature=0.3)
         structured_llm = llm.with_structured_output(RewrittenContent)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -757,14 +795,25 @@ def rewrite_enhance_content(cv_json: str, job_json: str, selected_content_json: 
                 "- Keep the candidate's authentic voice.\n"
                 "- Only enhance descriptions — do not replace their substance.\n"
                 "- For each bullet, report a confidence score (0–1) for how well the rewrite "
-                "matches the job, and list keywords actually added."
+                "matches the job, and list keywords actually added.\n"
+                "- Each selected bullet carries a `bullet_id`; copy it verbatim into the matching "
+                "rewrite's `bullet_id` field.\n"
+                "- Locked bullets (listed below, already approved by the user in an earlier pass) "
+                "must be echoed back UNCHANGED — do not rewrite them again, just include them as-is "
+                "in the output so the final list stays complete.\n"
+                "- Produce one entry in `rewritten_bullets` for EVERY bullet in Selected Content "
+                "(locked ones included). NEVER return an empty list when Selected Content is "
+                "non-empty. If a bullet has no obvious job keyword to weave in, still tighten its "
+                "wording and lead with a strong verb, and leave `keywords_added` empty for it — "
+                "that is a valid, honest result. Doing nothing to a selected bullet is not."
             )),
             ("user", (
                 "Original CV:\n{cv}\n\n"
                 "Job Requirements:\n{job}\n\n"
                 "Selected Content:\n{selected}\n\n"
+                "Locked Bullets (echo back unchanged):\n{locked}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
-                "Rewrite and enhance the content."
+                "Rewrite and enhance the content that is not locked."
             ))
         ])
 
@@ -773,8 +822,30 @@ def rewrite_enhance_content(cv_json: str, job_json: str, selected_content_json: 
             "cv": cv_json,
             "job": job_json,
             "selected": selected_content_json,
+            "locked": json.dumps(locked_bullets) if locked_bullets else "(none)",
             "directives": "\n".join(directives) if directives else "None provided."
         })
+
+        # Belt-and-braces: force locked bullets back into the result verbatim
+        # even if the model's echo drifted, then de-dupe by bullet_id/text.
+        by_key: dict[str, Any] = {}
+        for b in result.rewritten_bullets:
+            key = b.bullet_id or b.original
+            by_key[key] = b
+        for locked in locked_bullets:
+            if not isinstance(locked, dict):
+                continue
+            key = locked.get("bullet_id") or locked.get("original")
+            if key:
+                by_key[key] = BulletRewrite(**{
+                    "original": locked.get("original", ""),
+                    "rewritten": locked.get("rewritten", locked.get("original", "")),
+                    "confidence": float(locked.get("confidence", 1.0)),
+                    "keywords_added": locked.get("keywords_added", []) or [],
+                    "bullet_id": locked.get("bullet_id"),
+                })
+        result.rewritten_bullets = list(by_key.values())
+
         return result.model_dump_json()
 
     except Exception as e:

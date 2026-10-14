@@ -26,7 +26,7 @@ Data Models:
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from app.openai_llm import chat_openai_mini
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.document_loaders import WebBaseLoader
 from langchain_tavily import TavilySearch
@@ -37,6 +37,87 @@ from app.models.schemas import JobRequirements, CompanyInfo
 import dotenv
 
 dotenv.load_dotenv()
+
+# --------------------------------------------------------------------------- #
+# Shared extraction prompt
+#
+# Postings routinely phrase requirements as OR-alternatives ("Java and
+# WildFly/Quarkus/Spring Boot") or explicitly say some skills are trainable
+# on the job ("was Du noch nicht kennst, lernst Du bei uns"). A flat
+# required_skills list that ignores both reads those postings far too
+# strictly: a candidate with Java + Spring Boot only, correctly missing
+# WildFly and Quarkus, would otherwise show 2 of 4 "genuine gaps" for a
+# requirement they in fact fully satisfy. The extraction step is the only
+# place this nuance can be captured - by the time it's a flat skill list,
+# the "or" and "we'll train you" framing is already lost.
+# --------------------------------------------------------------------------- #
+
+_JOB_EXTRACTION_SYSTEM_PROMPT = """Extract structured job information from the provided job posting. \
+Focus on identifying all required skills, responsibilities, qualifications, and key requirements.
+
+Skill requirements need careful reading, not a flat keyword dump:
+
+1. OR-alternatives: when a posting lists a group of interchangeable options \
+(separated by "/", "or", "oder", or phrasing like "one of the following"), \
+that is ONE requirement satisfied by ANY ONE of them - not every item in the \
+list. Example: "Java and WildFly/Quarkus/Spring Boot" is two requirements: \
+Java (mandatory), and a JVM framework (any one of WildFly, Quarkus, Spring \
+Boot). Record this as a group in `required_skill_groups`: each inner list is \
+one requirement, its items are the interchangeable alternatives. A required \
+skill with no stated alternative is still its own single-item group (e.g. \
+["Java"]). Put the union of every group's members into `required_skills` as \
+before, for display - `required_skill_groups` is what makes the OR meaning \
+explicit for scoring.
+2. Classify by INTENT, not by keyword-spotting a skill name. For every skill \
+mentioned, read the actual sentence around it and ask: does this sentence \
+assert the candidate already POSSESSES the skill today, or does it merely \
+express willingness, aspiration, curiosity, or a future learning opportunity \
+around it? Only the first is a hard requirement. Phrasing patterns that mean \
+"optional, not required" even when the skill name itself sounds important: \
+   a. Employer will teach it: "was Du noch nicht kennst, lernst Du bei uns", \
+      "training provided", "you'll learn on the job", "no prior experience \
+      needed with X", "we'll get you up to speed on X".\
+   b. Candidate's willingness/enthusiasm is what's asked for, not possession: \
+      "eager to learn Java", "excited to work with X", "willingness to learn \
+      X", "curiosity for X", "you enjoy picking up new tools like X", \
+      "interest in X is a plus". These are asking for an attitude, not \
+      proof of the skill - the skill named is a bonus if already held, never \
+      a day-one must-have.\
+   c. Explicit softeners anywhere near a skill: "nice to have", "a plus", \
+      "bonus", "ideally", "would be great if", "no experience necessary".\
+   Any skill whose sentence matches (a), (b), or (c) belongs in \
+   `preferred_skills`, not `required_skills` / `required_skill_groups` - even \
+   when it's named in the same sentence, or the same skill/framework list, as \
+   a genuinely required skill. Conversely, do not soften a skill that IS \
+   stated as a firm possession requirement ("must have X", "several years of \
+   X", "solid experience with X", "proficiency in X") just because a nearby, \
+   different skill happens to be phrased optionally.
+3. Only skills the sentence asserts the candidate must already possess on \
+day one belong in `required_skills` / `required_skill_groups`. Everything \
+else - nice-to-haves, bonus skills, trainable skills, "eager to learn" \
+skills - belongs in `preferred_skills`. When genuinely unsure after reading \
+the sentence's intent, prefer `preferred_skills` - overstating a requirement \
+does more damage to a fair compatibility score than understating one.
+4. Job-position framing: read the exact title and how the role is described \
+(Werkstudent / working student, intern, junior, mid, senior, lead). The same \
+technology list is not the same bar on a student posting as on a Senior \
+Engineer posting. Do not inflate a junior/student role's listed stack into \
+hard day-one must-haves; do not drop a senior role's stated must-haves \
+because those tools also appear on junior postings.
+5. Languages and education are eligibility requirements, not skills. Put \
+spoken-language requirements (with the stated level, e.g. "German (C1)", \
+"English (fluent)", "Deutsch verhandlungssicher") into `required_languages` \
+only when the posting requires them; a language that is merely "a plus" is \
+not required and goes nowhere. Put degree, field-of-study, and enrollment \
+requirements ("enrolled student in Computer Science or a related field", \
+"Bachelor's in Engineering", "eingeschriebene/r Student/in der Informatik") \
+into `education_requirements`. Never list a language, a degree, or "student" \
+in `required_skills`, `preferred_skills`, or `required_skill_groups`.
+
+If the posting names a contact person, hiring manager, or recruiter to \
+address applications to, capture their name in recipient_name; otherwise \
+leave recipient_name empty."""
+
 
 @tool
 def retrieve_web(web_urls: list[str]) -> str:
@@ -53,9 +134,9 @@ def retrieve_web(web_urls: list[str]) -> str:
     loader = WebBaseLoader(web_urls)
     docs = loader.load()
     text_content = "\n\n".join([page.page_content for page in docs])
-    llm = ChatOpenAI(model="gpt-4o-mini")
+    llm = chat_openai_mini(temperature=None)
     prompt = ChatPromptTemplate.from_messages([
-       ("system", "Extract structured job information from the provided job posting. Focus on identifying all required skills, responsibilities, qualifications, and key requirements. If the posting names a contact person, hiring manager, or recruiter to address applications to, capture their name in recipient_name; otherwise leave recipient_name empty."),
+       ("system", _JOB_EXTRACTION_SYSTEM_PROMPT),
        ("user", "Here are the pages necessary for application {pages}")
     ])
     structured_llm = llm.with_structured_output(JobRequirements)
@@ -74,9 +155,9 @@ def retrieve_text(info: str) -> str:
     Returns:
         JSON string with structured job requirements information
     """
-    llm = ChatOpenAI(model="gpt-4o-mini")
+    llm = chat_openai_mini(temperature=None)
     prompt = ChatPromptTemplate.from_messages([
-       ("system", "Extract structured job information from the provided input text. Focus on identifying all required skills, responsibilities, qualifications, and key requirements. If the posting names a contact person, hiring manager, or recruiter to address applications to, capture their name in recipient_name; otherwise leave recipient_name empty."),
+       ("system", _JOB_EXTRACTION_SYSTEM_PROMPT),
        ("user", "Here is the text necessary for application {text}")
     ])
     structured_llm = llm.with_structured_output(JobRequirements)
@@ -107,7 +188,7 @@ def collect_company_info(company_name: str) -> str:
         for result in search_results
     ])
 
-    llm = ChatOpenAI(model="gpt-4o-mini")
+    llm = chat_openai_mini(temperature=None)
     structured_llm = llm.with_structured_output(CompanyInfo)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Extract structured company information from the search results. Focus on identifying company values, culture, mission statement, industry, company size, products/services, and recent news that would be relevant for someone applying to this company."),
@@ -118,7 +199,7 @@ def collect_company_info(company_name: str) -> str:
     result = chain.invoke({"company_name": company_name, "search_results": formatted_results})
     return result.model_dump_json(indent=2)
 
-llm = ChatOpenAI(model="gpt-4o-mini")
+llm = chat_openai_mini(temperature=None)
 system_prompt = """You are a job analysis assistant. Your role is to help users gather comprehensive information about job postings and companies.
 
 Your available tools:

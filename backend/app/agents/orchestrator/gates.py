@@ -21,6 +21,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+BulletDecisionChoice = Literal["accept", "keep_original", "custom", "include", "exclude"]
+
+
+class BulletDecision(BaseModel):
+    """Per-bullet decision attached to a gate resolution's `decisions` map."""
+
+    choice: BulletDecisionChoice
+    text: str | None = None
+
 
 # --------------------------------------------------------------------------- #
 # Enums
@@ -118,6 +127,14 @@ class GateResolution(BaseModel):
         description=(
             "Selected option for kind='choice' gates. Required when action='choose'; "
             "must be one of the GatePayload.choices values."
+        ),
+    )
+    decisions: dict[str, BulletDecision] | None = Field(
+        default=None,
+        description=(
+            "Per-bullet decisions keyed by bullet_id, for approve_selection "
+            "and approve_rewrite gates. Bullets with no entry default to "
+            "'accept'/'include'."
         ),
     )
 

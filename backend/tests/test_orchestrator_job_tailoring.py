@@ -361,3 +361,337 @@ def test_discovery_flow_routes_to_stub(graph, patched_tools):
 # NOTE: the previous test asserted cv_review routed to a stub. The cv_review
 # branch is now a full 6-step graph; coverage moved to
 # tests/test_orchestrator_cv_review.py.
+
+
+# --------------------------------------------------------------------------- #
+# Phase 1: bullet identity - robust merge, unplaced warnings, summary merge
+# --------------------------------------------------------------------------- #
+
+def test_rewrite_merges_by_bullet_id_even_when_echoed_text_drifts(graph, patched_tools):
+    """A rewrite whose original text drifts from the CV (extra period) must
+    still land in the PDF-bound cv_data, because bullet_id is authoritative."""
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-drift-merge"}}
+    selected_with_id = {
+        "selected_bullets": [
+            {"section": "experience", "original_text": "Designed the first algorithm",
+             "relevance_score": 0.92, "reason": "matches", "bullet_id": "experience.0.responsibilities.0"},
+        ],
+        "section_order": ["experience"],
+        "sections_to_emphasize": [],
+        "items_to_de_emphasize": [],
+    }
+    rewritten_with_id = {
+        "rewritten_bullets": [
+            {
+                "original": "Designed the first algorithm.",  # drifted: trailing period added
+                "rewritten": "Designed and validated the first published algorithm.",
+                "confidence": 0.9,
+                "keywords_added": [],
+                "bullet_id": "experience.0.responsibilities.0",
+            }
+        ],
+        "updated_summary": "",
+        "keywords_inserted": [],
+    }
+
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
+        _fake_tool(lambda _: json.dumps(selected_with_id)),
+    ), _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fake_tool(lambda _: json.dumps(rewritten_with_id)),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_rewrite
+
+    state = graph.get_state(config).values
+    merged_bullet = state["cv_data"]["experience"][0]["responsibilities"][0]
+    assert merged_bullet.startswith("Designed and validated the first published algorithm")
+
+
+def test_rewrite_with_unmatchable_bullet_is_dropped_and_narrated(graph, patched_tools):
+    """A rewrite that matches nothing in the CV must not silently vanish -
+    it is skipped and reported in the assembly narration."""
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-unplaced"}}
+    rewritten_bogus = {
+        "rewritten_bullets": [
+            {
+                "original": "This text does not exist anywhere in the CV",
+                "rewritten": "Fabricated rewrite",
+                "confidence": 0.5,
+                "keywords_added": [],
+                "bullet_id": "experience.99.responsibilities.0",
+            }
+        ],
+        "updated_summary": "",
+        "keywords_inserted": [],
+    }
+
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fake_tool(lambda _: json.dumps(rewritten_bogus)),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_rewrite
+
+    state = graph.get_state(config).values
+    # Original CV text is untouched.
+    assert state["cv_data"]["experience"][0]["responsibilities"][0] == "Designed the first algorithm"
+    # step6's narration (about the unplaced rewrite) is superseded by step7's
+    # as `last_narration`, but it must still be in the message transcript.
+    message_texts = [getattr(m, "content", "") for m in state["messages"]]
+    assert any("could not be matched" in t for t in message_texts)
+
+
+def test_updated_summary_is_applied_to_cv_data(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-updated-summary"}}
+    rewritten_with_summary = dict(REWRITTEN)
+    rewritten_with_summary["updated_summary"] = "Python engineer with a strong algorithms background."
+
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fake_tool(lambda _: json.dumps(rewritten_with_summary)),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)
+
+    state = graph.get_state(config).values
+    assert state["cv_data"]["summary"] == "Python engineer with a strong algorithms background."
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: per-bullet decisions on the selection and rewrite gates
+# --------------------------------------------------------------------------- #
+
+TWO_BULLET_CV = {
+    **CV,
+    "experience": [
+        {
+            "position": "Engineer",
+            "company": "Analytical Engines Ltd.",
+            "responsibilities": [
+                "Designed the first algorithm",
+                "Wrote technical notes",
+            ],
+        }
+    ],
+}
+
+TWO_BULLET_REWRITTEN = {
+    "rewritten_bullets": [
+        {
+            "original": "Designed the first algorithm",
+            "rewritten": "Designed and validated the first published algorithm.",
+            "confidence": 0.9,
+            "keywords_added": ["Python"],
+            "bullet_id": "experience.0.responsibilities.0",
+        },
+        {
+            "original": "Wrote technical notes",
+            "rewritten": "Authored technical documentation adopted company-wide.",
+            "confidence": 0.8,
+            "keywords_added": [],
+            "bullet_id": "experience.0.responsibilities.1",
+        },
+    ],
+    "updated_summary": "",
+    "keywords_inserted": ["Python"],
+}
+
+
+def test_approve_rewrite_keep_original_decision_reverts_one_bullet(graph, patched_tools):
+    """Approving with a keep_original decision on one bullet must leave that
+    bullet untouched while the other bullets rewrite still lands."""
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-keep-original"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fake_tool(lambda _: json.dumps(TWO_BULLET_REWRITTEN)),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
+        graph.invoke(
+            Command(resume={
+                "action": "approve",
+                "decisions": {
+                    "experience.0.responsibilities.0": {"choice": "keep_original"},
+                },
+            }),
+            config=config,
+        )  # approve_rewrite
+
+    state = graph.get_state(config).values
+    responsibilities = state["cv_data"]["experience"][0]["responsibilities"]
+    assert responsibilities[0] == "Designed the first algorithm"
+    assert responsibilities[1].startswith("Authored technical documentation")
+
+
+def test_approve_rewrite_custom_text_decision_overrides_rewrite(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-custom-text"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fake_tool(lambda _: json.dumps(TWO_BULLET_REWRITTEN)),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)
+        graph.invoke(
+            Command(resume={
+                "action": "approve",
+                "decisions": {
+                    "experience.0.responsibilities.1": {"choice": "custom", "text": "My own wording."},
+                },
+            }),
+            config=config,
+        )
+
+    state = graph.get_state(config).values
+    responsibilities = state["cv_data"]["experience"][0]["responsibilities"]
+    assert responsibilities[1] == "My own wording."
+
+
+def test_edit_at_approve_rewrite_locks_accepted_bullets(graph, patched_tools):
+    """Editing with an explicit accept decision on one bullet must pass that
+    bullet to the next rewrite call as a locked bullet (not regenerated)."""
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-edit-locks"}}
+    seen_locked: list[list[dict[str, Any]]] = []
+
+    def _rewrite_stub(kwargs):
+        seen_locked.append(json.loads(kwargs.get("locked_bullets_json", "[]")))
+        return json.dumps(TWO_BULLET_REWRITTEN)
+
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fake_tool(_rewrite_stub),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection -> step5 runs once
+        graph.invoke(
+            Command(resume={
+                "action": "edit",
+                "feedback": "Make the second bullet punchier.",
+                "decisions": {
+                    "experience.0.responsibilities.0": {"choice": "accept"},
+                },
+            }),
+            config=config,
+        )  # approve_rewrite -> loops back to step5, which runs again
+
+    # Second invocation of step5 (index 1) should have received the locked bullet.
+    assert len(seen_locked) == 2
+    locked_ids = {b.get("bullet_id") for b in seen_locked[1]}
+    assert "experience.0.responsibilities.0" in locked_ids
+
+
+def test_approve_selection_exclude_decision_drops_bullet(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-exclude-selection"}}
+    two_selected = {
+        "selected_bullets": [
+            {"section": "experience", "original_text": "Designed the first algorithm",
+             "relevance_score": 0.92, "reason": "", "bullet_id": "experience.0.responsibilities.0"},
+            {"section": "experience", "original_text": "Wrote technical notes",
+             "relevance_score": 0.5, "reason": "", "bullet_id": "experience.0.responsibilities.1"},
+        ],
+        "section_order": ["experience"],
+        "sections_to_emphasize": [],
+        "items_to_de_emphasize": [],
+    }
+
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
+        _fake_tool(lambda _: json.dumps(two_selected)),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        graph.invoke(
+            Command(resume={
+                "action": "approve",
+                "decisions": {
+                    "experience.0.responsibilities.1": {"choice": "exclude"},
+                },
+            }),
+            config=config,
+        )  # approve_selection
+
+    state = graph.get_state(config).values
+    remaining_ids = {b["bullet_id"] for b in state["selected_content"]["selected_bullets"]}
+    assert remaining_ids == {"experience.0.responsibilities.0"}
+
+
+# --------------------------------------------------------------------------- #
+# Regression: selection/rewrite must never silently return nothing
+#
+# Observed live: a weak CV/job match caused the LLM to return
+# selected_bullets=[] and rewritten_bullets=[], so the entire tailoring pass
+# was a no-op with no explanation - the user saw "Top bullets: 0" /
+# "Bullets rewritten: 0" and the chat then falsely claimed the CV was
+# "tailored well". These tests pin the code-level fallback that guarantees
+# some real content survives even when the model returns nothing.
+# --------------------------------------------------------------------------- #
+
+def test_selection_falls_back_to_cv_bullets_when_model_returns_nothing(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-selection-empty-fallback"}}
+    empty_selection = {
+        "selected_bullets": [],
+        "section_order": [],
+        "sections_to_emphasize": [],
+        "items_to_de_emphasize": [],
+    }
+
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
+        _fake_tool(lambda _: json.dumps(empty_selection)),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "approve_selection"
+    # A weak match must still surface the CV's own bullets, never zero.
+    assert len(payload["preview"]["selected_bullets"]) > 0
+    assert all(b.get("bullet_id") for b in payload["preview"]["selected_bullets"])
+
+
+def test_rewrite_falls_back_to_original_text_when_model_returns_nothing(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-rewrite-empty-fallback"}}
+    empty_rewrite = {"rewritten_bullets": [], "updated_summary": "", "keywords_inserted": []}
+
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.rewrite_enhance_content",
+        _fake_tool(lambda _: json.dumps(empty_rewrite)),
+    ):
+        graph.invoke({"flow": "job_tailoring", "cv_data": CV, "job_data": JOB}, config=config)
+        graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
+
+    payload = _interrupt_payload(result)
+    assert payload["step"] == "approve_rewrite"
+    # The selected bullet must still show up, unchanged, rather than an empty list.
+    rewrites = payload["preview"]["rewritten_bullets"]
+    assert len(rewrites) > 0
+    assert rewrites[0]["rewritten"] == rewrites[0]["original"]

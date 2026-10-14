@@ -37,8 +37,11 @@ human-in-the-loop gates**. Instead of a black-box "tailor my resume" button,
 the flow advances through discrete, inspectable stages — compatibility score →
 bullet selection → rewrite → CV assembly → cover letter — and stops at each gate
 so the user can **approve, edit with feedback, or reject** before the next stage
-runs. Each gate ships a typed `narration` and `preview` of exactly what is
-being proposed. A neighboring "AI resume builder" cannot truthfully claim this
+runs. On the bullet-selection and bullet-rewrite gates, approval is **per
+bullet** — include/exclude a selected bullet, or accept/keep-original/rewrite
+each proposed rewrite individually — not just an all-or-nothing batch decision.
+Each gate ships a typed `narration` and `preview` of exactly what is being
+proposed. A neighboring "AI resume builder" cannot truthfully claim this
 staged, reviewable, feedback-incorporating transformation; most competitors
 return a finished document in one shot.
 
@@ -48,8 +51,15 @@ return a finished document in one shot.
   optionally add a job description (URL or pasted text), start analysis, then
   work through a chat-style interface where structured gate panels appear above
   a free-text input.
-- Free-text chat during a pending gate is folded by the backend into that
-  gate's "edit" feedback when the gate allows edits.
+- Free-text chat is answered by a small conversational model that reads the
+  current gate and either replies in place (leaving the gate pending, for
+  questions and comments) or resolves the gate with the action the message
+  clearly requested (approve/reject/choose/edit) — it is not limited to
+  folding every message into "edit" feedback, and it never resumes the graph
+  with an action the gate doesn't actually allow.
+- Every step's narration (job summary, compatibility breakdown, strategy, ...)
+  is shown in the chat as it is produced, not only the text attached to
+  whichever gate the run happens to stop on.
 - Voice input is available in the chat: recordings are transcribed and
   auto-translated to English before insertion.
 - Output PDFs are rendered from LaTeX templates via Tectonic (or `pdflatex`),

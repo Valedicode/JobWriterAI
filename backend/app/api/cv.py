@@ -7,6 +7,7 @@ Provides endpoints for CV extraction, ambiguity identification, and clarificatio
 from fastapi import APIRouter, HTTPException, status, UploadFile, File
 from pathlib import Path
 import json
+import logging
 import uuid
 from typing import Optional
 
@@ -25,6 +26,7 @@ from app.agents.cv_agent import (
 )
 
 router = APIRouter(prefix="/api/cv", tags=["CV Agent"])
+logger = logging.getLogger(__name__)
 
 # Configure upload directory (only used for legacy /extract endpoint)
 UPLOAD_DIR = Path(__file__).parent.parent.parent / "uploads"
@@ -159,6 +161,7 @@ async def upload_cv(file: UploadFile = File(...)):
                 detail=f"Failed to parse CV data: {str(e)}"
             )
         except Exception as e:
+            logger.exception("CV upload: extraction failed")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Error processing CV: {str(e)}"
@@ -167,6 +170,7 @@ async def upload_cv(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception("CV upload: unexpected error")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unexpected error during CV upload: {str(e)}"

@@ -5,7 +5,7 @@
  * Falls back to a reject button only when 'reject' is in allowed_actions.
  */
 
-import type { OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
+import type { BulletDecision, OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
 import { humanizeStep } from './gateFormat';
 
 interface ChoiceGateProps {
@@ -13,7 +13,7 @@ interface ChoiceGateProps {
   isLoading: boolean;
   onSubmit: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string }
+    opts?: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> }
   ) => void | Promise<void>;
 }
 

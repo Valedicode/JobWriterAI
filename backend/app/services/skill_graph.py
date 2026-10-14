@@ -145,6 +145,24 @@ def best_family_match(
     return None
 
 
+@lru_cache(maxsize=2048)
+def surface_forms(skill: str) -> Tuple[str, ...]:
+    """
+    Every spelling a skill may appear under in free text: the raw normalized
+    form, the alias-resolved canonical form, and every alias that resolves to
+    that canonical form (so 'Node.js' also yields 'nodejs', 'node', 'node.js').
+    """
+    base = _basic_normalize(skill)
+    if not base:
+        return tuple()
+    canonical = normalize(skill)
+    forms = {base, canonical}
+    for alias, target in _alias_map().items():
+        if target == canonical:
+            forms.add(alias)
+    return tuple(sorted(forms, key=len, reverse=True))
+
+
 def list_known_skills() -> List[str]:
     """Flat list of every member skill across all families (normalized)."""
     return list(_member_to_family().keys())

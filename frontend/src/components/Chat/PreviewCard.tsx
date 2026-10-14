@@ -7,12 +7,22 @@
  * ever dumped as raw JSON.
  */
 
-import type { OrchestratorGatePayload } from '@/types';
+import { useState } from 'react';
+import type { BulletDecision, OrchestratorGatePayload } from '@/types';
 import { humanizeKey } from './gateFormat';
 
 type PreviewMap = Record<string, unknown>;
 
-interface PreviewCardProps {
+/** Per-bullet decision state, keyed by bullet_id, lifted up to ApprovalGate
+ * so it can be sent back as part of the gate resolution. Bullets with no
+ * `bullet_id` (older backend, or an id the model could not match) render
+ * read-only and always take the default action. */
+interface DecisionProps {
+  decisions?: Record<string, BulletDecision>;
+  onDecisionChange?: (bulletId: string, decision: BulletDecision | null) => void;
+}
+
+interface PreviewCardProps extends DecisionProps {
   gate: OrchestratorGatePayload;
 }
 
@@ -94,21 +104,71 @@ const MiniCard = ({ children }: { children: React.ReactNode }) => (
   <li className="rounded-lg border border-border bg-surface-sunken/60 p-2.5">{children}</li>
 );
 
+/** Small pill-button toggle used for both include/exclude and rewrite
+ * accept/keep-original/custom decisions. */
+const ToggleButton = ({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className={`rounded-full border px-2.5 py-1 text-label font-medium transition ${
+      active
+        ? 'border-primary bg-primary text-primary-fg'
+        : 'border-border-strong text-ink-muted hover:bg-surface-sunken'
+    }`}
+  >
+    {children}
+  </button>
+);
+
 // --------------------------------------------------------------------------
 // Job-tailoring step shapes (bespoke)
 // --------------------------------------------------------------------------
+
+interface ScoreSkillMatch {
+  required_skill?: string;
+  matched_with?: string | null;
+  is_required?: boolean;
+}
+
+interface ScoreEligibility {
+  requirement?: string;
+  kind?: string;
+  status?: 'met' | 'unclear' | 'unmet' | string;
+  rationale?: string;
+}
 
 interface ScorePreview {
   aggregate_score?: number;
   level?: string;
   dimensions?: Array<{ name: string; score: number; weight: number }>;
   gap_analysis?: {
-    matched_skills?: unknown[];
-    transferable_skills?: unknown[];
-    missing_skills?: unknown[];
+    matched_skills?: ScoreSkillMatch[];
+    transferable_skills?: ScoreSkillMatch[];
+    missing_skills?: ScoreSkillMatch[];
+    eligibility?: ScoreEligibility[];
   };
   interpretation?: string;
+  warnings?: string[];
 }
+
+const skillNames = (items: unknown, required: boolean) =>
+  asArray<ScoreSkillMatch>(items)
+    .filter((m) => m && m.required_skill && (m.is_required ?? true) === required)
+    .map((m) => m.required_skill as string);
+
+const eligibilityTone: Record<string, string> = {
+  met: 'bg-success-surface text-success-text border-success-border',
+  unmet: 'bg-warning-surface text-warning-text border-warning-border',
+  unclear: 'bg-surface-sunken text-ink-muted border-border',
+};
 
 function PresentScore({ preview }: { preview: PreviewMap }) {
   const p = preview as ScorePreview;
@@ -116,6 +176,10 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
   const level = p.level ?? 'unknown';
   const dimensions = Array.isArray(p.dimensions) ? p.dimensions : [];
   const gap = p.gap_analysis ?? {};
+  const missingRequired = skillNames(gap.missing_skills, true);
+  const missingPreferred = skillNames(gap.missing_skills, false);
+  const eligibility = asArray<ScoreEligibility>(gap.eligibility).filter((e) => e && e.requirement);
+  const warnings = asArray<string>(p.warnings).filter((w) => typeof w === 'string' && w);
   return (
     <div>
       <Section title="Score">
@@ -163,7 +227,47 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
           <span>Transferable {(gap.transferable_skills || []).length}</span>
           <span>Missing {(gap.missing_skills || []).length}</span>
         </div>
+        {missingRequired.length > 0 && (
+          <p className="mt-2 text-sm text-ink [overflow-wrap:anywhere]">
+            <span className="font-medium">Missing required:</span> {missingRequired.join(', ')}
+          </p>
+        )}
+        {missingPreferred.length > 0 && (
+          <p className="mt-1 text-sm text-ink-muted [overflow-wrap:anywhere]">
+            <span className="font-medium">Missing nice-to-haves:</span> {missingPreferred.join(', ')}
+          </p>
+        )}
       </Section>
+      {eligibility.length > 0 && (
+        <Section title="Eligibility">
+          <ul className="space-y-1.5">
+            {eligibility.map((e, i) => {
+              const status = String(e.status ?? 'unclear');
+              const tone = eligibilityTone[status] ?? eligibilityTone.unclear;
+              return (
+                <li key={`${e.requirement}-${i}`} className="flex items-start gap-2 text-sm">
+                  <span
+                    className={`mt-0.5 inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-label font-medium capitalize ${tone}`}
+                  >
+                    {status === 'unmet' ? 'not met' : status}
+                  </span>
+                  <span className="min-w-0 text-ink [overflow-wrap:anywhere]">
+                    {e.requirement}
+                    {e.rationale ? (
+                      <span className="block text-ink-muted">{e.rationale}</span>
+                    ) : null}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </Section>
+      )}
+      {warnings.length > 0 && (
+        <Section title="Note">
+          <Bullets items={warnings} />
+        </Section>
+      )}
       {p.interpretation && (
         <Section title="Interpretation">
           <p className="text-body text-ink [overflow-wrap:anywhere]">{p.interpretation}</p>
@@ -173,17 +277,23 @@ function PresentScore({ preview }: { preview: PreviewMap }) {
   );
 }
 
+interface SelectionBullet {
+  section: string;
+  original_text: string;
+  relevance_score: number;
+  reason?: string;
+  bullet_id?: string | null;
+}
+
 interface SelectionPreview {
-  selected_bullets?: Array<{ section: string; original_text: string; relevance_score: number }>;
+  selected_bullets?: SelectionBullet[];
   section_order?: string[];
   sections_to_emphasize?: string[];
 }
 
-function ApproveSelection({ preview }: { preview: PreviewMap }) {
+function ApproveSelection({ preview, decisions, onDecisionChange }: { preview: PreviewMap } & DecisionProps) {
   const p = preview as SelectionPreview;
-  const bullets = asArray<NonNullable<SelectionPreview['selected_bullets']>[number]>(
-    p.selected_bullets,
-  );
+  const bullets = asArray<SelectionBullet>(p.selected_bullets);
   const order = asArray<string>(p.section_order);
   const emphasis = asArray<string>(p.sections_to_emphasize);
   return (
@@ -207,19 +317,52 @@ function ApproveSelection({ preview }: { preview: PreviewMap }) {
         </Section>
       )}
       {bullets.length > 0 && (
-        <Section title={`Top bullets (${bullets.length})`}>
+        <Section title={`Selected bullets (${bullets.length})`}>
           <ul className="space-y-2">
-            {bullets.slice(0, 8).map((b, i) => (
-              <MiniCard key={i}>
-                <div className="text-meta uppercase tracking-[0.08em] tabular-nums text-ink-faint">
-                  {b?.section ?? '—'} · relevance{' '}
-                  {typeof b?.relevance_score === 'number' ? b.relevance_score.toFixed(2) : '?'}
-                </div>
-                <div className="mt-1 text-body text-ink [overflow-wrap:anywhere]">
-                  {b?.original_text ?? ''}
-                </div>
-              </MiniCard>
-            ))}
+            {bullets.map((b, i) => {
+              const bulletId = b?.bullet_id ?? null;
+              const isExcluded = bulletId ? decisions?.[bulletId]?.choice === 'exclude' : false;
+              return (
+                <MiniCard key={bulletId ?? i}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-meta uppercase tracking-[0.08em] tabular-nums text-ink-faint">
+                        {b?.section ?? '—'} · relevance{' '}
+                        {typeof b?.relevance_score === 'number' ? b.relevance_score.toFixed(2) : '?'}
+                      </div>
+                      <div
+                        className={`mt-1 text-body text-ink [overflow-wrap:anywhere] ${
+                          isExcluded ? 'text-ink-faint line-through' : ''
+                        }`}
+                      >
+                        {b?.original_text ?? ''}
+                      </div>
+                      {b?.reason && (
+                        <div className="mt-1 text-meta text-ink-faint [overflow-wrap:anywhere]">
+                          {b.reason}
+                        </div>
+                      )}
+                    </div>
+                    {bulletId && onDecisionChange && (
+                      <div className="flex shrink-0 gap-1.5">
+                        <ToggleButton
+                          active={!isExcluded}
+                          onClick={() => onDecisionChange(bulletId, null)}
+                        >
+                          Include
+                        </ToggleButton>
+                        <ToggleButton
+                          active={isExcluded}
+                          onClick={() => onDecisionChange(bulletId, { choice: 'exclude' })}
+                        >
+                          Exclude
+                        </ToggleButton>
+                      </div>
+                    )}
+                  </div>
+                </MiniCard>
+              );
+            })}
           </ul>
         </Section>
       )}
@@ -227,24 +370,130 @@ function ApproveSelection({ preview }: { preview: PreviewMap }) {
   );
 }
 
-interface RewritePreview {
-  rewritten_bullets?: Array<{
-    original: string;
-    rewritten: string;
-    confidence: number;
-    keywords_added?: string[];
-  }>;
-  keywords_inserted?: string[];
+interface RewriteBullet {
+  original: string;
+  rewritten: string;
+  confidence: number;
+  keywords_added?: string[];
+  bullet_id?: string | null;
 }
 
-function ApproveRewrite({ preview }: { preview: PreviewMap }) {
-  const p = preview as RewritePreview;
-  const bullets = asArray<NonNullable<RewritePreview['rewritten_bullets']>[number]>(
-    p.rewritten_bullets,
+interface RewritePreview {
+  rewritten_bullets?: RewriteBullet[];
+  updated_summary?: string;
+  keywords_inserted?: string[];
+  warnings?: string[];
+}
+
+/** One rewrite card with its own accept / keep-original / edit controls.
+ * Local `showEdit` state only toggles the inline textarea; the actual
+ * decision lives in the lifted `decisions` map so ApprovalGate can send it
+ * back with the resolution. */
+function RewriteBulletCard({
+  bullet,
+  decision,
+  onDecisionChange,
+}: {
+  bullet: RewriteBullet;
+  decision?: BulletDecision;
+  onDecisionChange?: (bulletId: string, decision: BulletDecision | null) => void;
+}) {
+  const [showEdit, setShowEdit] = useState(false);
+  const [draft, setDraft] = useState(decision?.choice === 'custom' ? decision.text ?? '' : bullet.rewritten);
+  const bulletId = bullet.bullet_id ?? null;
+  const choice = decision?.choice ?? 'accept';
+  const keywords = asArray<string>(bullet.keywords_added);
+
+  return (
+    <MiniCard>
+      <div className="flex items-start justify-between gap-3">
+        <div className="text-meta uppercase tracking-[0.08em] tabular-nums text-ink-faint">
+          confidence {typeof bullet.confidence === 'number' ? bullet.confidence.toFixed(2) : '?'}
+        </div>
+        {keywords.length > 0 && (
+          <div className="flex flex-wrap justify-end gap-1">
+            {keywords.map((k, i) => (
+              <Pill key={i}>{k}</Pill>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="mt-1.5">
+        {choice === 'keep_original' ? (
+          <div className="rounded bg-surface-sunken px-1.5 py-0.5 text-body text-ink [overflow-wrap:anywhere]">
+            {bullet.original}
+          </div>
+        ) : choice === 'custom' && !showEdit ? (
+          <Diff original={bullet.original} rewritten={decision?.text || bullet.rewritten} />
+        ) : (
+          <Diff original={bullet.original} rewritten={bullet.rewritten} />
+        )}
+      </div>
+      {showEdit && (
+        <div className="mt-2 space-y-1.5">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={2}
+            className="w-full rounded-lg border border-border-strong bg-surface px-2.5 py-1.5 text-body text-ink focus:border-primary focus:outline-none"
+          />
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                if (bulletId && onDecisionChange) {
+                  onDecisionChange(bulletId, { choice: 'custom', text: draft });
+                }
+                setShowEdit(false);
+              }}
+              className="rounded-full bg-primary px-3 py-1 text-label font-medium text-primary-fg"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowEdit(false)}
+              className="rounded-full border border-border-strong px-3 py-1 text-label font-medium text-ink-muted"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {bulletId && onDecisionChange && !showEdit && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          <ToggleButton active={choice === 'accept'} onClick={() => onDecisionChange(bulletId, null)}>
+            Accept rewrite
+          </ToggleButton>
+          <ToggleButton
+            active={choice === 'keep_original'}
+            onClick={() => onDecisionChange(bulletId, { choice: 'keep_original' })}
+          >
+            Keep original
+          </ToggleButton>
+          <ToggleButton active={choice === 'custom'} onClick={() => setShowEdit(true)}>
+            Edit
+          </ToggleButton>
+        </div>
+      )}
+    </MiniCard>
   );
+}
+
+function ApproveRewrite({ preview, decisions, onDecisionChange }: { preview: PreviewMap } & DecisionProps) {
+  const p = preview as RewritePreview;
+  const bullets = asArray<RewriteBullet>(p.rewritten_bullets);
   const keywords = asArray<string>(p.keywords_inserted);
+  const warnings = asArray<string>(p.warnings);
   return (
     <div>
+      {p.updated_summary && (
+        <Section title="Updated summary">
+          <div className="rounded bg-added-surface px-1.5 py-0.5 text-body text-added-text [overflow-wrap:anywhere]">
+            {p.updated_summary}
+          </div>
+        </Section>
+      )}
       {keywords.length > 0 && (
         <Section title="Keywords woven in">
           <div className="flex flex-wrap gap-1.5">
@@ -254,17 +503,20 @@ function ApproveRewrite({ preview }: { preview: PreviewMap }) {
           </div>
         </Section>
       )}
+      {warnings.length > 0 && (
+        <Section title="Could not be placed">
+          <Bullets items={warnings} />
+        </Section>
+      )}
       <Section title={`Rewrites (${bullets.length})`}>
         <ul className="space-y-2">
-          {bullets.slice(0, 8).map((b, i) => (
-            <MiniCard key={i}>
-              <div className="text-meta uppercase tracking-[0.08em] tabular-nums text-ink-faint">
-                confidence {typeof b?.confidence === 'number' ? b.confidence.toFixed(2) : '?'}
-              </div>
-              <div className="mt-1.5">
-                <Diff original={b?.original} rewritten={b?.rewritten} />
-              </div>
-            </MiniCard>
+          {bullets.map((b, i) => (
+            <RewriteBulletCard
+              key={b?.bullet_id ?? i}
+              bullet={b}
+              decision={b?.bullet_id ? decisions?.[b.bullet_id] : undefined}
+              onDecisionChange={onDecisionChange}
+            />
           ))}
         </ul>
       </Section>
@@ -495,14 +747,18 @@ function StructuredPreview({ preview }: { preview: PreviewMap }) {
 
 // --------------------------------------------------------------------------
 
-export const PreviewCard = ({ gate }: PreviewCardProps) => {
+export const PreviewCard = ({ gate, decisions, onDecisionChange }: PreviewCardProps) => {
   switch (gate.step) {
     case 'present_score':
       return <PresentScore preview={gate.preview} />;
     case 'approve_selection':
-      return <ApproveSelection preview={gate.preview} />;
+      return (
+        <ApproveSelection preview={gate.preview} decisions={decisions} onDecisionChange={onDecisionChange} />
+      );
     case 'approve_rewrite':
-      return <ApproveRewrite preview={gate.preview} />;
+      return (
+        <ApproveRewrite preview={gate.preview} decisions={decisions} onDecisionChange={onDecisionChange} />
+      );
     case 'approve_cover_letter':
       return <ApproveCoverLetter preview={gate.preview} />;
     default:
