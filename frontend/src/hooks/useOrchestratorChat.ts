@@ -1,18 +1,15 @@
 /**
  * useOrchestratorChat - drives the LangGraph orchestrator from the UI.
  *
- * Differences from `useWriterChat`:
- *  - Sessions are created via POST /api/orchestrator/start, not /writer/chat/start.
+ *  - Sessions are created via POST /api/orchestrator/start.
  *  - The graph pauses on structured gates; the hook exposes the latest
  *    `pendingGate` so the UI can render an ApprovalGate or ChoiceGate.
  *  - `submitGateResolution(action, opts)` resumes the graph through the
- *    corresponding REST call. Free-text chat (`handleSendMessage`) is folded
- *    in by the backend as 'edit' feedback for the currently pending gate when
- *    the gate allows edits; otherwise the backend replies with the set of
- *    actions that are actually available.
- *
- * Shape matches useWriterChat closely so `page.tsx` can swap one for the other
- * behind a feature flag without UI churn.
+ *    corresponding REST call.
+ *  - Free-text chat (`handleSendMessage`) goes to the backend's chat agent,
+ *    which answers, answers the pending gate, changes one rewritten bullet,
+ *    or proposes a re-run / profile update. A proposal comes back as a
+ *    `confirm_change` gate; nothing changes until the user confirms it.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -226,13 +223,18 @@ export const useOrchestratorChat = ({
       // Echo a user-side message describing the action so the transcript
       // shows what was decided.
       const isQuestionGate = pendingGate?.step === 'confirm_eligibility';
+      const isConfirmGate = pendingGate?.step === 'confirm_change';
       const echoText =
         action === 'approve'
           ? isQuestionGate
             ? 'Skipped.'
-            : 'Approved.'
+            : isConfirmGate
+              ? 'Confirmed.'
+              : 'Approved.'
           : action === 'reject'
-            ? 'Rejected.'
+            ? isConfirmGate
+              ? 'Cancelled.'
+              : 'Rejected.'
             : action === 'edit'
               ? hasAnswers
                 ? `Answered: ${opts.feedback || ''}`
