@@ -2,6 +2,9 @@
 FastAPI application entry point
 """
 
+import logging
+from datetime import timedelta
+
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
 from contextlib import asynccontextmanager
@@ -14,21 +17,49 @@ from app.api import (
     orchestrator_router,
     writer_router,
 )
+from app.config import get_settings
 from app.services.generic_session_manager import get_session_manager
+from app.services.graph_checkpointer import (
+    configure_checkpointer,
+    expire_threads,
+    get_checkpointer,
+    postgres_checkpointer,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     Lifespan context manager for startup and shutdown events.
+
+    With DATABASE_URL set, orchestrator sessions are stored in Postgres and
+    survive restarts; a configured database that can't be reached stops
+    startup. Without it they live in memory only.
     """
-    # Startup: Initialize services
     print("\n" + "="*70)
     print("Starting JobWriterAI API...")
     print("="*70 + "\n")
+
+    settings = get_settings()
+    close_checkpointer = None
+    if settings.database_url:
+        saver, close_checkpointer = postgres_checkpointer(settings.database_url)
+        configure_checkpointer(saver)
+        logger.info("Orchestrator sessions are stored in Postgres.")
+    else:
+        logger.warning("DATABASE_URL is not set: orchestrator sessions live in memory and are lost on restart.")
+
+    expired = expire_threads(get_checkpointer(), timedelta(hours=settings.session_ttl_hours))
+    if expired:
+        logger.info("Deleted %d expired session(s) at startup.", len(expired))
+
     yield
-    # Shutdown: Cleanup
+
     print("\nShutting down JobWriterAI API...")
+    if close_checkpointer is not None:
+        close_checkpointer()
 
 
 app = FastAPI(

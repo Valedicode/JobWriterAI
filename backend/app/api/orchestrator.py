@@ -16,6 +16,7 @@ across requests. Per-session isolation is provided by the checkpointer.
 from __future__ import annotations
 
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, status
@@ -33,7 +34,9 @@ from app.models.schemas import (
     OrchestratorStartRequest,
     OrchestratorStateResponse,
 )
+from app.config import get_settings
 from app.services.generic_session_manager import get_session_manager
+from app.services.graph_checkpointer import expire_threads, get_checkpointer
 
 router = APIRouter(prefix="/api/orchestrator", tags=["Orchestrator"])
 
@@ -207,8 +210,10 @@ async def orchestrator_start(
         )
 
     session_id = str(uuid.uuid4())
-    # Run an opportunistic TTL sweep so long-lived dev servers do not leak
-    # checkpointer state for abandoned sessions.
+    # Opportunistic TTL sweep: delete abandoned sessions from the checkpoint
+    # store itself (the registry alone never freed their state, and after a
+    # restart it doesn't know the persisted sessions at all).
+    expire_threads(get_checkpointer(), timedelta(hours=get_settings().session_ttl_hours))
     session_manager = get_session_manager()
     session_manager.cleanup_expired_sessions()
     session_manager.register(session_id, request.flow)
@@ -269,7 +274,10 @@ async def orchestrator_message(
             detail="Session not found or expired. Start a new session with /start.",
         )
 
-    get_session_manager().touch(request.session_id)
+    session_manager = get_session_manager()
+    if not session_manager.touch(request.session_id):
+        # A persisted session resumed after a restart: this process hasn't seen it yet.
+        session_manager.register(request.session_id, snapshot.values.get("flow") or "unknown")
 
     if request.kind == "gate_resolution":
         if request.resolution is None:
