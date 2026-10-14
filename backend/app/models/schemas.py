@@ -579,6 +579,40 @@ class BulletRewrite(BaseModel):
             "could not match an id."
         ),
     )
+    cited_fact_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ids from the fact list that support anything the rewrite adds beyond "
+            "the original bullet's own wording (e.g. a skill from the skills list). "
+            "Empty when it only rewords the original."
+        ),
+    )
+
+
+class VerifierIssue(BaseModel):
+    """One problem the rewrite verifier found."""
+    bullet_id: Optional[str] = None
+    check: Literal[
+        "unknown_entity", "new_metric", "changed_dates", "missing_citation",
+        "banned_phrase", "length_blowup", "language_mismatch", "structure_changed",
+    ]
+    severity: Literal["block", "warn"]
+    detail: str
+    offending_span: Optional[str] = None
+
+
+class VerifierResult(BaseModel):
+    """Outcome of checking one rewrite pass against the fact ledger."""
+    passed: bool = Field(description="No 'block' issues.")
+    attempt: int = Field(ge=1)
+    issues: List[VerifierIssue] = Field(default_factory=list)
+    preservation_score: float = Field(
+        ge=0.0, le=1.0,
+        description="Share of the originals' technologies and numbers the rewrites kept.",
+    )
+
+    def blocked_ids(self) -> List[str]:
+        return list(dict.fromkeys(i.bullet_id for i in self.issues if i.severity == "block" and i.bullet_id))
 
 
 class RewrittenContent(BaseModel):
