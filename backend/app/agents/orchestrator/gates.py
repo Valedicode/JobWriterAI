@@ -21,7 +21,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-BulletDecisionChoice = Literal["accept", "keep_original", "custom", "include", "exclude"]
+# Selection: include (tailor it), exclude (keep it as it is), leave_out (drop it
+# from the tailored CV). Rewrite: accept, keep_original, custom.
+BulletDecisionChoice = Literal["accept", "keep_original", "custom", "include", "exclude", "leave_out"]
 
 
 class BulletDecision(BaseModel):

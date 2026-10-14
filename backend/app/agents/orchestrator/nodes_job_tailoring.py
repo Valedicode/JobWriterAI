@@ -272,6 +272,32 @@ def _merge_rewrites_into_cv(
     return merged, unplaced
 
 
+def _without_bullets(
+    cv_data: dict[str, Any], bullet_ids: list[str], bullet_index: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """A copy of the CV without the given bullets (the user chose to leave
+    them out). List items are removed from the end, so the remaining indices
+    stay right; a single text field (a project description, the summary) is
+    emptied."""
+    out = copy.deepcopy(cv_data)
+    refs = [bullet_index[b] for b in bullet_ids if b in bullet_index]
+    for ref in sorted(refs, key=lambda r: (r["idx"] is None, -(r["idx"] or 0))):
+        if ref["section"] == "summary":
+            out["summary"] = ""
+            continue
+        entries = out.get(ref["section"])
+        if not isinstance(entries, list) or ref["entry_idx"] is None or ref["entry_idx"] >= len(entries):
+            continue
+        entry = entries[ref["entry_idx"]]
+        if not isinstance(entry, dict):
+            continue
+        if ref["idx"] is None:
+            entry[ref["field"]] = ""
+        elif isinstance(entry.get(ref["field"]), list) and ref["idx"] < len(entry[ref["field"]]):
+            del entry[ref["field"]][ref["idx"]]
+    return out
+
+
 def _extract_filename(tool_message: str) -> str | None:
     """Pull a filename out of a generate_* tool success message."""
     match = re.search(r"The file '([^']+)' is ready for download", tool_message or "")
@@ -789,7 +815,11 @@ def jt_step4_select_prioritize(state: OrchestratorState) -> dict[str, Any]:
             }
             for bullet_id, ref in list(bullet_index.items())[:5]
         ]
-    selected["selected_bullets"] = bullets
+    rubric = (state.get("compatibility_report") or {}).get("rubric") or []
+    selected["selected_bullets"] = [
+        b if fallback_used or not isinstance(b, dict) else _with_match_labels(b, rubric) for b in bullets
+    ]
+    bullets = selected["selected_bullets"]
 
     order = selected.get("section_order", []) or []
     lines = [
@@ -810,6 +840,44 @@ def jt_step4_select_prioritize(state: OrchestratorState) -> dict[str, Any]:
     )
 
 
+# Match labels for the selection review. The relevance score is the selection
+# model's own estimate, so users see a word instead of the number, and the
+# deterministic rubric decides whether a bullet shows a requirement.
+STRONG_MATCH = 0.7
+# Below this, a bullet that shows no requirement of the posting is recommended
+# for leaving out of the tailored CV (never pre-selected).
+LEAVE_OUT_BELOW = 0.35
+
+
+def _with_match_labels(bullet: dict[str, Any], rubric: list[dict[str, Any]]) -> dict[str, Any]:
+    """The bullet with `match` (strong / partial / weak), `shows` (the posting
+    requirements it evidences, from the rubric) and `leave_out_recommended`."""
+    try:
+        relevance = float(bullet.get("relevance_score"))
+    except (TypeError, ValueError):
+        relevance = None
+    bullet_id = bullet.get("bullet_id")
+    shows = [
+        row.get("text", "") for row in rubric
+        if isinstance(row, dict) and row.get("category") in ("must_have", "nice_to_have")
+        and bullet_id and bullet_id in (row.get("evidence_bullet_ids") or [])
+    ]
+    if relevance is None:
+        match = None
+    elif relevance >= STRONG_MATCH:
+        match = "strong"
+    elif relevance >= LEAVE_OUT_BELOW:
+        match = "partial"
+    else:
+        match = "weak"
+    return {
+        **bullet,
+        "match": match,
+        "shows": shows,
+        "leave_out_recommended": match == "weak" and not shows,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Gate: approve selection (HARD GATE - edit loops back to step 4)
 # --------------------------------------------------------------------------- #
@@ -817,21 +885,28 @@ def jt_step4_select_prioritize(state: OrchestratorState) -> dict[str, Any]:
 def _finalize_selection_decisions(
     selected_bullets: list[dict[str, Any]],
     decisions: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    """Apply per-bullet include/exclude decisions. Default: include (so a
-    plain Approve with no decisions keeps today's behaviour)."""
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """
+    Apply per-bullet decisions: include (tailor it, the default), exclude
+    (keep it as it is: not rewritten, still on the CV) or leave_out (drop it
+    from the tailored CV). Returns the bullets to rewrite and the ids left out.
+    """
     decisions = decisions or {}
     kept: list[dict[str, Any]] = []
+    left_out: list[str] = []
     for b in selected_bullets:
         if not isinstance(b, dict):
             continue
         bullet_id = b.get("bullet_id")
         decision = decisions.get(bullet_id) if bullet_id else None
         choice = getattr(decision, "choice", None) if decision else "include"
+        if choice == "leave_out" and bullet_id:
+            left_out.append(bullet_id)
+            continue
         if choice == "exclude":
             continue
         kept.append(b)
-    return kept
+    return kept, left_out
 
 
 def jt_gate_approve_selection(state: OrchestratorState) -> Command:
@@ -853,16 +928,22 @@ def jt_gate_approve_selection(state: OrchestratorState) -> Command:
 
     if resolution.action == "approve":
         selected_bullets = selected.get("selected_bullets", []) or []
-        finalized = _finalize_selection_decisions(selected_bullets, resolution.decisions)
-        excluded_count = len(selected_bullets) - len(finalized)
+        finalized, left_out = _finalize_selection_decisions(selected_bullets, resolution.decisions)
+        kept_as_is = len(selected_bullets) - len(finalized) - len(left_out)
         updated_selected = dict(selected)
         updated_selected["selected_bullets"] = finalized
-        update: dict[str, Any] = {"pending_gate": None, "selected_content": updated_selected}
-        if excluded_count:
-            update = _narrate(
-                update,
-                f"Continuing with {len(finalized)} bullets ({excluded_count} excluded).",
-            )
+        update: dict[str, Any] = {
+            "pending_gate": None,
+            "selected_content": updated_selected,
+            "left_out_bullet_ids": left_out,
+        }
+        if kept_as_is or left_out:
+            parts = [f"Tailoring {len(finalized)} bullet(s)"]
+            if kept_as_is:
+                parts.append(f"{kept_as_is} kept as they are")
+            if left_out:
+                parts.append(f"{len(left_out)} left out of the tailored CV")
+            update = _narrate(update, ", ".join(parts) + ".")
         return Command(update=update, goto=JT_STEP5_REWRITE)
     if resolution.action == "edit":
         # Merge feedback into strategy so the next pass of step 4 sees it.
@@ -1339,6 +1420,9 @@ def jt_step6_assemble_cv(state: OrchestratorState) -> dict[str, Any]:
 
     if rewritten.get("updated_summary"):
         merged_cv["summary"] = rewritten["updated_summary"]
+    left_out = state.get("left_out_bullet_ids") or []
+    if left_out:
+        merged_cv = _without_bullets(merged_cv, left_out, bullet_index)
     # The plan's headline went through the fact check and the user approved
     # it with the plan; it becomes the line under the name.
     headline = ((state.get("tailoring_strategy") or {}).get("plan") or {}).get("headline")
