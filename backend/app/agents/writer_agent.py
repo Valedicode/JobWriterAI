@@ -723,6 +723,22 @@ def _format_directives(directives: List[Any]) -> str:
     return "\n".join(lines) if lines else "None provided."
 
 
+def _format_feedback(strategy_data: Dict[str, Any], stages: tuple[str, ...]) -> str:
+    """
+    The user's (and the verifier's) notes for this step, oldest first.
+
+    Gate edits and chat notes are appended to the strategy's ``user_feedback``
+    as {stage, text}; without this they reached the step's state but never
+    its prompt, so "edit with feedback" re-ran the step unchanged.
+    """
+    notes = [
+        str(entry.get("text", "")).strip()
+        for entry in strategy_data.get("user_feedback") or []
+        if isinstance(entry, dict) and entry.get("stage") in stages and str(entry.get("text", "")).strip()
+    ]
+    return "\n".join(f"- {note}" for note in notes) if notes else "None."
+
+
 @tool
 def select_prioritize_content(
     cv_json: str,
@@ -781,6 +797,8 @@ def select_prioritize_content(
                 "Bullet Index:\n{bullet_index}\n\n"
                 "Focus Areas: {focus}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
+                "User Feedback on earlier selections (follow it; it overrides the directives "
+                "where they conflict):\n{feedback}\n\n"
                 "Select and prioritise the most relevant content."
             ))
         ])
@@ -792,6 +810,7 @@ def select_prioritize_content(
             "bullet_index": bullet_index_block or "(not provided)",
             "focus": ", ".join(focus_areas),
             "directives": _format_directives(directives),
+            "feedback": _format_feedback(strategy_data, ("approve_selection", "chat")),
         })
         return result.model_dump_json()
 
@@ -873,6 +892,8 @@ def rewrite_enhance_content(
                 "Selected Content:\n{selected}\n\n"
                 "Locked Bullets (echo back unchanged):\n{locked}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
+                "User Feedback on earlier rewrites (follow it; it overrides the directives "
+                "where they conflict, but never the absolute rules):\n{feedback}\n\n"
                 "Rewrite and enhance the content that is not locked."
             ))
         ])
@@ -884,6 +905,7 @@ def rewrite_enhance_content(
             "selected": selected_content_json,
             "locked": json.dumps(locked_bullets) if locked_bullets else "(none)",
             "directives": _format_directives(directives),
+            "feedback": _format_feedback(strategy_data, ("approve_rewrite", "chat")),
         })
 
         # Belt-and-braces: force locked bullets back into the result verbatim
