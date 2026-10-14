@@ -47,6 +47,7 @@ from app.agents.scoring_agent import (
     eligibility_questions,
 )
 from app.models.schemas import CompatibilityReport
+from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
 
 
 # --------------------------------------------------------------------------- #
@@ -340,8 +341,13 @@ def jt_entry(state: OrchestratorState) -> dict[str, Any]:
         "strategy, then walk you through bullet selection and rewriting "
         "with explicit approvals before any documents are generated."
     )
+    bullet_index = _index_cv_bullets(cv_data)
     return _narrate(
-        {"bullet_index": _index_cv_bullets(cv_data), "base_cv_data": copy.deepcopy(cv_data)},
+        {
+            "bullet_index": bullet_index,
+            "original_cv_data": copy.deepcopy(cv_data),
+            "fact_ledger": build_fact_ledger(cv_data, bullet_index),
+        },
         narration,
     )
 
@@ -594,8 +600,7 @@ def jt_gate_confirm_eligibility(state: OrchestratorState) -> Command:
         update=_narrate(
             {
                 "cv_data": cv_data,
-                # Step 6 hasn't run yet, so cv_data is still the untailored CV.
-                "base_cv_data": copy.deepcopy(cv_data),
+                "fact_ledger": with_facts(state.get("fact_ledger"), eligibility_answer_facts(questions, answers)),
                 "compatibility_report": rescored.model_dump(),
                 "eligibility_asked": True,
             },
@@ -1078,7 +1083,7 @@ def jt_gate_confirm_change(state: OrchestratorState) -> Command:
 
 
 # --------------------------------------------------------------------------- #
-# Step 6: assemble tailored CV (merge rewrites into cv_data)
+# Step 6: assemble tailored CV (rewrites merged into a copy: tailored_cv_data)
 # --------------------------------------------------------------------------- #
 
 def jt_step6_assemble_cv(state: OrchestratorState) -> dict[str, Any]:
@@ -1097,10 +1102,18 @@ def jt_step6_assemble_cv(state: OrchestratorState) -> dict[str, Any]:
         preview = "; ".join(t[:80] for t in unplaced[:3])
         narration += f"\n\nNote: {len(unplaced)} rewrite(s) could not be matched to a CV bullet and were skipped: {preview}"
 
+    # cv_data stays the user's own CV: re-runs, the fact ledger and the
+    # verifier compare against it.
     return _narrate(
-        {"cv_data": merged_cv},
+        {"tailored_cv_data": merged_cv},
         narration,
     )
+
+
+def _tailored_cv(state: OrchestratorState) -> dict[str, Any]:
+    """The CV to render: step 6's output. Sessions saved before step 6 kept
+    its output separately still have the tailored CV in cv_data."""
+    return state.get("tailored_cv_data") or state.get("cv_data") or {}
 
 
 # --------------------------------------------------------------------------- #
@@ -1109,7 +1122,7 @@ def jt_step6_assemble_cv(state: OrchestratorState) -> dict[str, Any]:
 
 def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     """Emit a tailored CV PDF from merged structured JSON."""
-    cv_data = state.get("cv_data") or {}
+    cv_data = _tailored_cv(state)
     applicant_name = cv_data.get("name", "Applicant")
     base = _filename_base(cv_data)
     selected = state.get("selected_content") or {}
@@ -1230,7 +1243,7 @@ def jt_gate_cover_letter_recipient(state: OrchestratorState) -> Command:
 # --------------------------------------------------------------------------- #
 
 def jt_step8_cover_letter_content(state: OrchestratorState) -> dict[str, Any]:
-    cv_json = json.dumps(state.get("cv_data") or {})
+    cv_json = json.dumps(_tailored_cv(state))
     job_json = json.dumps(state.get("job_data") or {})
     company_json = json.dumps(state.get("company_data") or {}) if state.get("company_data") else ""
     language = state.get("cover_letter_language") or "english"
@@ -1294,7 +1307,7 @@ def jt_gate_approve_cover_letter(state: OrchestratorState) -> Command:
 # --------------------------------------------------------------------------- #
 
 def jt_step9_cover_letter_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
-    cv_data = state.get("cv_data") or {}
+    cv_data = _tailored_cv(state)
     content = state.get("cover_letter_content") or {}
     language = state.get("cover_letter_language") or "english"
     base = _filename_base(cv_data)

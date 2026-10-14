@@ -41,6 +41,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_STEP5_REWRITE,
 )
 from app.agents.orchestrator.state import OrchestratorState
+from app.services.fact_ledger import user_added_fact, with_facts
 
 # Messages (user + assistant) kept as short-term chat memory.
 CHAT_MEMORY_MESSAGES = 12
@@ -54,19 +55,17 @@ RERUN_STEPS: dict[str, tuple[str, str]] = {
     "cover_letter": (JT_GATE_COVER_LETTER, "the cover letter"),
 }
 
-# Steps that work on the untailored CV. Step 6 replaces cv_data with the
-# tailored CV, so a re-run of these starts from base_cv_data instead.
-_UNTAILORED_TARGETS = {JT_STEP2_COMPATIBILITY, JT_STEP3_STRATEGY, JT_STEP4_SELECT, JT_STEP5_REWRITE}
-
 # Kept as they are now rather than restored from before the target step: the
-# transcript, the chat itself, and what the user has confirmed since.
+# transcript, the chat itself, and the user's CV with everything they have
+# confirmed since (cv_data is never tailored; step 6 writes tailored_cv_data).
 _CARRIED_FORWARD = {
     "flow",
     "messages",
     "chat_history",
     "chat_proposal",
-    "base_cv_data",
-    "user_added_facts",
+    "cv_data",
+    "original_cv_data",
+    "fact_ledger",
     "eligibility_asked",
 }
 
@@ -91,20 +90,10 @@ def _values_before(graph: Any, config: dict[str, Any], node: str) -> dict[str, A
     return None
 
 
-def _restore_update(
-    before: dict[str, Any],
-    current: dict[str, Any],
-    target: str,
-    cv_override: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Every state key back to its value before ``target``, except the ones
-    carried forward. Keys that didn't exist then are cleared."""
-    update = {key: copy.deepcopy(before.get(key)) for key in _STATE_KEYS if key not in _CARRIED_FORWARD}
-    if cv_override is not None:
-        update["cv_data"] = copy.deepcopy(cv_override)
-    elif target in _UNTAILORED_TARGETS and current.get("base_cv_data"):
-        update["cv_data"] = copy.deepcopy(current["base_cv_data"])
-    return update
+def _restore_update(before: dict[str, Any]) -> dict[str, Any]:
+    """Every state key back to its value before the target step, except the
+    ones carried forward. Keys that didn't exist then are cleared."""
+    return {key: copy.deepcopy(before.get(key)) for key in _STATE_KEYS if key not in _CARRIED_FORWARD}
 
 
 def _dropped_files_note(before: dict[str, Any], current: dict[str, Any]) -> list[str]:
@@ -147,7 +136,7 @@ def propose_rerun(
     if before is None:
         raise ChatActionRefused(f"{label.capitalize()} hasn't run yet in this session, so there's nothing to re-run.")
 
-    restore = _restore_update(before, current, target)
+    restore = _restore_update(before)
     note = (note or "").strip()
     if note and target in (JT_STEP4_SELECT, JT_STEP5_REWRITE):
         strategy = dict(restore.get("tailoring_strategy") or {})
@@ -217,17 +206,14 @@ def propose_profile_update(
     if before is None:
         raise ChatActionRefused("The compatibility score hasn't run yet in this session.")
 
-    base = current.get("base_cv_data") or before.get("cv_data") or {}
-    new_cv, summary = _with_profile_addition(base, kind, value, fluency)
+    new_cv, summary = _with_profile_addition(current.get("cv_data") or {}, kind, value, fluency)
 
-    restore = _restore_update(before, current, JT_STEP2_COMPATIBILITY, cv_override=new_cv)
-    restore["base_cv_data"] = copy.deepcopy(new_cv)
-    restore["user_added_facts"] = list(current.get("user_added_facts") or []) + [{
-        "kind": kind,
-        "value": value,
-        "fluency": fluency if kind == "language" else None,
-        "source_text": source_text[:500],
-    }]
+    restore = _restore_update(before)
+    restore["cv_data"] = new_cv
+    restore["fact_ledger"] = with_facts(
+        current.get("fact_ledger"),
+        [user_added_fact(kind, value, fluency if kind == "language" else None, source_text[:500])],
+    )
     details = [
         f"{summary} (you said: “{source_text[:200]}”).",
         "Your score is recalculated, and every step after it runs again for your review.",

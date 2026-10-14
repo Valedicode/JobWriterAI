@@ -265,7 +265,7 @@ def test_full_happy_path_emits_all_five_gates_and_generates_files(graph, patched
     assert any(n.endswith("_cover_letter.pdf") for n in names)
 
     # The first rewritten bullet should have been merged into experience.
-    merged_bullet = state["cv_data"]["experience"][0]["responsibilities"][0]
+    merged_bullet = state["tailored_cv_data"]["experience"][0]["responsibilities"][0]
     assert merged_bullet.startswith("Designed and validated")
 
 
@@ -410,7 +410,7 @@ def test_rewrite_merges_by_bullet_id_even_when_echoed_text_drifts(graph, patched
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_rewrite
 
     state = graph.get_state(config).values
-    merged_bullet = state["cv_data"]["experience"][0]["responsibilities"][0]
+    merged_bullet = state["tailored_cv_data"]["experience"][0]["responsibilities"][0]
     assert merged_bullet.startswith("Designed and validated the first published algorithm")
 
 
@@ -445,7 +445,7 @@ def test_rewrite_with_unmatchable_bullet_is_dropped_and_narrated(graph, patched_
 
     state = graph.get_state(config).values
     # Original CV text is untouched.
-    assert state["cv_data"]["experience"][0]["responsibilities"][0] == "Designed the first algorithm"
+    assert state["tailored_cv_data"]["experience"][0]["responsibilities"][0] == "Designed the first algorithm"
     # step6's narration (about the unplaced rewrite) is superseded by step7's
     # as `last_narration`, but it must still be in the message transcript.
     message_texts = [getattr(m, "content", "") for m in state["messages"]]
@@ -469,7 +469,7 @@ def test_updated_summary_is_applied_to_cv_data(graph, patched_tools):
         graph.invoke(Command(resume={"action": "approve"}), config=config)
 
     state = graph.get_state(config).values
-    assert state["cv_data"]["summary"] == "Python engineer with a strong algorithms background."
+    assert state["tailored_cv_data"]["summary"] == "Python engineer with a strong algorithms background."
 
 
 # --------------------------------------------------------------------------- #
@@ -536,7 +536,7 @@ def test_approve_rewrite_keep_original_decision_reverts_one_bullet(graph, patche
         )  # approve_rewrite
 
     state = graph.get_state(config).values
-    responsibilities = state["cv_data"]["experience"][0]["responsibilities"]
+    responsibilities = state["tailored_cv_data"]["experience"][0]["responsibilities"]
     assert responsibilities[0] == "Designed the first algorithm"
     assert responsibilities[1].startswith("Authored technical documentation")
 
@@ -563,7 +563,7 @@ def test_approve_rewrite_custom_text_decision_overrides_rewrite(graph, patched_t
         )
 
     state = graph.get_state(config).values
-    responsibilities = state["cv_data"]["experience"][0]["responsibilities"]
+    responsibilities = state["tailored_cv_data"]["experience"][0]["responsibilities"]
     assert responsibilities[1] == "My own wording."
 
 

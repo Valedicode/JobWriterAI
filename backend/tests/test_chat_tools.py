@@ -330,8 +330,10 @@ def test_rerun_after_tailoring_starts_from_the_untailored_cv(enabled_client, too
     body = _approve(enabled_client, sid, times=3)  # rewrites approved, CV assembled and rendered
     assert body["pending_gate"]["step"] == "cover_letter_language"
     assert body["generated_files"]
-    tailored = _state(sid)["cv_data"]["experience"][0]["responsibilities"]
+    tailored = _state(sid)["tailored_cv_data"]["experience"][0]["responsibilities"]
     assert tailored != CV["experience"][0]["responsibilities"]
+    # Step 6 no longer overwrites the user's own CV.
+    assert _state(sid)["cv_data"]["experience"][0]["responsibilities"] == CV["experience"][0]["responsibilities"]
 
     proposal = _chat(enabled_client, sid, _rerun("rewrite"))["pending_gate"]
     assert any("leave this chat" in line for line in proposal["preview"]["what_happens"])
@@ -339,6 +341,7 @@ def test_rerun_after_tailoring_starts_from_the_untailored_cv(enabled_client, too
     assert body["pending_gate"]["step"] == "approve_rewrite"
     assert body["generated_files"] == []
     state = _state(sid)
+    assert state["tailored_cv_data"] is None
     assert state["cv_data"]["experience"][0]["responsibilities"] == CV["experience"][0]["responsibilities"]
     cv_sent = json.loads(tools.calls["rewrite_enhance_content"][-1]["cv_json"])
     assert cv_sent["experience"][0]["responsibilities"] == CV["experience"][0]["responsibilities"]
@@ -351,12 +354,13 @@ def test_cover_letter_rerun_keeps_the_tailored_cv(enabled_client, tools):  # noq
         "session_id": sid, "kind": "gate_resolution", "resolution": {"action": "choose", "choice": "english"},
     }).json()
     assert body["pending_gate"]["step"] == "approve_cover_letter"
-    tailored = copy.deepcopy(_state(sid)["cv_data"])
+    tailored = copy.deepcopy(_state(sid)["tailored_cv_data"])
+    assert tailored
 
     _chat(enabled_client, sid, _rerun("cover_letter"))
     body = _approve(enabled_client, sid)
     assert body["pending_gate"]["step"] == "cover_letter_language"
-    assert _state(sid)["cv_data"] == tailored
+    assert _state(sid)["tailored_cv_data"] == tailored
     assert _state(sid)["cover_letter_content"] is None
 
 
@@ -400,11 +404,11 @@ def test_profile_update_is_confirmed_then_rescored(enabled_client, tools):  # no
     body = _approve(enabled_client, sid)
     assert body["pending_gate"]["step"] == "present_score"
     state = _state(sid)
-    assert "Docker" in state["cv_data"]["skills"] and "Docker" in state["base_cv_data"]["skills"]
-    assert state["user_added_facts"] == [{
-        "kind": "skill", "value": "Docker", "fluency": None,
-        "source_text": "I used Docker in a university course",
-    }]
+    assert "Docker" in state["cv_data"]["skills"]
+    fact = state["fact_ledger"]["skill.docker"]
+    assert fact["source"] == "user_added" and fact["user_verified"] is True
+    assert fact["source_text"] == "I used Docker in a university course"
+    assert fact["entities"] == ["docker"]
     scored_cv = json.loads(tools.calls["calculate_compatibility_score_v2"][-1]["cv_json"])
     assert "Docker" in scored_cv["skills"]
 
@@ -432,7 +436,7 @@ def test_cancelled_profile_update_changes_nothing(enabled_client, tools):  # noq
     body = _resolve(enabled_client, sid, "reject")
     assert body["pending_gate"]["step"] == "present_score"
     assert "Docker" not in _state(sid)["cv_data"]["skills"]
-    assert not _state(sid).get("user_added_facts")
+    assert "skill.docker" not in _state(sid)["fact_ledger"]
 
 
 def test_profile_updates_survive_a_later_rerun(enabled_client, tools):  # noqa: F811
@@ -443,7 +447,7 @@ def test_profile_updates_survive_a_later_rerun(enabled_client, tools):  # noqa: 
     _chat(enabled_client, sid, _rerun("score"))
     _approve(enabled_client, sid)
     assert "Docker" in _state(sid)["cv_data"]["skills"]
-    assert len(_state(sid)["user_added_facts"]) == 1
+    assert _state(sid)["fact_ledger"]["skill.docker"]["source"] == "user_added"
 
 
 # --------------------------------------------------------------------------- #

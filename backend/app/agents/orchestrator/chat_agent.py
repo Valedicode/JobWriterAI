@@ -245,11 +245,14 @@ def _state_context_block(state: dict[str, Any] | None) -> str:
     if isinstance(step_error, dict):
         parts.append(f"step_error: {step_error.get('label')} failed - {step_error.get('detail')}")
 
-    added = state.get("user_added_facts") or []
-    if added:
+    confirmed = [
+        f for f in (state.get("fact_ledger") or {}).values()
+        if isinstance(f, dict) and f.get("source") in ("user_added", "user_confirmed")
+    ]
+    if confirmed:
         parts.append(
-            "Added by the user in this chat: "
-            + ", ".join(str(f.get("value")) for f in added if isinstance(f, dict))
+            "Confirmed by the user in this session (not on the original CV): "
+            + ", ".join(str(f.get("value")) for f in confirmed)
         )
 
     files = state.get("generated_files") or []
