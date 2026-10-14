@@ -32,23 +32,17 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
 
   const allows = (a: OrchestratorGateAction) => gate.allowed_actions.includes(a);
   const decisionCount = Object.keys(decisions).length;
-  // On the step_failed gate, approve re-runs the failed step and reject stops.
-  const isRetryGate = gate.step === 'step_failed';
-  // On confirm_change (a re-run or profile update asked for in the chat),
-  // approve applies it and reject leaves everything as it was.
-  const isConfirmGate = gate.step === 'confirm_change';
-  // On verifier_failed, approve keeps the original wording of the blocked rewrites.
-  const isFactCheckGate = gate.step === 'verifier_failed';
-  const approveLabel = isRetryGate
-    ? 'Retry'
-    : isConfirmGate
-      ? 'Confirm'
-      : isFactCheckGate
-        ? 'Keep my original wording'
-        : decisionCount > 0
-          ? `Apply (${decisionCount} customized)`
-          : 'Approve';
-  const rejectLabel = isRetryGate ? 'Stop' : isConfirmGate ? 'Cancel' : 'Reject';
+  // Steps where approve / reject mean something more specific than the words.
+  const stepLabels: Record<string, { approve: string; reject: string }> = {
+    step_failed: { approve: 'Retry', reject: 'Stop' }, // retry the failed step, or stop
+    confirm_change: { approve: 'Confirm', reject: 'Cancel' }, // a re-run / profile update from the chat
+    verifier_failed: { approve: 'Keep my original wording', reject: 'Reject' }, // blocked rewrites
+    approve_translation: { approve: 'Use translation', reject: 'Keep original language' },
+  };
+  const labels = stepLabels[gate.step];
+  const approveLabel =
+    labels?.approve ?? (decisionCount > 0 ? `Apply (${decisionCount} customized)` : 'Approve');
+  const rejectLabel = labels?.reject ?? 'Reject';
 
   const handleDecisionChange = (bulletId: string, decision: BulletDecision | null) => {
     setDecisions((prev) => {
