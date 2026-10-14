@@ -37,7 +37,7 @@ export const ApprovalGate = ({ gate, isLoading, onSubmit }: ApprovalGateProps) =
     step_failed: { approve: 'Retry', reject: 'Stop' }, // retry the failed step, or stop
     confirm_change: { approve: 'Confirm', reject: 'Cancel' }, // a re-run / profile update from the chat
     verifier_failed: { approve: 'Keep my original wording', reject: 'Reject' }, // blocked rewrites
-    approve_translation: { approve: 'Use translation', reject: 'Keep original language' },
+    approve_translation: { approve: 'Use translation', reject: 'Keep my CV as it is' },
   };
   const labels = stepLabels[gate.step];
   const approveLabel =

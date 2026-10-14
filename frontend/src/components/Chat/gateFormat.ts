@@ -15,6 +15,7 @@ const STEP_LABELS: Record<string, string> = {
   step_failed: 'Step failed',
   verifier_failed: 'Fact check',
   approve_translation: 'Translation',
+  cv_language: 'CV language',
   confirm_change: 'Confirm change',
   cv_review_header: 'Header',
   cv_review_education: 'Education',
