@@ -124,6 +124,10 @@ class OrchestratorState(TypedDict, total=False):
     # {before, after, preservation, newly_shown} alignment figures.
     requirement_rubric_after: list[dict[str, Any]] | None
     alignment: dict[str, Any] | None
+    # Step 6b: {target_language, rows: [{path, original, translated, problem}],
+    # translated_cv} for the approve_translation gate, and the user's notes.
+    translation: dict[str, Any] | None
+    translation_feedback: list[str]
 
     # --- chat --------------------------------------------------------------
     # A change the chat proposed (re-run, profile update), waiting at the

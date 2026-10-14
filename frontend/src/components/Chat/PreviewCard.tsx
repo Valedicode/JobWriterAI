@@ -946,6 +946,45 @@ function StructuredPreview({ preview }: { preview: PreviewMap }) {
 
 // --------------------------------------------------------------------------
 
+interface TranslationChange {
+  path?: string;
+  original?: string;
+  translated?: string;
+}
+
+/** "experience.0.responsibilities.1" -> "Experience 1 · responsibilities 2". */
+const fieldLabel = (path: string): string =>
+  path
+    .split('.')
+    .map((part) => (/^\d+$/.test(part) ? String(Number(part) + 1) : humanizeKey(part)))
+    .join(' ')
+    .replace(/ (\d+) /g, ' $1 · ');
+
+function ApproveTranslation({ preview }: { preview: PreviewMap }) {
+  const changes = asArray<TranslationChange>(preview.changes).filter((c) => c && c.translated);
+  const kept = asArray<string>(preview.kept_original);
+  const language = typeof preview.target_language === 'string' ? preview.target_language : '';
+  return (
+    <div>
+      <Section title={`Translated into ${language || 'the plan language'} (${changes.length})`}>
+        <ul className="space-y-2">
+          {changes.map((c, i) => (
+            <MiniCard key={c.path ?? i}>
+              <div className="mb-1 text-meta text-ink-faint">{c.path ? fieldLabel(c.path) : ''}</div>
+              <Diff original={c.original} rewritten={c.translated} />
+            </MiniCard>
+          ))}
+        </ul>
+      </Section>
+      {kept.length > 0 && (
+        <Section title="Kept in the original language">
+          <Bullets items={kept} />
+        </Section>
+      )}
+    </div>
+  );
+}
+
 export const PreviewCard = ({ gate, decisions, onDecisionChange }: PreviewCardProps) => {
   switch (gate.step) {
     case 'present_score':
@@ -960,6 +999,8 @@ export const PreviewCard = ({ gate, decisions, onDecisionChange }: PreviewCardPr
       );
     case 'approve_cover_letter':
       return <ApproveCoverLetter preview={gate.preview} />;
+    case 'approve_translation':
+      return <ApproveTranslation preview={gate.preview} />;
     default:
       return <StructuredPreview preview={gate.preview} />;
   }
