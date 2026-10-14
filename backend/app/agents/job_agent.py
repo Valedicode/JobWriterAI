@@ -26,7 +26,7 @@ Data Models:
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool
-from app.openai_llm import chat_openai_mini
+from app.openai_llm import chat_model, model_for
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_tavily import TavilySearch
 
@@ -161,7 +161,7 @@ def _as_untrusted_posting(text: str) -> str:
 
 
 def _extraction_cache_key(text: str) -> str:
-    model = get_settings().llm_model or ""
+    model = model_for("extract")
     material = "\0".join((model, _JOB_EXTRACTION_SYSTEM_PROMPT, text.strip()))
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -175,7 +175,7 @@ def _extract_job_requirements(text: str) -> str:
             _extraction_cache.move_to_end(key)
             return _extraction_cache[key]
 
-    llm = chat_openai_mini(temperature=0)
+    llm = chat_model("extract", temperature=0)
     prompt = ChatPromptTemplate.from_messages([
         ("system", _JOB_EXTRACTION_SYSTEM_PROMPT),
         ("user", "{posting}"),
@@ -246,7 +246,7 @@ def collect_company_info(company_name: str) -> str:
         for result in search_results
     ])
 
-    llm = chat_openai_mini(temperature=0)
+    llm = chat_model("extract", temperature=0)
     structured_llm = llm.with_structured_output(CompanyInfo)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Extract structured company information from the search results. Focus on identifying company values, culture, mission statement, industry, company size, products/services, and recent news that would be relevant for someone applying to this company."),
@@ -257,7 +257,7 @@ def collect_company_info(company_name: str) -> str:
     result = chain.invoke({"company_name": company_name, "search_results": formatted_results})
     return result.model_dump_json(indent=2)
 
-llm = chat_openai_mini(temperature=None)
+llm = chat_model("extract", temperature=None)
 system_prompt = """You are a job analysis assistant. Your role is to help users gather comprehensive information about job postings and companies.
 
 Your available tools:

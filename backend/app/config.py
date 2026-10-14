@@ -16,6 +16,12 @@ class Settings(BaseSettings):
     openrouter_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     llm_model: Optional[str] = None  # chat model override, e.g. "anthropic/claude-sonnet-4.5"
+    # Per-role overrides; each falls back to llm_model. Pick the judge from a
+    # different model family than the writer so it doesn't grade its own style.
+    llm_model_extract: Optional[str] = None  # CV/job parsing, job summary
+    llm_model_writer: Optional[str] = None  # selection, rewrites, cover letters
+    llm_model_judge: Optional[str] = None  # skill-transferability verdicts
+    llm_model_chat: Optional[str] = None  # conversational replies
     llm_reasoning: bool = False  # OpenRouter only: allow hidden reasoning tokens (slower, costlier)
     tavily_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None

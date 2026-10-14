@@ -111,7 +111,7 @@ def test_low_ats_score_with_no_matched_skills_emits_no_term_directive():
 # --------------------------------------------------------------------------- #
 
 class _RecordingLLM:
-    """Stands in for chat_openai_mini(): records each rendered prompt and
+    """Stands in for chat_model(): records each rendered prompt and
     returns a fixed structured result."""
 
     def __init__(self, results: dict[type, Any]) -> None:
@@ -158,7 +158,7 @@ def _real_strategy_json() -> str:
 
 def test_selection_tool_accepts_real_strategy_directives():
     llm = _RecordingLLM({SelectedContent: SELECTED})
-    with patch("app.agents.writer_agent.chat_openai_mini", return_value=llm):
+    with patch("app.agents.writer_agent.chat_model", return_value=llm):
         result = json.loads(select_prioritize_content.invoke({
             "cv_json": "{}",
             "job_json": "{}",
@@ -173,7 +173,7 @@ def test_selection_tool_accepts_real_strategy_directives():
 
 def test_rewrite_tool_accepts_real_strategy_directives():
     llm = _RecordingLLM({RewrittenContent: REWRITTEN})
-    with patch("app.agents.writer_agent.chat_openai_mini", return_value=llm):
+    with patch("app.agents.writer_agent.chat_model", return_value=llm):
         result = json.loads(rewrite_enhance_content.invoke({
             "cv_json": "{}",
             "job_json": "{}",
@@ -193,7 +193,7 @@ def test_tools_report_llm_failure_as_error_not_as_empty_result():
                 raise RuntimeError("provider rejected the schema")
             return RunnableLambda(_raise)
 
-    with patch("app.agents.writer_agent.chat_openai_mini", return_value=_Boom()):
+    with patch("app.agents.writer_agent.chat_model", return_value=_Boom()):
         selected = json.loads(select_prioritize_content.invoke({
             "cv_json": "{}", "job_json": "{}", "tailoring_strategy_json": _real_strategy_json(),
         }))

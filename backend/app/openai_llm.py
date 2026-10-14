@@ -1,8 +1,12 @@
 """Shared LLM client settings (provider, model, timeouts) for all agents.
 
 Uses OpenRouter when ``OPENROUTER_API_KEY`` is set, otherwise OpenAI directly.
+Each call site asks for a role (extract, writer, judge, chat) rather than a
+model, so the judge can run on a different model than the writer it grades.
 """
 from __future__ import annotations
+
+from typing import Literal, get_args
 
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
@@ -37,7 +41,20 @@ def openai_client() -> OpenAI:
     return OpenAI(**client_kwargs())
 
 
-def chat_openai_mini(*, temperature: float | None = 0) -> ChatOpenAI:
+LLMRole = Literal["extract", "writer", "judge", "chat"]
+LLM_ROLES: tuple[LLMRole, ...] = get_args(LLMRole)
+
+
+def model_for(role: LLMRole) -> str:
+    """The model a role runs on: its LLM_MODEL_<ROLE> override, else LLM_MODEL,
+    else the default chat model."""
+    if role not in LLM_ROLES:
+        raise ValueError(f"Unknown LLM role {role!r}; expected one of {LLM_ROLES}")
+    settings = get_settings()
+    return getattr(settings, f"llm_model_{role}") or settings.llm_model or model_id(DEFAULT_CHAT_MODEL)
+
+
+def chat_model(role: LLMRole, *, temperature: float | None = 0) -> ChatOpenAI:
     settings = get_settings()
     extra: dict = {}
     if settings.openrouter_api_key and not settings.llm_reasoning:
@@ -46,7 +63,7 @@ def chat_openai_mini(*, temperature: float | None = 0) -> ChatOpenAI:
         # for models that make reasoning mandatory.
         extra["extra_body"] = {"reasoning": {"enabled": False}}
     return ChatOpenAI(
-        model=settings.llm_model or model_id(DEFAULT_CHAT_MODEL),
+        model=model_for(role),
         temperature=temperature,
         timeout=OPENAI_REQUEST_TIMEOUT_S,
         max_retries=OPENAI_MAX_RETRIES,

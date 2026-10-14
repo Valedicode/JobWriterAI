@@ -82,14 +82,16 @@ def test_job_summary_conditions_list_only_stated_ones():
 
 
 class _StubLLM:
-    """Stands in for chat_openai_mini: records the temperature and the
+    """Stands in for chat_model: records the role, the temperature and the
     messages the extraction chain sends."""
 
     def __init__(self):
+        self.roles: list = []
         self.temperatures: list = []
         self.messages: list = []
 
-    def __call__(self, *, temperature=None):
+    def __call__(self, role, *, temperature=None):
+        self.roles.append(role)
         self.temperatures.append(temperature)
         return self
 
@@ -104,7 +106,7 @@ class _StubLLM:
 def stub_llm():
     stub = _StubLLM()
     job_agent._extraction_cache.clear()
-    with patch.object(job_agent, "chat_openai_mini", stub):
+    with patch.object(job_agent, "chat_model", stub):
         yield stub
     job_agent._extraction_cache.clear()
 
@@ -120,6 +122,7 @@ def test_posting_is_wrapped_as_untrusted_data(stub_llm):
 def test_extraction_runs_at_temperature_zero(stub_llm):
     job_agent.retrieve_text.invoke({"info": "Java dev wanted in Munich."})
     assert stub_llm.temperatures == [0]
+    assert stub_llm.roles == ["extract"]
 
 
 def test_the_same_posting_is_extracted_once(stub_llm):

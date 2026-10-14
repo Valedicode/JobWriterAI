@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pydantic import Field, BaseModel
 from langchain_core.tools import tool
-from app.openai_llm import chat_openai_mini, model_id, openai_client
+from app.openai_llm import chat_model, model_id, openai_client
 from langchain_core.prompts import ChatPromptTemplate
 from functools import lru_cache
 import copy
@@ -542,7 +542,7 @@ def _assess_transferability_llm(
     if not unresolved_required:
         return {}
 
-    llm = chat_openai_mini(temperature=0)
+    llm = chat_model("judge", temperature=0)
     structured_llm = llm.with_structured_output(_LLMTransferabilityBatch)
 
     prompt = ChatPromptTemplate.from_messages([

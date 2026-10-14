@@ -25,7 +25,7 @@ Key Features:
 # sequencing explicitly via graph nodes that invoke the @tool functions in
 # this module directly.
 from langchain_core.tools import tool
-from app.openai_llm import chat_openai_mini
+from app.openai_llm import chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
 import json
@@ -104,7 +104,7 @@ def analyze_cv_job_alignment(cv_json: str, job_json: str) -> str:
         >>> plan = analyze_cv_job_alignment(cv_data, job_data)
         >>> # Returns detailed plan with matching experiences, skills, keywords, etc.
     """
-    llm = chat_openai_mini(temperature=0)
+    llm = chat_model("extract", temperature=0)
     structured_llm = llm.with_structured_output(CVTailoringPlan)
     
     prompt = ChatPromptTemplate.from_messages([
@@ -183,7 +183,7 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
         - Schlussteil: Motivation summary, request for interview
         - Grußformel: Formal valediction
     """
-    llm = chat_openai_mini(temperature=0.4)
+    llm = chat_model("writer", temperature=0.4)
     structured_llm = llm.with_structured_output(CoverLetterContent)
 
     # Build context with optional company info
@@ -450,7 +450,7 @@ def generate_job_summary(job_json: str) -> str:
         - preferred_skills: Nice-to-have skills
         - key_notes: Other important points
     """
-    llm = chat_openai_mini(temperature=0)
+    llm = chat_model("extract", temperature=0)
     structured_llm = llm.with_structured_output(JobSummary)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -751,7 +751,7 @@ def select_prioritize_content(
         focus_areas: List[str] = strategy_data.get("focus_areas", [])
         directives: List[Dict[str, Any]] = strategy_data.get("directives", [])
 
-        llm = chat_openai_mini(temperature=0)
+        llm = chat_model("writer", temperature=0)
         structured_llm = llm.with_structured_output(SelectedContent)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -839,7 +839,7 @@ def rewrite_enhance_content(
             locked_bullets = []
         locked_ids = {b.get("bullet_id") for b in locked_bullets if isinstance(b, dict) and b.get("bullet_id")}
 
-        llm = chat_openai_mini(temperature=0.3)
+        llm = chat_model("writer", temperature=0.3)
         structured_llm = llm.with_structured_output(RewrittenContent)
 
         prompt = ChatPromptTemplate.from_messages([
