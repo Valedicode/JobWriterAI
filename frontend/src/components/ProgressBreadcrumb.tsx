@@ -40,7 +40,7 @@ export const ProgressBreadcrumb = ({
     // Only include job stage if not skipped
     ...(!jobSkipped ? [{
       id: 'job',
-      label: 'Add Job Description',
+      label: compact ? 'Job' : 'Add Job Description',
       completed: jobUploaded || jobInputValid,
       current: resumeUploaded && !jobUploaded && !jobInputValid && !analysisStarted,
     }] : []),
@@ -52,7 +52,7 @@ export const ProgressBreadcrumb = ({
     },
     {
       id: 'chat',
-      label: compact ? 'Review & tailor' : 'Chat Ready',
+      label: compact ? 'Review' : 'Chat Ready',
       // In the top bar the last step is where the user works, so it stays current.
       completed: compact ? false : chatReady,
       current: compact ? chatReady : analysisStarted && !isAnalyzing && !chatReady,

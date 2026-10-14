@@ -12,6 +12,15 @@ import { useFileUpload } from '@/hooks/useFileUpload';
 import { useJobInput } from '@/hooks/useJobInput';
 import { useOrchestratorChat } from '@/hooks/useOrchestratorChat';
 
+/** "Studenten (m/w/d) für die Softwareentwicklung" -> "Studenten"; "Aachen, Germany" -> "Aachen". */
+const shortJobTitle = (title: string): string => {
+  const base = title
+    .replace(/\([^)]*\)/g, '')
+    .split(/\s+(?:für|for|im Bereich|in der|-|–|\|)\s+|,/i)[0]
+    .trim();
+  return base.length > 24 ? `${base.slice(0, 23).trimEnd()}…` : base;
+};
+
 export default function Home() {
   const { isDark, toggleTheme } = useTheme();
   
@@ -196,7 +205,7 @@ export default function Home() {
         trailing={
           inChat && jobData?.job_title ? (
             <span className="hidden max-w-[16rem] truncate rounded-full border border-border px-3 py-1 text-meta text-ink-muted lg:inline">
-              {[jobData.job_title, jobData.location].filter(Boolean).join(' · ')}
+              {[shortJobTitle(jobData.job_title), jobData.location?.split(',')[0].trim()].filter(Boolean).join(' · ')}
             </span>
           ) : undefined
         }
