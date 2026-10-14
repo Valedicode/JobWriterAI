@@ -205,7 +205,7 @@ export default function Home() {
         trailing={
           inChat && jobData?.job_title ? (
             <span className="hidden max-w-[16rem] truncate rounded-full border border-border px-3 py-1 text-meta text-ink-muted lg:inline">
-              {[shortJobTitle(jobData.job_title), jobData.location?.split(',')[0].trim()].filter(Boolean).join(' · ')}
+              {[jobData.short_title?.trim() || shortJobTitle(jobData.job_title), jobData.location?.split(',')[0].trim()].filter(Boolean).join(' · ')}
             </span>
           ) : undefined
         }
