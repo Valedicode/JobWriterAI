@@ -33,7 +33,15 @@ def is_session_id(value: str) -> bool:
     return bool(_SESSION_ID_RE.match(value or ""))
 
 
+UNSAFE_FILENAME_MESSAGE = (
+    "The output filename must end in .pdf and use only letters, digits, '.', '_' and '-' "
+    "(no folders), e.g. 'ada_lovelace_cv.pdf'."
+)
+
+
 def is_safe_filename(value: str) -> bool:
+    """A plain PDF name: no folder part, so a write can't leave its session
+    folder, and every name written can also be downloaded."""
     return bool(_FILENAME_RE.match(value or "")) and ".." not in value
 
 

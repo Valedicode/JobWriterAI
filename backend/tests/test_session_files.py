@@ -130,3 +130,50 @@ def test_expiry_removes_files_of_gone_sessions_only(_temporary_file_store):
         assert (store.root / recent).is_dir(), "recent files are kept"
     finally:
         reset_checkpointer()
+
+
+# --------------------------------------------------------------------------- #
+# Output filenames can't leave the session folder
+# --------------------------------------------------------------------------- #
+
+_UNSAFE_NAMES = ["../escape.pdf", "../../app/main.pdf", "/tmp/escape.pdf", "C:/escape.pdf", "sub/dir.pdf", "cv.tex"]
+
+
+@pytest.mark.parametrize("name", _UNSAFE_NAMES)
+def test_pdf_tools_refuse_names_with_a_folder_part(name, _temporary_file_store):
+    from app.agents.writer_agent import generate_cover_letter_pdf, generate_cv_pdf
+
+    out = str(_temporary_file_store.session_dir(str(uuid.uuid4())))
+    cv_msg = generate_cv_pdf.invoke({"cv_json": "{}", "output_filename": name, "applicant_name": "Ada", "output_dir": out})
+    letter_msg = generate_cover_letter_pdf.invoke({
+        "content_json": "{}", "output_filename": name, "applicant_name": "Ada", "output_dir": out,
+    })
+    assert cv_msg.startswith("Error:") and "filename" in cv_msg
+    assert letter_msg.startswith("Error:") and "filename" in letter_msg
+
+
+@pytest.mark.parametrize("name", _UNSAFE_NAMES)
+def test_writer_endpoints_answer_400_for_unsafe_names(name, client):
+    cv = {"name": "Ada", "email": "ada@example.com", "phone": "1", "skills": [], "education": [],
+          "experience": [], "projects": []}
+    plan = {"matching_experiences": [], "matching_skills": [], "relevant_projects": [],
+            "keywords_to_incorporate": [], "reordering_suggestions": "", "emphasis_points": [], "reasoning": ""}
+    resp = client.post(
+        "/api/writer/generate-cv",
+        json={"cv_data": cv, "tailoring_plan": plan, "output_filename": name},
+    )
+    assert resp.status_code == 400 and "output filename" in resp.json()["detail"], resp.text
+    resp = client.post(
+        "/api/writer/generate-cover-letter",
+        json={"cv_data": cv, "job_data": JOB, "output_filename": name, "recipient_info": "Hiring Team"},
+    )
+    assert resp.status_code == 400 and "output filename" in resp.json()["detail"], resp.text
+
+
+def test_long_applicant_names_still_give_a_safe_filename():
+    from app.agents.orchestrator.nodes_job_tailoring import _filename_base
+    from app.services.file_store import is_safe_filename
+
+    base = _filename_base({"name": "Maria " * 60})
+    assert is_safe_filename(f"{base}_cv_tailored.pdf")
+    assert is_safe_filename(f"{base}_anschreiben.pdf")

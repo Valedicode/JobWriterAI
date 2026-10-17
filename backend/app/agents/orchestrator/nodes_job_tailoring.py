@@ -142,8 +142,9 @@ def _fail_step(step: str, label: str, detail: str) -> dict[str, Any]:
 
 
 def _slugify(name: str) -> str:
-    """Filesystem-safe lowercase slug for output filenames."""
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", (name or "applicant")).strip("_").lower()
+    """Filesystem-safe lowercase slug for output filenames, short enough that
+    every name built from it passes file_store.is_safe_filename."""
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", (name or "applicant"))[:80].strip("_").lower()
     return slug or "applicant"
 
 
