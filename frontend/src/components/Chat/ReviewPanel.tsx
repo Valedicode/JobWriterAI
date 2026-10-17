@@ -125,11 +125,14 @@ const IdleReview = ({
       </ol>
     )}
     {files.length > 0 && (
-      <div className="space-y-2">
+      <div>
         <p className="text-meta font-semibold uppercase tracking-[0.14em] text-ink-faint">Your files</p>
-        {files.map((file) => (
-          <DownloadButton key={file.download_url} file={file} />
-        ))}
+        {/* DownloadButton is inline-block, so without a gap the buttons sit on one line touching each other. */}
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          {files.map((file) => (
+            <DownloadButton key={file.download_url} file={file} />
+          ))}
+        </div>
       </div>
     )}
   </div>
