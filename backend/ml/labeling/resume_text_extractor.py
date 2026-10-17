@@ -1,26 +1,76 @@
-"""Raw resume text -> ResumeInfo. Mirrors the LLM step of app.agents.cv_agent.extract_resume_info,
-which only accepts PDFs; the HF dataset provides plain text."""
+"""Raw resume text -> ResumeInfo, exactly as the app extracts a PDF's text.
+
+app.agents.cv_agent.extract_resume_info only accepts PDFs, and its system prompt is an inline
+literal inside that function, so it can't be imported. Copying it drifted once already (the app
+later added rules for spoken languages, skill names and contact fields). Instead the prompt is
+read from cv_agent.py's source here, so the teacher's resume extraction always matches the app
+version it is run against, without changing the app (prior work, see NLP_PROJECT_PLAN.md).
+
+Like the app (since #71), the result is checked against the text it came from
+(app.services.cv_extraction_checks): bullets copied into a second entry, repeated grades and job
+titles repeated as the company are removed, and each removal is reported.
+"""
+import ast
+import inspect
+from dataclasses import dataclass, field
+from functools import lru_cache
+
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
+from app.agents import cv_agent
+from app.config import get_settings
 from app.models.schemas import ResumeInfo
+from app.openai_llm import OPENAI_MAX_RETRIES, OPENAI_REQUEST_TIMEOUT_S, chat_model, client_kwargs
+from app.services.cv_extraction_checks import clean_extracted_cv
 
-# Copied verbatim from cv_agent.extract_resume_info (inline there, not importable); keep in sync.
-_SYSTEM = (
-    "Extract all information from the resume text. Be thorough and capture all details. "
-    "Include: contact information (email, phone, location), professional links (GitHub, LinkedIn, portfolio/website URLs), "
-    "and a short professional summary if one is present. "
-    "For education: one entry per degree/program with institution, degree, location, dates "
-    "(as written, e.g. 'Expected: September 2027'), grade if stated, and any awards/details. "
-    "For experience: include the location of each role if stated. "
-    "For leadership roles, extracurricular activities, and volunteer work: one leadership_activities "
-    "entry per activity with role, organization, location, dates, a short description, and impact bullets."
-)
+PROMPT_PREFIX = "Extract all information from the resume text."
 
-_CHAIN = ChatPromptTemplate.from_messages([("system", _SYSTEM), ("user", "{text}")]) | ChatOpenAI(
-    model="gpt-4o-mini", temperature=0
-).with_structured_output(ResumeInfo)
+
+@dataclass
+class Extraction:
+    """A checked extraction: the CV, what the checks removed, and the call's token usage."""
+    cv: dict
+    notes: list[str] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@lru_cache(maxsize=1)
+def app_resume_prompt() -> str:
+    """The system prompt string in cv_agent.extract_resume_info (adjacent literals already joined)."""
+    tree = ast.parse(inspect.getsource(cv_agent))
+    found = [node.value for node in ast.walk(tree)
+             if isinstance(node, ast.Constant) and isinstance(node.value, str)
+             and node.value.startswith(PROMPT_PREFIX)]
+    if len(found) != 1:
+        raise RuntimeError(f"expected one CV extraction prompt in cv_agent.py, found {len(found)}")
+    return found[0]
+
+
+def _model(model: str | None) -> ChatOpenAI:
+    """The app's extraction model (``chat_model("extract")``, as routed by the settings), or
+    ``model`` with exactly the same client settings, for comparing candidate teacher models."""
+    if model is None:
+        return chat_model("extract", temperature=0)
+    extra = {} if get_settings().llm_reasoning else {"extra_body": {"reasoning": {"enabled": False}}}
+    return ChatOpenAI(model=model, temperature=0, timeout=OPENAI_REQUEST_TIMEOUT_S,
+                      max_retries=OPENAI_MAX_RETRIES, **client_kwargs(), **extra)
+
+
+def extract_resume(text: str, model: str | None = None) -> Extraction:
+    """Extract and check one resume text (raises on a failed or unparseable call)."""
+    prompt = ChatPromptTemplate.from_messages([("system", app_resume_prompt()), ("user", "{text}")])
+    chain = prompt | _model(model).with_structured_output(ResumeInfo, include_raw=True)
+    out = chain.invoke({"text": text})
+    if out.get("parsing_error") or out.get("parsed") is None:
+        raise ValueError(f"unparseable extraction: {out.get('parsing_error')}")
+    usage = getattr(out["raw"], "usage_metadata", None) or {}
+    cleaned, notes = clean_extracted_cv(out["parsed"].model_dump(), text)
+    return Extraction(ResumeInfo.model_validate(cleaned).model_dump(), notes,
+                      usage.get("input_tokens", 0), usage.get("output_tokens", 0))
 
 
 def extract_resume_info_from_text(text: str) -> ResumeInfo:
-    return _CHAIN.invoke({"text": text})
+    """The checked extraction as a ResumeInfo (the teacher's resume step)."""
+    return ResumeInfo.model_validate(extract_resume(text).cv)
