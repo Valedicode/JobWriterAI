@@ -1,204 +1,607 @@
-# NLP Course Project: Distilling Compatibility Scoring into a Small Fine-Tuned Model
+# NLP Course Project: Distilling JobWriterAI's Compatibility Scorer into a Small Fine-Tuned Model
 
-Status: draft implementation plan, 2026-09-17.
+Plan v2, 2026-10-17. Supersedes the 2026-09-17 draft (v1). The proposal was approved on 2026-10-17.
 
-## 0. Scope & attribution (read this before writing anything else)
+v2 keeps v1's scope and adds three things: what the data already in hand says (Section 2), a sturdier
+evaluation protocol (Sections 3, 8-11) and a phased plan with the current status (Section 13).
 
-This document plans **new work only**. It does not claim any part of the existing
-JobWriterAI application — `backend/app/agents/scoring_agent.py`, its skill-matching
-cascade, `backend/app/data/skill_graph.json`, or the LangGraph orchestrator — as a
-contribution of this course project. That code predates the course and is treated
-here strictly as:
+---
 
-1. **The teacher** whose behavior we distill (a black box we call, not code we wrote
-   for this project), and
-2. **Reused infrastructure** (its Pydantic schemas, its text-extraction tools) that
-   the *data preparation* scripts call into, the same way a project might call any
-   third-party library.
+## 0. Status (2026-10-17)
 
-Everything under the new `backend/ml/` directory (Section 1) is the actual course
-contribution: teacher-label generation harness, external-dataset prep, LoRA/QLoRA
-training, and the evaluation protocol. Keep this line intact in the report: describe
-`scoring_agent.py` in a "Background / Existing System" subsection, not in
-"Methodology" or "Contributions."
+| Area | State |
+|---|---|
+| Proposal | Approved 2026-10-17 |
+| Scaffolding: `backend/ml/` config, requirements, labelling, training script with a CPU smoke test | Committed on `feature/distillation` (`8f91d91`, 2026-09-18). The branch is 93 commits behind `develop` |
+| HF dataset prep and due-diligence report | Done (Appendix A). `prepare_hf_eval_dataset.py` exists only on disk: `backend/.gitignore` ignores every `data/` folder, including `backend/ml/data/` |
+| Teacher pilot | 200 train rows, run on the 2026-09-17 scorer. Outdated: the scorer has changed 13 times since (rubric, knockouts, eligibility, experience date ranges, model routing) |
+| Teacher frozen (tagged) | No |
+| Evaluation harness, baselines, inference wrapper, latency/cost harness, failure analysis | Not started |
+| Report, presentation | Not started |
 
-## 1. Repo layout for the new work
+Problems found in the 2026-10-17 review, all scheduled in Phase 0/1:
 
-New, isolated top-level module — nothing added to `backend/app/agents/`:
+- `training/train_lora.py`: `lr_scheduler_type="cosine", warmup_steps=0.03` are inside a comment
+  on the `learning_rate` line, so training runs at a constant learning rate with no warmup.
+- `labeling/resume_text_extractor.py`:
+  - Its copy of the CV-extraction prompt is stale. The app's prompt has since added rules for
+    spoken languages, skill names without category labels, and contact fields.
+  - It calls `ChatOpenAI("gpt-4o-mini")` directly instead of the app's routed
+    `chat_model("extract")`, so resume and job extraction can run on different providers.
+- `labeling/generate_teacher_labels.py` has none of the following:
+  - an extraction cache (it makes 2 LLM extractions per row although the train split has only
+    642 distinct resumes and 280 distinct jobs)
+  - an embedding cache
+  - retry/backoff
+- Labelling cost is read from `get_openai_callback`, which may not price OpenRouter model ids.
+- `requirements-ml.txt` uses `>=` ranges instead of pinned versions.
+- The seven app fixes from the 2026-10-17 code review are local branches, not yet merged. None
+  changes `scoring_agent.py`, so they don't change the teacher.
+
+---
+
+## 1. Scope and attribution (read this before writing anything else)
+
+This document plans **new work only**. It does not claim any part of the existing JobWriterAI
+application as a contribution of this course project. That includes
+`backend/app/agents/scoring_agent.py`, its skill-matching cascade,
+`backend/app/data/skill_graph.json`, the extraction agents and the LangGraph orchestrator. That
+code predates the course and is treated strictly as:
+
+1. **The teacher** whose behaviour we distil: a black box we call, not code we wrote for this
+   project.
+2. **Reused infrastructure**: its Pydantic schemas and extraction tools, which the data-preparation
+   scripts call like any third-party library.
+
+Everything under `backend/ml/` is the course contribution:
+- the labelling harness
+- dataset preparation
+- LoRA/QLoRA training
+- the evaluation protocol and harness
+- the analysis
+
+In the report, describe `scoring_agent.py` in a "Background / Existing System" subsection, never
+under "Method" or "Contributions".
+
+Two further rules:
+
+- **App maintenance is not course work.** Changes to the app made during the course are listed as
+  pre-existing-app maintenance with their commit ranges. This covers the 2026-10-17 bug fixes and
+  any teacher-affecting fix.
+- **The teacher is one tagged version** (`teacher-v1`, Section 5.1). Labels from any other version
+  are not mixed in.
+
+The report's first page carries a prior-work vs. new-work table:
+
+| | Prior work (JobWriterAI, pre-course) | New work (this project) |
+|---|---|---|
+| Code | `backend/app/**`, `frontend/**` | `backend/ml/**` |
+| Commits | before 2026-09-17, plus listed app-maintenance commits | `feature/distillation` from `8f91d91` (2026-09-18) |
+| Role | teacher, schemas, extraction | labels, students, baselines, evaluation, analysis |
+
+---
+
+## 2. What the data in hand already says (why v2 changes the protocol)
+
+These checks use only the HF **train** split and the v0 pilot. They made no API calls, and the
+test labels were not read.
+
+1. **The (old) teacher barely tracks the dataset labels.** On the 200 pilot rows:
+   - Spearman ρ between the teacher's aggregate score and the ordinal label
+     (No Fit = 0, Potential Fit = 1, Good Fit = 2) is **0.16** (p = 0.02).
+   - Mean aggregate by label: No Fit 0.36, Potential Fit 0.42, Good Fit 0.39. Good Fit scores
+     *lower* than Potential Fit.
+   - Per dimension: domain 0.26, hard_skills 0.20, experience 0.05, seniority −0.06,
+     ats_keywords −0.04.
+2. **The HF test split rewards memorising resumes.** Within train, hold out 20% of jobs (1,282
+   rows; 99% of them have their resume elsewhere in train). Predicting each held-out row only from
+   its resume's mean training label, without reading the job, gives **ρ = 0.28**, macro-F1 0.29.
+   The test split has the same structure: 476 of its 477 resumes appear in train. Any model
+   trained on dataset labels can exploit this; the teacher cannot. Labels vary within a resume
+   (only 19% of resumes have one label across all their rows), so the prior is informative but far
+   from deterministic.
+3. **The dataset has no card, no licence and no description.** Checked on the Hugging Face API,
+   2026-10-17: only `train.csv` and `test.csv`, created 2024-07-25. How the labels were made
+   (human, LLM or heuristic) is unknown, and redistribution rights are unclear.
+4. **The teacher's levels are compressed.** The pilot had 146 low / 53 medium / 1 high /
+   0 excellent (bands: low < 0.45 ≤ medium < 0.65 ≤ high < 0.80 ≤ excellent). A 4-class level
+   metric is effectively binary.
+
+What v2 does about it:
+
+- **The dataset labels are "reference labels of unknown provenance"**, never "human ground
+  truth". A small author-labelled audit set (Section 6) estimates how noisy they are.
+- **Fidelity and validity are measured separately**, each with its own primary metric.
+  Fidelity is the student against the teacher; validity is any system against the reference
+  labels. Continuous scores are primary and levels secondary.
+- **A resume-prior baseline sits next to every supervised result**, and the generalisation claim
+  is limited to unseen jobs.
+- **The teacher's own test-retest agreement is measured** and used as the ceiling for fidelity.
+- **The teacher is frozen and re-piloted before full labelling.** The numbers above come from an
+  older scorer and may change.
+
+The project stays meaningful whatever the re-pilot shows. Fidelity and cost are distillation
+questions that don't depend on the teacher's validity. The shared-subset ablation (RQ3) measures
+directly what the teacher is worth as a supervisor compared with the dataset's own labels.
+
+Suggested framing for the report: *distilling a hybrid symbolic + LLM pipeline. What transfers to
+a small model, at what cost, and whether validity is inherited.*
+
+---
+
+## 3. Research questions and hypotheses
+
+If the approved proposal words the RQs differently, keep its wording and map the analyses below
+onto it.
+
+- **RQ1, fidelity.** How closely does a LoRA-tuned 0.5B / 1.5B model reproduce the teacher's
+  scores (aggregate, the five dimensions, band) from raw text on unseen jobs? The comparison point
+  is the teacher's own test-retest agreement.
+- **RQ2, do we need to tune?** Does the tuned student beat cheaper alternatives, on fidelity and
+  on agreement with the reference labels, and at what cost per pair? The alternatives are:
+  - zero-shot prompting of the same base model
+  - zero-shot prompting of an API model
+  - embedding cosine
+  - TF-IDF models
+- **RQ3, label source (shared-subset ablation).** Train one student on teacher labels and one on
+  the dataset's labels, using identical training pairs, recipe and budget. How do they differ in
+  agreement with the reference labels and with the teacher?
+
+Directional hypotheses. They are pre-registered in Phase 2, after the `teacher-v1` re-pilot.
+
+- **H1:**
+  - Tuned students reach much higher fidelity than zero-shot models.
+  - 1.5B ≥ 0.5B.
+  - The gap to the teacher's test-retest ceiling is reported, not assumed.
+- **H2:**
+  - Against the reference labels, the teacher and the teacher-trained students are weak
+    (v0 pilot ρ ≈ 0.16).
+  - Students trained on dataset labels score higher, partly through resume memorisation
+    (resume prior ≈ 0.28).
+- **H3:**
+  - Per pair, students are at least an order of magnitude faster and cheaper than the teacher
+    pipeline.
+  - A 0.5B student is usable on CPU, which answers the GPU-deployment question.
+
+---
+
+## 4. Repo layout
+
+New, isolated module; nothing is added to `backend/app/agents/`. Generated artefacts go to
+`backend/data/ml/`, which is git-ignored.
 
 ```
 backend/ml/
-  __init__.py
-  config.py                        # paths, seeds, model registry, constants
-  requirements-ml.txt              # torch/transformers/peft/bitsandbytes/datasets/trl — NOT in backend/requirements.txt
-
+  README.md                        # exact reproduction steps (reproducibility bonus)
+  PREREGISTRATION.md               # committed before the test labels are opened (Phase 2)
+  config.py                        # paths, seed, model ids, price table, label maps
+  requirements-ml.txt              # pinned versions
+  datasets/                        # renamed from data/: backend/.gitignore ignores every data/ folder
+    prepare_hf_eval_dataset.py     # download, dedupe, sha256 of the CSVs, length report
+    splits.py                      # job-grouped train/val split, stable row ids
+    audit_sample.py                # draws the manual audit sample from val
   labeling/
-    __init__.py
-    resume_text_extractor.py       # NEW: raw text -> ResumeInfo (fills the gap cv_agent.py doesn't cover)
-    generate_teacher_labels.py     # main script: text pairs -> CompatibilityReport -> JSONL
-    embedding_cache.py             # disk-persisted cache keyed by (skill_text, model) to cut OpenAI cost
-
-  data/
-    __init__.py
-    prepare_hf_eval_dataset.py     # download cnamuangtoun/resume-job-description-fit, split handling
-    build_training_examples.py     # teacher labels (JSONL) -> instruction/completion training format
-    schema.py                      # dataclasses/TypedDicts for on-disk record formats
-
+    resume_text_extractor.py       # imports the app's CV-extraction prompt; uses chat_model("extract")
+    generate_teacher_labels.py     # resumable, cached, retried; flags; cost from tokens
+    caches.py                      # sqlite: extraction by text sha256, embeddings by (text, model)
+    teacher_meta.py                # writes teacher_meta.json (tag, commit, models, versions, dates)
   training/
-    __init__.py
-    train_lora.py                  # LoRA/QLoRA SFT script (Kaggle notebook entry point)
-    model_registry.py              # base model choices + LoRA configs per model
-
+    train_lora.py                  # Student-T and Student-D (--target teacher|dataset)
   evaluation/
-    __init__.py
-    run_inference.py               # shared inference wrapper for: distilled model, zero-shot baseline, teacher pipeline
-    eval_agreement.py              # agreement-with-teacher + agreement-with-external metrics
-    eval_latency_cost.py           # latency/cost benchmarking harness
-    failure_analysis.py            # surfaces largest-divergence examples for qualitative writeup
-
-  inference/
-    __init__.py
-    distilled_scorer.py            # STRETCH ONLY: thin wrapper to call the fine-tuned model like a tool
-
+    run_inference.py               # students and zero-shot models; JSON parsing with failure counts
+    baselines.py                   # embedding cosine, TF-IDF + ridge/LR, resume prior, majority
+    metrics.py                     # Spearman, MAE, QWK, macro-F1, fitted thresholds, clustered bootstrap
+    eval_fidelity.py
+    eval_external.py
+    eval_latency_cost.py
+    failure_analysis.py
   notebooks/
-    train_kaggle.ipynb             # thin wrapper that calls training/train_lora.py on Kaggle GPU
+    train_kaggle.ipynb             # thin wrapper around training/ and evaluation/
+  tests/                           # unit tests for metrics, splits, parsing, caches
 
-backend/data/ml/                   # git-ignored already (backend/data/ is in .gitignore) — all generated
-  teacher_labels/                  #   artifacts land here: labels, caches, checkpoints, HF dataset cache
-  hf_eval_cache/
-  embedding_cache.sqlite
-  checkpoints/
+backend/data/ml/                   # git-ignored: HF cache, labels, caches, checkpoints, predictions, results
 ```
 
-Why a new top-level `backend/ml/` instead of `backend/app/ml/`: it's not part of the
-FastAPI app (`backend/app/`) at all until the stretch-goal integration step, and
-keeping it a sibling makes the "new work vs. existing app" boundary visually obvious
-in the repo tree — useful when your professor looks at the diff.
+---
 
-Add to `.gitignore` (root, next to the existing `backend/data/` line — already
-covers `backend/data/ml/`, so no change needed there). Do add:
-```
-backend/ml/notebooks/*.ipynb_checkpoints/
-```
+## 5. Teacher
 
-## 2. Teacher-label generation
+### 5.1 Definition and freeze
 
-### 2.1 The gap: `cv_agent.py` has no raw-text extraction path
+The teacher has two stages:
+- **Extraction:** jobs go through the app's `retrieve_text`. Resumes go through a text variant of
+  the `cv_agent` extraction, which **imports** the app's prompt instead of copying it.
+- **Scoring:** `_calculate_compatibility_score_v2_internal`.
 
-`extract_resume_info` (`backend/app/agents/cv_agent.py:43`) only accepts
-`pdf_path`/`pdf_bytes` — it opens a PDF with `fitz`, extracts text, then runs a
-structured-output LLM call. The HF dataset's `resume_text` column is already plain
-text, so there's no PDF to open. `job_agent.retrieve_text` (`job_agent.py:67`)
-already does exactly the text→schema step we need for jobs, so nothing new is
-needed on that side.
+It is pinned to the git tag `teacher-v1` on `develop`, set after the 2026-10-17 fixes are merged.
 
-Write `backend/ml/labeling/resume_text_extractor.py` as a **data-prep utility**
-that mirrors `extract_resume_info`'s LLM step (same `ResumeInfo` schema, same
-system-prompt strategy) but skips PDF parsing:
+`teacher_meta.json` sits next to the labels and records:
+- tag and commit
+- provider (OpenRouter or OpenAI)
+- model per role (`LLM_MODEL_EXTRACT`, `LLM_MODEL_JUDGE`, or the shared `LLM_MODEL`)
+- embedding model and temperature
+- package versions
+- labelling start and end dates
 
-```python
-# backend/ml/labeling/resume_text_extractor.py
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from app.models.schemas import ResumeInfo  # reused, not duplicated
+The report copies these into the Data section.
 
-_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", "Extract all information from the resume text. ..."),  # same prompt text as cv_agent.py
-    ("user", "{text}"),
-])
+No scorer changes after the tag. A teacher bug found later is documented as a limitation. If it
+must be fixed, everything is relabelled under `teacher-v2`.
 
-def extract_resume_info_from_text(text: str) -> ResumeInfo:
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    chain = _PROMPT | llm.with_structured_output(ResumeInfo)
-    return chain.invoke({"text": text})
-```
+### 5.2 Labelling pipeline requirements
 
-Note this is infrastructure to *feed* the teacher pipeline, not a modification of
-`cv_agent.py` and not part of the trained model.
+- **Caching.** Extraction is cached by the sha256 of the text, so the train split needs 642 resume
+  and 280 job extractions instead of 2 × 6,241. Embeddings use a persistent on-disk cache.
+- **Robustness.** Exponential backoff on rate limits and timeouts. Resumable, keyed by row id,
+  flushing per row.
+- **Flags.** Flagged rows are excluded from training and counted in the report:
+  - LLM transferability unjudged
+  - domain embedding failed
+  - degenerate CV
+- **Recorded but kept:**
+  - experience fallback ("Could not estimate candidate years")
+  - level capped by an unmet knockout
+- **Cost** is computed from token counts × a price table in `config.py` and cross-checked against
+  the provider dashboard, not read from `get_openai_callback`.
 
-### 2.2 Where the (resume, job) pairs come from
+### 5.3 Runs
 
-Use the **HF dataset's `train` split** (6.24k rows) purely as a source of raw
-`(resume_text, job_description_text)` pairs — **discard its `label` column
-entirely for this purpose**. The dataset's own labels are reserved exclusively for
-the independent evaluation in Section 5.2; the `train` split's text is only ever
-used as unlabeled input to generate *your own* teacher labels. Keep this
-distinction explicit in the report — it's what makes the HF `test` split a valid
-independent anchor rather than leaked signal.
+1. **Re-pilot.** Run the same 200 seeded rows on `teacher-v1`. Compare with v0 (Appendix A):
+   - level distribution
+   - flag rates
+   - cost and latency
+   - ρ against the train labels
+2. **Test-retest.** Label 100 random train rows twice with all caches off. Report
+   Spearman / ICC(2,1) on the aggregate and each dimension, plus band agreement. This is the
+   fidelity ceiling for RQ1.
+3. **Full run.** All deduplicated train pairs (~6,234) and all 1,759 test pairs. For test, the
+   teacher sees only the texts; the labels stay sealed. Running the full test split rather than a
+   sample costs little because its 1,759 pairs have only ~548 distinct texts, and it means every
+   system is scored on the same rows.
+   - **Cost:** ≈ $14 for ~8k pairs at v0's per-row cost, less with extraction caching. The
+     re-pilot gives the real figure under `teacher-v1`'s models.
+   - **Wall-clock:** ~20 h at v0's rate (200 rows in ~30 min with 8 workers). Caching and 16
+     workers should bring it under a day; run it overnight.
 
-(Columns verified 2026-09-17: `resume_text` / `job_description_text` / `label`.)
+---
 
-### 2.3 Label generation script
+## 6. Data and splits
 
-```python
-# backend/ml/labeling/generate_teacher_labels.py (skeleton)
-"""
-For each (resume_text, job_description_text) row from the HF train split:
-  1. job_data = job_agent.retrieve_text.invoke({"info": job_description_text})
-  2. cv_data  = resume_text_extractor.extract_resume_info_from_text(resume_text)
-  3. skip row if extraction is degenerate (empty skills AND empty experience) —
-     real Kaggle resume dumps are noisy; log a drop-rate stat for the report
-  4. report = calculate_compatibility_score_v2.invoke({"cv_json": ..., "job_json": ...})
-  5. append {row_id, resume_text, job_description_text, cv_data, job_data, report}
-     to a resumable JSONL file (one line per row, flush per row)
-"""
-```
+- **HF train** (6,241 rows). Drop the 7 duplicate pairs, then split **by job**: ~12% of jobs
+  (~34 jobs, ~750 rows) form `val` and the rest is `train`. `val` is used only for:
+  - checkpoint selection
+  - fitting the 3-class thresholds
+  - prompt checks
+  - the audit set
 
-Requirements this script must satisfy (none of these require touching
-`scoring_agent.py`):
+  Nothing trains on `val`.
+- **HF test** (1,759 rows) is for the final evaluation only, opened once (Section 9). It measures
+  generalisation to unseen jobs, not unseen candidates.
+- **Optional unseen-resume diagnostic.** Hold out ~15% of resumes and ~15% of jobs from train and
+  evaluate on the pairs where both are held out. This says something about new candidates, which
+  the HF test split cannot.
+- **Manual audit set.**
+  - 80 pairs from `val`, stratified across its jobs.
+  - The author labels them blind on the same three classes, following a written rubric, before
+    seeing the dataset labels or teacher scores.
+  - If a second annotator is available, label 30 overlapping pairs to get inter-annotator κ.
+  - Report κ(author, dataset labels), κ(author, teacher band at fitted thresholds) and ρ of every
+    system against the author labels.
+  - This puts a noise estimate on the reference labels and gives a second, small reference set.
+- **Licensing.** The dataset has no licence, so use it for research only:
+  - Publish code, row ids and numeric outputs, never resume or job text.
+  - Record the sha256 of `train.csv` / `test.csv` and the download date, in case the dataset
+    changes or disappears.
 
-- **Resumable / idempotent**: keyed by row id, skip rows already in the output
-  JSONL. A multi-hour run against a paid API will get interrupted; don't restart
-  from zero.
-- **Persisted embedding cache**: `scoring_agent.py`'s `_get_single_embedding_cached`
-  is `lru_cache`-only (in-process, lost on restart). Skill names recur heavily
-  across thousands of job postings ("python", "react", "aws" appear constantly),
-  so wrap `get_embeddings`/`get_skill_embedding` calls behind a disk cache
-  (`backend/ml/labeling/embedding_cache.py`, e.g. a sqlite file at
-  `backend/data/ml/embedding_cache.sqlite` keyed by `(text, model)`) that survives
-  across runs. This is the single biggest cost lever.
-- **Concurrency + backoff**: process rows with a small thread/async pool (e.g.
-  8-16 concurrent) with exponential backoff on rate-limit errors — the pipeline's
-  own LLM/embedding calls are per-row synchronous.
-- **Pilot before scale**: run on ~150-250 rows first, inspect a sample of the
-  resulting `CompatibilityReport`s for sanity (do scores look reasonable? is the
-  degenerate-extraction drop rate acceptable?), and extrapolate cost/time before
-  committing to the full ~6k run. Log $ spent (token counts × published pricing)
-  and wall-clock time in the pilot so the report's "Data" section has real numbers.
+---
 
-### 2.4 Pilot results (2026-09-17, 200 seeded-random train rows, `data/ml/teacher_labels/pilot.summary.json`)
+## 7. Students
 
-- 200/200 ok; 0 degenerate resumes, 0 errors, 0 silent LLM/embedding failures.
-- LLM cost $0.34 ($0.0017/row, ~$10.50 extrapolated to 6241 rows, before extraction caching).
-- Latency p50 44 s / p95 100 s per row with 8 workers (~30 min wall-clock).
-- **Teacher output is compressed**: levels 146 low / 53 medium / 1 high / 0 excellent;
-  aggregate 0.135–0.653 (mean 0.38). Per dimension (mean): hard_skills 0.32,
-  experience 0.48, seniority 0.62, domain 0.40, ats_keywords 0.18.
-- **Teacher defect, experience dimension**: 158/200 rows fall back to the constant
-  "Could not estimate candidate years" (0.4). `scoring_agent._estimate_candidate_years`
-  never reads `ExperienceEntry.duration`, where 153 of those 158 rows have their dates,
-  and `_DATE_RANGE_RE` wouldn't match the `MM/YYYY-MM/YYYY` format anyway.
-  **Open decision:** fix it in the existing app before full labeling (a pre-existing-app
-  bug fix, its own commit, not a course contribution) or distill the teacher as-is and
-  document it as a limitation.
+### 7.1 Input and targets
 
-## 3. Data prep for the HF external eval dataset
+- **Input:** raw resume and job text, truncated to 1,536 / 768 Qwen tokens (about p90). Report the
+  share of truncated rows, and stratify errors by length.
+- **Student-T target.** Dimensions come first, so the aggregate is generated after them, mirroring
+  how the teacher computes it:
+  ```json
+  {"dimensions": {"hard_skills": 0.32, "experience": 0.50, "seniority": 0.60, "domain": 0.41, "ats_keywords": 0.18},
+   "aggregate_score": 0.38, "level": "low"}
+  ```
+  Values are rounded to 2 decimals. The gap-analysis skill lists are not a target: generating open
+  vocabulary has no clean evaluation story at this model size. That stays a discussion item.
+- **Student-D target:** `{"label": "No Fit" | "Potential Fit" | "Good Fit"}`. Its continuous score
+  is the expected ordinal value from the probabilities of the three labels' first tokens.
+- **Shared subset.** Student-T and Student-D train on the **same pairs**: the clean
+  teacher-labelled pairs in `train`. They share the recipe, steps and seeds. Only the label source
+  differs.
+- **Derived checks for Student-T:**
+  - Compare the generated `level` token with the band of the generated aggregate.
+  - Recompute the aggregate from the predicted dimensions with the teacher's weights
+    (0.40 / 0.15 / 0.10 / 0.10 / 0.10, normalised), and report the gap to the generated aggregate
+    as a consistency check.
 
-`backend/ml/data/prepare_hf_eval_dataset.py`:
+  The teacher's level is the band of its aggregate, except when an unmet knockout caps it at
+  medium. That case is recorded in the labels.
 
-- `datasets.load_dataset("cnamuangtoun/resume-job-description-fit")`, cache under
-  `backend/data/ml/hf_eval_cache/`.
-- Confirm and record: exact column names, class balance of `label` (3-class:
-  expect something like `No Fit` / `Potential Fit` / `Good Fit`), 6.24k/1.76k
-  split sizes.
-- Preprocessing: strip boilerplate/HTML artifacts if present, drop empty-text
-  rows, record a length histogram (resume/job text token counts) — this
-  determines your model's max sequence length and truncation strategy in
-  training (Section 4).
-- **Never touch `test` split text or labels until final evaluation.** `train`
-  split text feeds Section 2; `test` split is untouched until Section 5.2.
+### 7.2 Recipe
 
-### 3.1 Verified findings (2026-09-17, `data/ml/hf_eval_cache/dataset_report.json`)
+- **Models:** `Qwen/Qwen2.5-0.5B-Instruct` and `Qwen/Qwen2.5-1.5B-Instruct`.
+- **Adapters:** QLoRA (nf4) on GPU. LoRA r = 16, α = 32, dropout 0.05, on all attention and MLP
+  projections.
+- **Loss:** completion-only, so prompt tokens are masked (already checked by the smoke test).
+- **Optimisation:** lr 2e-4 with a cosine schedule and 3% warmup (fix the commented-out
+  arguments). 2-3 epochs; the checkpoint is chosen on `val` loss.
+- **Decoding:** greedy at evaluation, with a fixed `max_new_tokens` (96 for Student-T, 16 for
+  Student-D).
+- **Seeds:** 3 for every 0.5B configuration, and 1 (2 if quota allows) for 1.5B. Report mean ± sd.
+- **Stretch, in order:**
+  1. aggregate-first vs dimensions-first target
+  2. learning curve at 25 / 50 / 100% of the labels
+  3. Qwen2.5-3B
+  4. a student trained on both label sources
+
+### 7.3 Compute (Kaggle, ~30 GPU-h/week, T4 16 GB)
+
+These are estimates, to be replaced by the smoke-test timings.
+
+- **Tokens:** ~5.5k examples × ~1.6k tokens ≈ 9M tokens per epoch.
+- **Training:** 1.5B ≈ 1-1.7 h per epoch; 0.5B ≈ 0.3-0.6 h per epoch.
+- **Inference** on val + test (~2.5k pairs): ≈ 20-40 min per model with batching.
+- **Total:** all core runs (2 × 1.5B, 6 × 0.5B, zero-shot inference) ≈ 15-20 GPU-h, about one
+  Kaggle week.
+
+Run a 200-example, 1-epoch smoke test before every new configuration.
+
+---
+
+## 8. Systems compared (one harness, identical rows)
+
+| System | Trained on | Fidelity (vs teacher) | Validity (vs reference labels) |
+|---|---|---|---|
+| Teacher (cascade) | n/a | test-retest ceiling | yes |
+| Student-T 0.5B / 1.5B | teacher labels | yes | yes |
+| Student-D 0.5B / 1.5B | dataset labels | yes (expected poor) | yes |
+| Zero-shot Qwen 0.5B / 1.5B (same prompt as Student-T) | n/a | yes | yes |
+| Zero-shot API model (`gpt-4o-mini`) | n/a | yes | yes |
+| Embedding cosine (`text-embedding-3-small`, the teacher's model) | n/a | yes | yes |
+| TF-IDF + ridge → teacher aggregate | teacher labels | yes | yes |
+| TF-IDF + logistic regression → label | dataset labels | n/a | yes |
+| Resume prior (resume's mean train label) | dataset labels | n/a | yes (leakage reference) |
+| Majority class | dataset labels | n/a | yes |
+
+- **TF-IDF features:** TF-IDF vectors of the resume and the job (fitted on `train`), their cosine,
+  and their element-wise product, so the model sees the overlap of the pair rather than each text
+  alone.
+- **Zero-shot prompt:** the same system prompt and JSON schema as Student-T, plus a short
+  description of the five dimensions and the 0-1 scale.
+  - Parse failures are retried once, then counted.
+  - Metrics are reported on parsed rows with coverage, and with failures imputed by the `val`
+    mean.
+  - Optional: a direct 3-class prompt for the API model, scored on validity only.
+
+---
+
+## 9. Metrics, statistics and pre-registration
+
+**Fidelity (RQ1, RQ2):**
+- **Primary:** Spearman ρ between predicted and teacher aggregate.
+- **Secondary:**
+  - MAE and Pearson
+  - per-dimension MAE / ρ
+  - band agreement (accuracy, quadratic-weighted κ)
+  - JSON validity rate
+  - the consistency gap (Section 7.1)
+- **Sets:** `val` (unseen jobs), and the HF test texts scored against the teacher's outputs.
+
+**Validity (RQ2, RQ3):**
+- **Primary:** Spearman ρ between the continuous score and the ordinal reference label (0/1/2).
+  This needs no label mapping.
+- **Secondary:** macro-F1, QWK and accuracy after mapping scores to three classes.
+  - Each system gets two thresholds, fitted on `val` to maximise macro-F1, then applied unchanged
+    to test.
+  - The teacher's 4-band levels are not collapsed by hand.
+- **Also reported:** the same metrics on the author audit set.
+
+**Efficiency (RQ2, H3):**
+- latency median / p95 per pair (warm, same machine)
+- throughput with batching
+- peak memory
+- $ per 1k pairs:
+  - API token prices for the teacher and zero-shot
+  - an equivalent on-demand T4 price for students on GPU
+  - CPU for the 0.5B student
+- **One-off costs:** labelling $ and training GPU-h.
+- **Break-even volume:** the number of pairs after which the student is cheaper than calling the
+  teacher. This answers the supervisor's training-vs-API question.
+
+**Uncertainty:**
+- 95% CIs from a **job-clustered bootstrap**: resample jobs, 2,000 replicates. Rows share jobs
+  (~22 per job in train, ~25 in test), so resampling rows would understate the variance.
+- Paired clustered bootstrap for the pre-registered comparisons.
+- Seed sd for students.
+
+**Pre-registration.** Phase 2 commits `backend/ml/PREREGISTRATION.md` (the git timestamp is the
+evidence). It contains:
+- the hypotheses
+- the primary metric per RQ
+- the short list of primary comparisons
+- the exclusion rules
+- the threshold procedure
+- the checkpoint-selection rule
+
+The HF test labels are opened **once**, after every checkpoint, prompt and threshold is frozen.
+Any analysis not in the file is reported as exploratory.
+
+---
+
+## 10. Failure analysis (graded; schedule it, don't leave it for the end)
+
+- **Largest disagreements:** the biggest |student − teacher| cases on `val` and test, put into
+  categories such as:
+  - truncated evidence
+  - seniority mismatch
+  - keyword overlap without the skill
+  - knockout cap
+  - experience fallback
+- **Per-dimension fidelity:** which teacher components transfer. Compare the embedding-like
+  `domain` with rule-based `seniority` / `experience` and with skill matching (`hard_skills`).
+- **Length strata:** errors on truncated vs. untruncated inputs.
+- **Reference-label disagreements:** cases where teacher and student agree with each other but
+  disagree with the reference label. Cross-check them against the audit set: label noise or a
+  teacher blind spot?
+- **Privacy:** examples in the report are paraphrased. No verbatim resume text.
+
+---
+
+## 11. Threats to validity
+
+| Threat | Handling |
+|---|---|
+| Reference labels of unknown provenance | Author audit set with κ; never called ground truth |
+| Resume overlap between train and test | Claim unseen jobs only; resume-prior baseline beside every supervised result |
+| Teacher non-determinism (LLM extraction and judge) | Test-retest ceiling; tagged teacher; recorded models |
+| Teacher drift | `teacher-v1` tag; no scorer edits during labelling |
+| Truncated inputs (student) vs. full text (teacher) | Share truncated; length-stratified errors |
+| Domain shift: the app targets German/EU student CVs, the dataset is general-market English resumes | Fidelity results transfer; validity results are about this dataset only |
+| Compressed teacher levels | Continuous metrics primary; levels secondary |
+| Many comparisons | Few pre-registered primary comparisons; the rest exploratory |
+| Small `val` (~34 jobs) | Clustered CIs; thresholds are its only fitted parameters |
+
+---
+
+## 12. Ethics, disclosure, reproducibility
+
+- **Prior vs. new work:** the table in Section 1 goes on the report's first page. The
+  pre-existing app is described as background.
+- **AI assistance:** disclose it according to the course policy. This is separate from the
+  JobWriterAI disclosure.
+- **Dataset:** no licence, so research use only and no redistribution of text. Resumes may contain
+  personal data, so no verbatim examples.
+- **Reproducibility:**
+  - `backend/ml/README.md` with exact commands
+  - pinned `requirements-ml.txt`
+  - fixed seeds
+  - `teacher_meta.json`
+  - dataset hashes
+  - a link to the Kaggle notebook
+  - released numeric predictions and teacher outputs keyed by row id, so the tables can be rebuilt
+    without paying for relabelling
+  - one script that rebuilds every results table from the saved predictions
+
+---
+
+## 13. Plan and status
+
+Estimates are working days for one person, part-time. Dates are set once the deadline is known.
+
+**Critical path:** Phase 0 → Phase 1 labelling → Phase 4 training → Phase 6. Phases 2, 3 and 5
+run in parallel while labelling and training run on their own. Start the report skeleton in
+Phase 2.
+
+### Phase 0: repo hygiene and teacher freeze (0.5-1 day). Status: not started
+- [ ] Merge the seven 2026-10-17 fix PRs into `develop`.
+- [ ] Merge `develop` into `feature/distillation`. Use a merge, not a rebase: the branch is
+  already on GitHub.
+- [ ] Rename `backend/ml/data/` → `backend/ml/datasets/` and commit `prepare_hf_eval_dataset.py`.
+- [ ] `train_lora.py`: restore the cosine scheduler and warmup arguments.
+- [ ] Pin `requirements-ml.txt` and start `backend/ml/README.md`.
+- [ ] App commit on `develop`, disclosed as maintenance:
+  - Export the CV-extraction prompt from `cv_agent.py` as a module constant.
+  - `resume_text_extractor.py` imports it and uses `chat_model("extract")`.
+- [ ] Tag `teacher-v1` on `develop`.
+
+**Done when:**
+- the smoke test passes on the updated branch
+- the tag exists
+- `git status --ignored backend/ml` shows no ignored source files
+
+### Phase 1: teacher labels (1.5-2 days, mostly unattended). Status: not started
+- [ ] `caches.py`, retry/backoff, cost from tokens, flags, `teacher_meta.json`.
+- [ ] Re-pilot the 200 rows on `teacher-v1` and compare with v0.
+- [ ] Test-retest on 100 rows with caches off.
+- [ ] Full labelling: train (deduplicated) and test texts.
+
+**Done when:**
+- at least 95% of pairs are clean
+- a summary records cost, latency, flag rates, level distribution and ρ against the train labels
+  (train only)
+- the re-pilot numbers are copied into Appendix A
+
+### Phase 2: audit set and pre-registration (1 day). Status: not started
+- [ ] `splits.py` (job-grouped `val`) and `audit_sample.py`.
+- [ ] Label the 80 audit pairs blind with a written rubric. Add the second annotator's 30 if
+  available.
+- [ ] Write and commit `PREREGISTRATION.md`.
+- [ ] Report skeleton: the disclosure table and Background / Data sections.
+
+**Done when:** `PREREGISTRATION.md` is committed before any test-set evaluation.
+
+### Phase 3: evaluation harness and CPU baselines (1.5-2 days). Status: not started
+- [ ] `metrics.py`: clustered bootstrap, fitted thresholds, QWK. Unit tests against hand-computed
+  cases.
+- [ ] `eval_fidelity.py`, `eval_external.py`.
+- [ ] `baselines.py`: embedding cosine, TF-IDF ridge / LR, resume prior, majority.
+
+**Done when:** one command prints the `val` table for the teacher and all CPU baselines.
+
+### Phase 4: students (2-3 days, GPU, unattended). Status: not started
+- [ ] Smoke test on Kaggle with the real labels (200 examples, 1 epoch).
+- [ ] Student-T and Student-D at 0.5B × 3 seeds, and at 1.5B × 1-2 seeds.
+- [ ] `run_inference.py` on `val`. Choose checkpoints.
+
+**Done when:** the `val` fidelity and validity tables include all students.
+
+### Phase 5: zero-shot baselines and efficiency (1 day). Status: not started
+- [ ] Zero-shot Qwen 0.5B / 1.5B and `gpt-4o-mini` on `val`.
+- [ ] `eval_latency_cost.py`: teacher (cold, cache off), API zero-shot, students on GPU, 0.5B on
+  CPU.
+
+**Done when:** the efficiency table and break-even volume are computed.
+
+### Phase 6: final evaluation (1-1.5 days). Status: not started
+- [ ] Freeze checkpoints, prompts and thresholds. Open the test labels once.
+- [ ] Final tables with clustered CIs, the pre-registered comparisons, and the audit-set results.
+- [ ] `failure_analysis.py` and the qualitative categories.
+
+**Done when:** results are written to `backend/data/ml/results/` with the commit hash, and the
+numeric predictions are exported for release.
+
+### Phase 7: report, presentation, reproducibility package (2 days). Status: not started
+- [ ] Report: disclosure table on page 1, RQs, method, results with CIs, failure analysis,
+  threats, limitations.
+- [ ] Slides.
+- [ ] Verify the README from a clean clone. Link the Kaggle notebook.
+
+**Done when:** a clean clone reproduces the tables from the released predictions.
+
+**Total core path:** roughly 10-13 working days, of which about 3 are unattended labelling and
+training. An early submission is realistic once the deadline is known.
+
+### Decisions needed
+
+1. The deadline, to put dates on the phases and decide whether to aim for the early-submission
+   bonus.
+2. A second annotator for 30 audit pairs. Optional, but it makes the label-noise estimate much
+   stronger.
+3. Whether the approved proposal words the RQs or the metric split differently from Section 3. If
+   it does, Section 3 adopts that wording.
+
+### How the plan maps to the grading
+
+| Criterion | Where it is earned |
+|---|---|
+| Technical soundness | Grouped splits, test-retest ceiling, resume-prior baseline, audit set, clustered CIs, pre-registration |
+| Technical excitement | Fidelity vs. validity of a distilled hybrid pipeline; the RQ3 label-source ablation; per-dimension transfer analysis |
+| Clarity | One primary metric per RQ; disclosure table on page 1 |
+| Individual contribution | Everything under `backend/ml/`, with commit ranges |
+| Reproducibility bonus | Pinned requirements, README, seeds, released predictions, teacher metadata |
+| Ethics | Prior-work disclosure, AI-assistance disclosure, no text redistribution |
+
+---
+
+## Appendix A: data findings and pilot v0 (2026-09-17 scorer, outdated teacher)
+
+### A.1 HF dataset (`cnamuangtoun/resume-job-description-fit`, report in `data/ml/hf_eval_cache/dataset_report.json`)
 
 | | train | test |
 |---|---|---|
@@ -209,228 +612,47 @@ Requirements this script must satisfy (none of these require touching
 | resume tokens p50 / p90 / max (Qwen2.5) | 1014 / 1846 / 4256 | 1019 / 1843 / 4057 |
 | job tokens p50 / p90 / max | 430 / 919 / 1432 | 421 / 1061 / 1563 |
 
-- **Train/test share resumes: 476 of 477 test resumes appear in train.** Jobs and
-  pairs are fully disjoint. The HF `test` split therefore measures generalization
-  to **unseen job descriptions**, not unseen candidates. State this in the report's
-  evaluation protocol; don't claim resume-level generalization.
-- **Few unique texts.** ~10 rows per resume, ~22 per job. Consequences:
-  (1) the teacher-validation split (Section 5.1) must be **grouped by job**, or
-  agreement is inflated by memorized jobs (`train_lora.py` does this);
-  (2) caching resume/job extraction by text cuts labeling LLM calls ~10-20×.
-- **Class imbalance**: ~50% `No Fit` — report macro-F1, not just accuracy.
-- No cleaning needed (no empties); lengths set truncation to ~p90
-  (resume 1536 / job 768 tokens) in `train_lora.py`.
+- 476 of 477 test resumes appear in train. Jobs and pairs are disjoint.
+- About 10 rows per resume and ~22 per job.
+- ~50% No Fit, so macro-F1 rather than accuracy for classification.
+- No card, no licence, no description (Hugging Face API, 2026-10-17).
 
-## 4. Training script skeleton
+### A.2 Pilot v0 (200 seeded train rows, `data/ml/teacher_labels/pilot.summary.json`)
 
-### 4.1 Design decision: raw text in, structured JSON out
+- **Completion:** 200/200 ok; 0 degenerate CVs, 0 errors, 0 flagged rows.
+- **Cost:** $0.34 ($0.0017 per row; ~$10.50 extrapolated to 6,241 rows before extraction
+  caching).
+- **Latency:** p50 44 s / p95 100 s per row with 8 workers (~30 min wall-clock).
+- **Levels:** 146 low / 53 medium / 1 high / 0 excellent.
+- **Aggregate score:** 0.135-0.653, mean 0.38.
+- **Dimension means:** hard_skills 0.32, experience 0.48, seniority 0.62, domain 0.40,
+  ats_keywords 0.18.
+- **Experience defect (now fixed in the app):** 158/200 rows fell back to the constant "Could not
+  estimate candidate years" (0.4), because `_estimate_candidate_years` ignored
+  `ExperienceEntry.duration`. It now reads `duration` and parses more date formats
+  (`fix/experience-date-ranges`). This is one of the reasons the v0 numbers are outdated.
+- **Agreement with train labels (computed 2026-10-17):**
+  - Spearman 0.16 overall.
+  - Mean aggregate by label: No Fit 0.36 / Potential Fit 0.42 / Good Fit 0.39.
+  - Per dimension: domain 0.26, hard_skills 0.20, experience 0.05, seniority −0.06,
+    ats_keywords −0.04.
+  - The 200 rows cover 162 resumes and 120 jobs.
 
-The distilled model takes **raw `(resume_text, job_description_text)` text** as
-input — not the structured `cv_data`/`job_data` JSON the existing pipeline
-consumes internally. Reasons:
+### A.3 Resume-prior diagnostic (train only, computed 2026-10-17)
 
-- It matches the external HF eval set's input format exactly (raw text pairs),
-  so no extraction step is needed at eval-on-external-data time.
-- It makes the distilled model a genuine end-to-end fast-path replacement
-  (text → score), not something that still depends on the existing app's
-  extraction agents at inference time.
+- **Setup:** 20% of train jobs held out (1,282 rows; 99% of their resumes seen in the rest of
+  train).
+- **Resume prior:** ρ 0.28, macro-F1 0.29, accuracy 0.34.
+- **Majority class:** accuracy 0.45.
+- **Label consistency:** 19% of resumes and 13% of jobs carry a single label across all their
+  rows.
 
-Output target (generative SFT, formatted as JSON in the completion):
-```json
-{"aggregate_score": 0.71, "level": "high",
- "dimensions": {"hard_skills": 0.68, "experience": 0.9, "seniority": 0.75, "domain": 0.6, "ats_keywords": 0.72}}
-```
-Include the five dimension scores — the teacher pipeline computes them for free,
-and they materially strengthen the failure-analysis section (Section 6) for
-close-to-zero extra training complexity. **Do not** attempt to reproduce the
-structured `GapAnalysis` skill lists (matched/transferable/missing skill names)
-as a core target — open-vocabulary generation with a fiddly eval story is a bad
-time investment for a 0.5-3B model on a course timeline. Keep it as an explicit
-stretch/discussion item ("could this scale to structured gap output?") rather
-than a deliverable.
+## Appendix B: related work pointers
 
-Both aggregate_score and level are included in the target JSON. level is the primary evaluation target — closed label space, matches the external dataset's granularity, and is robust to malformed float output. aggregate_score is secondary, used for correlation-based metrics and per-dimension failure analysis.") and tweak the opening of 5.1/5.2 to say "primary metric: band accuracy/macro-F1" before listing the continuous-score metrics.
-
-### 4.2 Base model + method
-
-- **Primary**: `Qwen2.5-1.5B-Instruct` — good quality/compute tradeoff for
-  Kaggle's free GPU tier.
-- **Ablation (if time allows)**: `Qwen2.5-0.5B-Instruct` — cheaper, tests how far
-  distillation quality degrades at the smallest size, which is a natural
-  "quantitative results" axis for the report.
-- **Stretch**: `Qwen2.5-3B-Instruct` if compute budget and time allow a second
-  full run.
-- **Method**: QLoRA (4-bit base via `bitsandbytes` + LoRA adapters via `peft`),
-  standard causal-LM SFT loss with the prompt tokens masked out of the loss
-  (only the completion JSON contributes). Use `trl`'s `SFTTrainer` to avoid
-  hand-rolling the masking/collation logic — this is the same simplicity the
-  agent-distillation paper (arXiv 2505.17612) and ConFit v3 both use as their
-  base recipe (plain SFT), before any listwise/re-ranking additions.
-- Explicitly **not** building a custom regression head on the base model —
-  bigger architectural surface, harder to reproduce, and generative JSON output
-  is sufficient for the score/band targets. Mention this tradeoff in the
-  report's limitations/future-work, don't implement it.
-
-```python
-# backend/ml/training/train_lora.py (skeleton)
-from peft import LoraConfig, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import SFTTrainer, SFTConfig
-
-MODEL_ID = "Qwen/Qwen2.5-1.5B-Instruct"
-
-def load_model():
-    bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                              bnb_4bit_compute_dtype="bfloat16")
-    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, quantization_config=bnb, device_map="auto")
-    tok = AutoTokenizer.from_pretrained(MODEL_ID)
-    lora_cfg = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05,
-                           target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-                           task_type="CAUSAL_LM")
-    return get_peft_model(model, lora_cfg), tok
-
-def format_example(row):
-    prompt = f"Resume:\n{row['resume_text']}\n\nJob:\n{row['job_description_text']}\n\nCompatibility JSON:"
-    completion = json.dumps({"aggregate_score": row["aggregate_score"], "level": row["level"],
-                              "dimensions": row["dimensions"]})
-    return {"text": prompt + " " + completion}
-
-def main():
-    model, tok = load_model()
-    train_ds, val_ds = load_teacher_label_splits()  # 90/10 of backend/data/ml/teacher_labels/*.jsonl
-    trainer = SFTTrainer(model=model, tokenizer=tok,
-                          train_dataset=train_ds.map(format_example),
-                          eval_dataset=val_ds.map(format_example),
-                          args=SFTConfig(output_dir="backend/data/ml/checkpoints/qwen1_5b",
-                                         per_device_train_batch_size=4,
-                                         gradient_accumulation_steps=4,
-                                         num_train_epochs=3, learning_rate=2e-4,
-                                         max_seq_length=1024, bf16=True, save_strategy="epoch"))
-    trainer.train()
-```
-
-### 4.3 Kaggle compute budget
-
-Kaggle gives ~30 GPU-hours/week (T4×2 or P100). For ~5.5k training examples
-(after the pilot-validated drop rate), 3 epochs, seq len ~1024-2048 (truncate
-long resumes — check the length histogram from Section 3), batch 4 ×
-grad-accum 4:
-
-- **Qwen2.5-0.5B**: ballpark 30-60 min/epoch on a single T4 → ~1.5-3h total.
-- **Qwen2.5-1.5B**: ballpark 1-2h/epoch → ~3-6h total.
-- **Qwen2.5-3B (stretch)**: likely needs T4×2 or a P100, ~2-4h/epoch → budget a
-  full day of Kaggle quota.
-
-Always run a 200-example, 1-epoch smoke test first to catch OOM/formatting bugs
-before burning quota on a full run — this is the single highest-leverage time
-saver on Kaggle's session limits.
-
-## 5. Evaluation script skeleton
-
-Two independent axes, both required per the assignment; do not conflate them.
-
-### 5.1 Agreement with teacher (held-out split of your own labels)
-
-Hold out ~10% of the teacher-labeled set (never trained on). For each row, run
-the distilled model and compare to the teacher's `CompatibilityReport`:
-- MAE/RMSE + Pearson/Spearman correlation on `aggregate_score`.
-- Band classification accuracy + confusion matrix on `level`.
-- Per-dimension MAE (5 numbers) — feeds Section 6's failure analysis (which
-  dimension does the small model struggle with most?).
-
-### 5.2 Agreement with external labels (HF `test` split, 1.76k, untouched until now)
-
-Label-space mismatch to handle explicitly: the teacher pipeline's `level` is a
-4-band scale (`low/medium/high/excellent`); the HF dataset's `label` is 3-class
-(`No Fit`/`Potential Fit`/`Good Fit`). Don't silently force one into the other —
-report both:
-- A documented band-collapse mapping (e.g. merge `high`+`excellent` → one class)
-  for a direct accuracy/macro-F1/Cohen's-kappa comparison.
-- An ordinal correlation (Spearman) between the model's continuous
-  `aggregate_score` and an ordinal encoding of the 3-class label
-  (`No Fit=0, Potential=1, Good=2`) — this sidesteps the mapping question
-  entirely and is arguably the cleaner generalization metric to lead with.
-
-### 5.3 Baselines run through the identical harness
-
-- **(a) Existing cascade pipeline itself**, run directly on a cost-bounded sample
-  (e.g. 300-500 rows, not all 1.76k — real paid API calls) of the HF `test` set.
-  This is your upper-bound reference: how well does the *teacher* agree with the
-  external ground truth? The distilled model's job is to approach this number
-  cheaply, not necessarily beat it.
-- **(b) Zero-shot prompting** of a general LLM (reuse `gpt-4o-mini`, and/or the
-  same base Qwen model with no fine-tuning) on the identical prompt format from
-  Section 4.1, on both eval sets.
-- **(c) ConFit v3 / arXiv 2505.17612 comparison**: treat as related-work citations
-  and a discussion of how their listwise re-ranking / retrieval+code-tool
-  distillation ideas relate to your simpler SFT approach — implementing either
-  in full is disproportionate to a course timeline. If time remains after
-  Section 4-6 are done, a lightweight ablation (e.g. listwise ranking loss
-  instead of pointwise regression-via-JSON) is a good bonus, not a prerequisite.
-
-### 5.4 Latency/cost harness
-
-`backend/ml/evaluation/eval_latency_cost.py`: same N inputs through all three
-systems (distilled model, existing cascade, zero-shot baseline), on the same
-machine, warm-started, averaged over multiple runs:
-- Wall-clock latency per call (report median + p95, not just mean).
-- $ cost per call: token-counted × published pricing for the cascade/zero-shot
-  (real OpenAI calls); compute-only for the distilled model (report both a
-  Kaggle-GPU number and, if feasible, a CPU-inference number since that's the
-  more realistic "cheap fast-path" deployment target).
-
-### 5.5 Failure analysis
-
-`backend/ml/evaluation/failure_analysis.py`: rank held-out + external examples
-by `|predicted - teacher|` (and separately by disagreement with external label),
-dump the top ~15-20 divergent cases with resume/job excerpts for manual
-qualitative categorization (e.g. "model over-weights keyword overlap and misses
-seniority mismatch", "model saturates scores toward the middle band"). This
-qualitative section is explicitly graded — don't skip it or leave it to the
-night before submission.
-
-## 6. Does the current implementation need further process for evaluation?
-
-Yes, but only in the new harness, never in `scoring_agent.py` itself:
-
-- **Persisted embedding cache** (Section 2.3) — the existing `lru_cache` doesn't
-  survive process restarts and doesn't help across the teacher-labeling script's
-  thousands of repeated skill names.
-- **Concurrency + retry/backoff wrapper** around the per-row synchronous
-  `calculate_compatibility_score_v2` calls — the pipeline itself has no batching
-  across rows (only within one job's unresolved-skill LLM call), so the label
-  generation script needs its own thread/async pool.
-- **Cost/time pilot-then-scale discipline** (Section 2.3) — running the full
-  ~6k-row teacher-labeling pass blind, without a pilot, risks burning API budget
-  on a bug or on a bad extraction-quality rate.
-- **Determinism caveat for the report**: `temperature=0` calls to OpenAI are
-  *not* perfectly deterministic across API-side model updates; note the exact
-  model snapshot used (e.g. `gpt-4o-mini`) and the date labels were generated, so
-  the "teacher" is reproducibly described even if not byte-for-byte
-  reproducible.
-
-No other changes to the existing scoring pipeline are needed — it already
-produces exactly the structured, multi-dimensional signal the training/eval
-scripts need to consume.
-
-## 7. Ordered implementation plan with time estimates
-
-Estimates assume solo, part-time (a few hours/day) work; compress if you can
-block out full days.
-
-| # | Phase | Key deliverable | Est. time |
-|---|-------|------------------|-----------|
-| 0 | Scaffolding | `backend/ml/` tree, `requirements-ml.txt`, `config.py`, confirm professor sign-off | 0.5 day |
-| 1 | HF dataset prep | `prepare_hf_eval_dataset.py` run, column/schema confirmed, length histogram | 0.5–1 day |
-| 2 | Teacher labeling | `resume_text_extractor.py` + `generate_teacher_labels.py`, pilot run (~200 rows), then full ~5.5k run w/ cache+retry | 1.5–2 days |
-| 3 | Training data format | `build_training_examples.py`, train/val split, dataset schema doc | 0.5–1 day |
-| 4 | Training | Kaggle notebook wiring, smoke test, full LoRA run(s) for 1.5B (+0.5B ablation if time) | 2–3 days |
-| 5 | Evaluation harness | `eval_agreement.py`, `eval_latency_cost.py`, run against both baselines + both eval axes | 1.5–2 days |
-| 6 | Failure analysis | `failure_analysis.py`, manual categorization write-up | 1 day |
-| 7 | Report + poster | Incorporate citations, results tables/figures, scope section from Section 0 | 1–1.5 days |
-| — | Stretch: app integration | `backend/ml/inference/distilled_scorer.py`, optional fast-scoring toggle in orchestrator | 1–2 days, cut first under time pressure |
-
-Core path (0-7): roughly **9-12 working days**. Start Phase 7's report skeleton
-early (right after Phase 2) and fill in results incrementally as Phases 4-6
-land — don't treat it as a final sequential step, since the early-bird bonus
-rewards finishing sooner, not finishing everything-then-writing.
+- **ConFit v3** and **arXiv 2505.17612** (agent distillation) both use plain SFT as the base
+  recipe. Cite them in Related Work and discuss their extensions (listwise re-ranking,
+  retrieval / code-tool distillation). Implementing them in full is out of scope.
+- A listwise ranking loss in place of pointwise JSON regression is a bonus ablation, not a
+  prerequisite.
+- A custom regression head on the base model is deliberately not built: it is a bigger surface
+  and harder to reproduce. It belongs in future work.
