@@ -461,6 +461,7 @@ def generate_job_summary(job_json: str) -> str:
         - required_skills: List of required skills
         - preferred_skills: Nice-to-have skills
         - key_notes: Other important points
+        or {"error": ...} when the call fails.
     """
     llm = chat_model("extract", temperature=0)
     structured_llm = llm.with_structured_output(JobSummary)
@@ -479,14 +480,8 @@ def generate_job_summary(job_json: str) -> str:
         chain = prompt | structured_llm
         summary: JobSummary = chain.invoke({"job": job_json})
         return summary.model_dump_json()
-    except Exception as e:
-        return json.dumps({
-            "role": "Unknown",
-            "responsibilities": [],
-            "required_skills": [],
-            "preferred_skills": [],
-            "key_notes": [f"Summarization failed: {str(e)[:120]}"]
-        })
+    except Exception as e:  # noqa: BLE001 - the node falls back to the posting as extracted
+        return json.dumps({"error": str(e)})
 
 def _extract_compatibility_report(compatibility_data: Dict[str, Any]) -> Optional[CompatibilityReport]:
     """

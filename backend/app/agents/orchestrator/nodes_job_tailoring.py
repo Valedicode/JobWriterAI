@@ -366,19 +366,26 @@ def jt_step1_summarize_job(state: OrchestratorState) -> dict[str, Any]:
     job_data = state.get("job_data") or {}
     job_json = json.dumps(job_data)
     summary_json = generate_job_summary.invoke({"job_json": job_json})
-    summary = _safe_json_loads(summary_json, {
-        "role": job_data.get("job_title", "Unknown"),
-        "responsibilities": job_data.get("responsibilities", []),
-        "required_skills": _required_skills(job_data),
-        "preferred_skills": job_data.get("preferred_skills", []),
-        "key_notes": [],
-    })
+    summary = _safe_json_loads(summary_json, None)
+    summary_failed = _tool_error(summary, "summary") is not None
+    if summary_failed:
+        # The summary is only a recap for the user; the posting as extracted
+        # stands in for it, said plainly rather than shown as 'Role: Unknown'.
+        summary = {
+            "role": job_data.get("job_title", ""),
+            "responsibilities": job_data.get("responsibilities", []),
+            "required_skills": _required_skills(job_data),
+            "preferred_skills": job_data.get("preferred_skills", []),
+            "key_notes": [],
+        }
 
     narration_lines = [
         "Job summary",
         "",
         f"Role: {summary.get('role', '')}",
     ]
+    if summary_failed:
+        narration_lines[1:1] = ["", "I couldn't summarise the posting, so this is the posting as extracted."]
     resp = summary.get("responsibilities") or []
     if resp:
         narration_lines.append("Responsibilities:")

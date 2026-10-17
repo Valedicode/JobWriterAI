@@ -998,3 +998,19 @@ def test_cover_letter_tool_reports_a_failed_call_instead_of_raising():
     with _patch.object(writer_agent, "chat_model", _Failing()):
         out = json.loads(writer_agent.generate_cover_letter_content.invoke({"cv_json": "{}", "job_json": "{}"}))
     assert out == {"error": "timed out"}
+
+
+def test_a_failed_job_summary_says_so_and_uses_the_posting_as_extracted(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-summary-error"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.generate_job_summary",
+        _fake_tool(lambda _: json.dumps({"error": "timed out"})),
+    ):
+        result = graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
+
+    summary_text = next(m.content for m in result["messages"] if m.content.startswith("Job summary"))
+    assert "I couldn't summarise the posting" in summary_text
+    assert f"Role: {JOB['job_title']}" in summary_text and "Unknown" not in summary_text
+    assert _interrupt_payload(result)["step"] == "present_score"
