@@ -57,7 +57,8 @@ export const ReviewPanel = ({
     setLastStep(gateStep);
     if (gateStep) setTab('review');
   }
-  const canEdit = Boolean(sessionId && runDocumentSave) && files.some((f) => f.file_type === 'cover_letter');
+  const canEdit =
+    Boolean(sessionId && runDocumentSave) && files.some((f) => f.file_type === 'cv' || f.file_type === 'cover_letter');
   const tabs: { id: Tab; label: string }[] = [
     { id: 'review', label: 'Review' },
     ...(canEdit ? [{ id: 'editor' as const, label: 'Editor' }] : []),
@@ -134,7 +135,7 @@ const IdleReview = ({
           : doneSteps.length === 0
             ? 'Steps that need your decision show up here.'
             : onOpenEditor
-              ? 'Edit your cover letter yourself, or ask in the chat to change something.'
+              ? 'Edit your documents yourself, or ask in the chat to change something.'
               : 'Ask in the chat if you want to change something.'}
       </p>
       {onOpenEditor && !isLoading && (
@@ -143,7 +144,7 @@ const IdleReview = ({
           onClick={onOpenEditor}
           className="mt-3 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-fg transition-colors hover:bg-primary-hover"
         >
-          Edit your cover letter
+          Edit your documents
         </button>
       )}
     </div>

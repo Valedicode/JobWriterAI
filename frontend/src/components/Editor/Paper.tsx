@@ -1,43 +1,54 @@
 /**
- * Paper - an A4 sheet that scales with the pane, so a document laid out in
- * points (as the LaTeX templates are) keeps its proportions at any width.
+ * Paper - a page that scales with the pane, so a document laid out in points
+ * (as the LaTeX templates are) keeps its proportions at any width.
  *
  * The sheet is a size container: `pt(n)` gives a length of n typographic
- * points on the printed page, as a share of the sheet's width. The paper stays
- * white with black ink in both themes, like the PDF it stands for.
+ * points on the printed page, as a share of the sheet's width (the page width
+ * in points is the --page-width the sheet sets). The paper stays white with
+ * black ink in both themes, like the PDF it stands for.
  */
 
 import { useLayoutEffect, useRef } from 'react';
 
-/** n points on the printed A4 page (595.3pt wide), scaled to the sheet. */
-export const pt = (n: number) => `calc(${n} * 100cqw / 595.3)`;
+/** n points on the printed page, scaled to the sheet. */
+export const pt = (n: number) => `calc(${n} * 100cqw / var(--page-width))`;
+
+/** Page sizes in points (width, height). */
+export const A4: [number, number] = [595.3, 841.9];
+export const LETTER: [number, number] = [612, 792];
 
 /** The LaTeX templates' Latin Modern, with close system serifs after it. */
 const PAPER_FONT = '"Latin Modern Roman", "CMU Serif", "Computer Modern Serif", Cambria, "Times New Roman", serif';
 
 /**
- * `fontSize` is the document class size in points; `lineHeight` its baseline
- * skip over that size; `margin` the page margins in points (top, sides, bottom).
+ * `page` is the paper size in points; `fontSize` the document class size in
+ * points; `lineHeight` its baseline skip over that size; `margin` the page
+ * margins in points (top, sides, bottom).
  */
 export const Paper = ({
   children,
   label,
+  page,
   fontSize,
   lineHeight,
   margin,
 }: {
   children: React.ReactNode;
   label: string;
+  page: [number, number];
   fontSize: number;
   lineHeight: number;
   margin: [number, number, number];
 }) => (
-  <div className="[container-type:inline-size] mx-auto w-full max-w-[52rem]">
+  <div
+    className="[container-type:inline-size] mx-auto w-full max-w-[52rem]"
+    style={{ '--page-width': page[0] } as React.CSSProperties}
+  >
     <article
       aria-label={label}
       className="relative bg-white text-black shadow-lg shadow-black/10 ring-1 ring-black/5"
       style={{
-        minHeight: pt(841.9),
+        minHeight: pt(page[1]),
         padding: `${pt(margin[0])} ${pt(margin[1])} ${pt(margin[2])}`,
         fontFamily: PAPER_FONT,
         fontSize: pt(fontSize),
