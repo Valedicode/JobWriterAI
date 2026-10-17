@@ -1297,12 +1297,18 @@ def jt_gate_approve_rewrite(state: OrchestratorState) -> Command:
     if resolution.action == "approve":
         bullets = rewritten.get("rewritten_bullets", []) or []
         finalized = _finalize_rewrite_decisions(bullets, resolution.decisions)
-        rejected_count = len(bullets) - len(finalized)
+        # Every bullet stays in `finalized` (a reverted one with its original
+        # text), so the reverted ones are counted from the decisions.
+        decisions = resolution.decisions or {}
+        reverted = sum(
+            1 for b in bullets
+            if isinstance(b, dict) and getattr(decisions.get(b.get("bullet_id") or ""), "choice", None) == "keep_original"
+        )
         updated_rewritten = dict(rewritten)
         updated_rewritten["rewritten_bullets"] = finalized
         update: dict[str, Any] = {"pending_gate": None, "rewritten_content": updated_rewritten}
-        if rejected_count:
-            update = _narrate(update, f"Applying {len(finalized)} rewrites ({rejected_count} reverted to original).")
+        if reverted:
+            update = _narrate(update, f"Applying {len(finalized) - reverted} rewrite(s) ({reverted} reverted to original).")
         return Command(update=update, goto=JT_STEP6_ASSEMBLE)
     if resolution.action == "edit":
         strategy = dict(state.get("tailoring_strategy") or {})

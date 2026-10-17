@@ -544,7 +544,7 @@ def test_approve_rewrite_keep_original_decision_reverts_one_bullet(graph, patche
         graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": TWO_BULLET_CV, "job_data": JOB}, config=config)
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # present_score
         graph.invoke(Command(resume={"action": "approve"}), config=config)  # approve_selection
-        graph.invoke(
+        result = graph.invoke(
             Command(resume={
                 "action": "approve",
                 "decisions": {
@@ -558,6 +558,8 @@ def test_approve_rewrite_keep_original_decision_reverts_one_bullet(graph, patche
     responsibilities = state["tailored_cv_data"]["experience"][0]["responsibilities"]
     assert responsibilities[0] == "Designed the first algorithm"
     assert responsibilities[1].startswith("Authored technical documentation")
+    narrations = [m.content for m in result["messages"]]
+    assert "Applying 1 rewrite(s) (1 reverted to original)." in narrations
 
 
 def test_approve_rewrite_custom_text_decision_overrides_rewrite(graph, patched_tools):
