@@ -28,6 +28,7 @@ and leave the gate pending rather than guess at an action.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Literal, Optional, Union
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -35,6 +36,8 @@ from app.openai_llm import chat_model
 from pydantic import BaseModel, Field, model_validator
 
 from app.agents.orchestrator.gates import GatePayload, GateResolution
+
+logger = logging.getLogger(__name__)
 
 
 class ResolveGate(BaseModel):
@@ -325,11 +328,14 @@ def interpret_chat(
             "history": _history_block(state),
             "text": text,
         })
-    except Exception as exc:  # noqa: BLE001 - defensive fallback for any LLM/parse failure
+    except Exception:  # noqa: BLE001 - defensive fallback for any LLM/parse failure
+        # The exception (provider errors, request details) goes to the log,
+        # not into a chat bubble.
+        logger.exception("Chat interpretation failed")
         return ChatTurn(
             reply=(
-                "Sorry, I couldn't process that message just now "
-                f"({exc}). You can use the buttons below, or try again."
+                "Sorry, I couldn't process that message just now. "
+                "You can use the buttons below, or try again."
             ),
             action=None,
         )

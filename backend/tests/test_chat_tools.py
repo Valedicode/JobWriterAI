@@ -523,3 +523,21 @@ def test_a_turn_cannot_carry_both_kinds_of_action():
 def test_reruns_are_job_tailoring_only():
     with pytest.raises(ChatActionRefused):
         propose_rerun(None, {}, {"flow": "cv_review"}, pending_node=None, pending_step=None, step="score")
+
+
+def test_a_failed_chat_call_keeps_the_error_out_of_the_reply(caplog):
+    class _Failing(_StubChatModel):
+        def with_structured_output(self, schema):
+            from langchain_core.runnables import RunnableLambda
+
+            def _boom(_):
+                raise RuntimeError("401 invalid api key sk-or-SECRET for https://openrouter.ai/api/v1")
+
+            return RunnableLambda(_boom)
+
+    with caplog.at_level("ERROR", logger="app.agents.orchestrator.chat_agent"):
+        with patch("app.agents.orchestrator.chat_agent.chat_model", _Failing(None)):
+            turn = interpret_chat(text="hi", gate=_GATE, state={})
+    assert turn.action is None and "couldn't process that message" in turn.reply
+    assert "SECRET" not in turn.reply and "openrouter" not in turn.reply
+    assert "SECRET" in caplog.text
