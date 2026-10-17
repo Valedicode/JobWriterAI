@@ -409,6 +409,142 @@ export interface OrchestratorStateResponse {
 }
 
 // ============================================
+// Documents API Types (the finished CV and cover letter in the editor)
+// ============================================
+
+/**
+ * A piece of printed CV text and the CV fields it came from (empty for the
+ * template's own words). `value` is the field's raw value where the printed
+ * text is formatted (dates); `kind` 'list' marks a comma-separated list field.
+ */
+export interface CvSegment {
+  text: string;
+  src: string[];
+  value?: string;
+  kind?: 'list';
+}
+
+export interface CvRow {
+  left: string;
+  right: string;
+  bold: boolean;
+  left_segs: CvSegment[];
+  right_segs: CvSegment[];
+}
+
+/** An entry of an "entries" section (rows plus bullets) or an "itemize" one (label plus text). */
+export interface CvEntry {
+  rows?: CvRow[];
+  bullets?: string[];
+  bullet_segs?: CvSegment[][];
+  /** The bullet list's own path, for adding and removing bullets. */
+  bullets_src?: string[];
+  label?: string;
+  text?: string;
+  label_segs?: CvSegment[];
+  text_segs?: CvSegment[];
+}
+
+export interface CvSection {
+  type: string;
+  title: string;
+  style: 'entries' | 'itemize';
+  entries: CvEntry[];
+}
+
+export interface CvHeader {
+  name: string;
+  label: string;
+  summary: string;
+  contact_parts: string[];
+  name_segs: CvSegment[];
+  label_segs: CvSegment[];
+  summary_segs: CvSegment[];
+  contact_segs: CvSegment[][];
+}
+
+export interface CvEdit {
+  op: 'set' | 'insert' | 'delete';
+  path: string;
+  value?: string | string[];
+  index?: number;
+}
+
+export interface CvEditRequest {
+  revision: number;
+  edits: CvEdit[];
+}
+
+export interface CoverLetterEditRequest {
+  revision: number;
+  fields: Record<string, string>;
+}
+
+export interface DocumentResetRequest {
+  revision: number;
+}
+
+interface DocumentViewBase {
+  revision: number;
+  /** The revision the PDF shows; differs from `revision` when generating it failed. */
+  rendered_revision: number | null;
+  /** True when the document differs from the version the flow generated. */
+  edited: boolean;
+  filename: string;
+  download_url: string | null;
+  language: string;
+}
+
+export interface CvDocumentView extends DocumentViewBase {
+  header: CvHeader;
+  sections: CvSection[];
+}
+
+export interface CoverLetterParagraph {
+  field: string;
+  text: string;
+}
+
+/** Everything the cover letter PDF prints. */
+export interface CoverLetterPrint {
+  name: string;
+  phone: string;
+  email: string;
+  target_job: string;
+  link_1_url: string;
+  link_1_label: string;
+  link_2_url: string;
+  link_2_label: string;
+  document_title: string;
+  date_label: string;
+  current_date: string;
+  betreff?: string;
+  salutation: string;
+  paragraph_fields: CoverLetterParagraph[];
+  sign_off: string;
+}
+
+export interface CoverLetterView extends DocumentViewBase {
+  /** The editable values: paragraph fields, recipient, sign_off, and betreff for a German letter. */
+  fields: Record<string, string>;
+  letter: CoverLetterPrint;
+}
+
+export interface DocumentsResponse {
+  success: boolean;
+  session_id: string;
+  cv: CvDocumentView | null;
+  cover_letter: CoverLetterView | null;
+  /** False while a proposed change waits for confirmation in the chat. */
+  editable: boolean;
+}
+
+export interface DocumentSaveResponse {
+  session: OrchestratorResponse;
+  documents: DocumentsResponse;
+}
+
+// ============================================
 // Application State Types
 // ============================================
 

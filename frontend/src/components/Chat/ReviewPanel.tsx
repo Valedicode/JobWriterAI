@@ -1,6 +1,7 @@
 /**
  * ReviewPanel - the right-hand pane of the split chat layout: tabs for the
- * open review step, a read-only view of the CV, and the job summary.
+ * open review step, the editor for the finished documents, a read-only view
+ * of the CV, and the job summary.
  *
  * The Review tab shows the gate waiting for a decision; between gates it shows
  * the steps done so far and any files the run produced, so the pane is never
@@ -9,10 +10,11 @@
 
 import { useState } from 'react';
 import type { DownloadableFile, JobRequirements, ResumeInfo } from '@/types';
+import { DocumentEditor, type RunDocumentSave } from '@/components/Editor/DocumentEditor';
 import { DownloadButton } from './DownloadButton';
 import { humanizeStep } from './gateFormat';
 
-type Tab = 'review' | 'cv' | 'job';
+type Tab = 'review' | 'editor' | 'cv' | 'job';
 
 interface ReviewPanelProps {
   /** Step of the open gate, or null between gates. */
@@ -27,6 +29,11 @@ interface ReviewPanelProps {
   isLoading: boolean;
   cvData?: ResumeInfo | null;
   jobData?: JobRequirements | null;
+  /** The session, and how the editor saves through it; without them there is no editor. */
+  sessionId?: string | null;
+  runDocumentSave?: RunDocumentSave;
+  /** Changes after every reply from the session, so the editor fetches the documents again. */
+  refreshKey: number;
 }
 
 export const ReviewPanel = ({
@@ -38,6 +45,9 @@ export const ReviewPanel = ({
   isLoading,
   cvData,
   jobData,
+  sessionId,
+  runDocumentSave,
+  refreshKey,
 }: ReviewPanelProps) => {
   const [tab, setTab] = useState<Tab>('review');
   // A new decision to make always brings the user back to the Review tab.
@@ -47,8 +57,10 @@ export const ReviewPanel = ({
     setLastStep(gateStep);
     if (gateStep) setTab('review');
   }
+  const canEdit = Boolean(sessionId && runDocumentSave) && files.some((f) => f.file_type === 'cover_letter');
   const tabs: { id: Tab; label: string }[] = [
     { id: 'review', label: 'Review' },
+    ...(canEdit ? [{ id: 'editor' as const, label: 'Editor' }] : []),
     ...(cvData ? [{ id: 'cv' as const, label: 'CV preview' }] : []),
     ...(jobData ? [{ id: 'job' as const, label: 'Job summary' }] : []),
   ];
@@ -86,8 +98,21 @@ export const ReviewPanel = ({
             {gate}
           </div>
         ) : (
-          <IdleReview doneSteps={doneSteps} files={files} isLoading={isLoading} />
+          <IdleReview
+            doneSteps={doneSteps}
+            files={files}
+            isLoading={isLoading}
+            onOpenEditor={canEdit ? () => setTab('editor') : undefined}
+          />
         ))}
+      {tab === 'editor' && canEdit && sessionId && runDocumentSave && (
+        <DocumentEditor
+          sessionId={sessionId}
+          refreshKey={refreshKey}
+          busy={isLoading}
+          runDocumentSave={runDocumentSave}
+        />
+      )}
       {tab === 'cv' && cvData && <CvPreview cv={cvData} />}
       {tab === 'job' && jobData && <JobSummary job={jobData} />}
     </div>
@@ -98,7 +123,8 @@ const IdleReview = ({
   doneSteps,
   files,
   isLoading,
-}: Pick<ReviewPanelProps, 'doneSteps' | 'files' | 'isLoading'>) => (
+  onOpenEditor,
+}: Pick<ReviewPanelProps, 'doneSteps' | 'files' | 'isLoading'> & { onOpenEditor?: () => void }) => (
   <div className="flex-1 space-y-5 overflow-y-auto px-6 py-6">
     <div>
       <h2 className="text-lg font-semibold text-ink">{isLoading ? 'Working on it' : 'Nothing to review right now'}</h2>
@@ -107,8 +133,19 @@ const IdleReview = ({
           ? 'The next decision shows up here as soon as it is ready.'
           : doneSteps.length === 0
             ? 'Steps that need your decision show up here.'
-            : 'Ask in the chat if you want to change something.'}
+            : onOpenEditor
+              ? 'Edit your cover letter yourself, or ask in the chat to change something.'
+              : 'Ask in the chat if you want to change something.'}
       </p>
+      {onOpenEditor && !isLoading && (
+        <button
+          type="button"
+          onClick={onOpenEditor}
+          className="mt-3 rounded-full bg-primary px-4 py-2 text-sm font-semibold text-primary-fg transition-colors hover:bg-primary-hover"
+        >
+          Edit your cover letter
+        </button>
+      )}
     </div>
     {doneSteps.length > 0 && (
       <ol className="space-y-2" aria-label="Steps so far">

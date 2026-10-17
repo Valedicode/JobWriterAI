@@ -91,6 +91,7 @@ export default function Home() {
     chatError,
     pendingGate,
     submitGateResolution,
+    runDocumentSave,
     textareaRef,
     messagesEndRef,
     handleSendMessage,
@@ -380,6 +381,8 @@ export default function Home() {
                 jobData={jobData}
                 pendingGate={pendingGate}
                 onSubmitGateResolution={submitGateResolution}
+                sessionId={sessionId}
+                runDocumentSave={runDocumentSave}
               />
             </div>
             </ErrorBoundary>
