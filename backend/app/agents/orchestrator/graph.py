@@ -55,6 +55,7 @@ from app.agents.orchestrator.nodes_cv_review import (
     cr_step6_assessment,
     cr_step7_finalize,
 )
+from app.agents.orchestrator.nodes_cv_edit import CV_RERENDER, cv_rerender
 from app.agents.orchestrator.nodes_discovery import DISC_STUB, discovery_stub
 from app.agents.orchestrator.nodes_job_tailoring import (
     JT_ENTRY,
@@ -196,6 +197,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # Reached only through a chat proposal (app.agents.orchestrator.chat_actions),
     # which redirects the paused graph here; it routes on via Command.
     graph.add_node(JT_GATE_CONFIRM_CHANGE, jt_gate_confirm_change)
+    # An approved chat edit of the finished CV (either flow) regenerates the
+    # PDF here, then routes back via Command to the gate that was pending.
+    graph.add_node(CV_RERENDER, cv_rerender)
 
     # --- entry routing -------------------------------------------------------
     graph.add_conditional_edges(

@@ -217,3 +217,62 @@ def test_compile_errors_keep_the_compiler_output_in_the_server_log(compiler, tmp
     assert "SECRET_LINE" not in str(raised.value)
     assert "server log" in str(raised.value)
     assert "SECRET_LINE" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# Cover letter: one salutation and one sign-off, from the template
+# --------------------------------------------------------------------------- #
+
+from app.services.latex_renderer import cover_letter_framing, strip_letter_framing  # noqa: E402
+
+
+@pytest.mark.parametrize("opening, expected", [
+    ("Sehr geehrte Damen und Herren,\n\nmit großem Interesse habe ich ...", "mit großem Interesse habe ich ..."),
+    ("Sehr geehrte Damen und Herren, mit großem Interesse habe ich ...", "mit großem Interesse habe ich ..."),
+    ("Sehr geehrte Frau Dr. Weber,\nmit Begeisterung ...", "mit Begeisterung ..."),
+    ("Guten Tag Max Mustermann,\nich bewerbe mich ...", "ich bewerbe mich ..."),
+    ("Dear Hiring Manager,\nI am excited ...", "I am excited ..."),
+    ("To whom it may concern: I am writing ...", "I am writing ..."),
+    # Ordinary first sentences stay as they are.
+    ("Liebe zur Technik, gepaart mit Neugier, treibt mich an.", "Liebe zur Technik, gepaart mit Neugier, treibt mich an."),
+    ("Hiermit bewerbe ich mich.", "Hiermit bewerbe ich mich."),
+    ("I am excited to apply.", "I am excited to apply."),
+])
+def test_a_salutation_written_into_the_first_paragraph_is_removed(opening, expected):
+    assert strip_letter_framing({"opening_paragraph": opening})["opening_paragraph"] == expected
+
+
+@pytest.mark.parametrize("closing, expected", [
+    ("Ich freue mich auf ein Gespräch.\n\nMit freundlichen Grüßen\nMax Mustermann", "Ich freue mich auf ein Gespräch."),
+    ("Ich freue mich auf ein Gespräch. Mit freundlichen Grüßen", "Ich freue mich auf ein Gespräch."),
+    ("Thank you for your consideration.\n\nBest regards,\nJane Doe", "Thank you for your consideration."),
+    ("Thank you for your consideration.\nSincerely,", "Thank you for your consideration."),
+    ("I look forward to hearing from you.", "I look forward to hearing from you."),
+])
+def test_a_sign_off_written_into_the_last_paragraph_is_removed(closing, expected):
+    assert strip_letter_framing({"closing_paragraph": closing})["closing_paragraph"] == expected
+
+
+def test_the_letter_prints_only_the_salutation_for_the_named_recipient():
+    content = {
+        **_LETTER,
+        "language": "german",
+        "opening_paragraph": "Sehr geehrte Damen und Herren,\nmit großem Interesse bewerbe ich mich.",
+        "closing_paragraph": "Ich freue mich auf Ihre Rückmeldung.\nMit freundlichen Grüßen",
+        "grussformel": "Mit freundlichen Grüßen",
+    }
+    tex = render_cover_letter_tex(content, applicant_name="Max", recipient_info="Musterman", cv_data={"name": "Max"})
+    assert tex.count("Guten Tag Musterman,") == 1
+    assert "Sehr geehrte Damen und Herren" not in tex
+    assert tex.count("Mit freundlichen Grüßen") == 1
+
+
+def test_framing_matches_what_the_templates_print():
+    assert cover_letter_framing({"language": "german", "grussformel": "Beste Grüße"}, "Frau Anna Weber") == {
+        "salutation": "Sehr geehrte Frau Anna Weber,", "sign_off": "Beste Grüße"}
+    assert cover_letter_framing({"language": "german"}, "Personalabteilung")["salutation"] == (
+        "Sehr geehrte Damen und Herren,")
+    assert cover_letter_framing({"language": "german"}, "Musterman")["sign_off"] == "Mit freundlichen Grüßen"
+    assert cover_letter_framing({"language": "english"}, "Dr. Jane Smith") == {
+        "salutation": "Dear Dr. Jane Smith,", "sign_off": "Yours sincerely"}
+    assert cover_letter_framing({}, "Hiring Team")["sign_off"] == "Yours faithfully"

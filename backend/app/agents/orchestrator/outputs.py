@@ -8,6 +8,8 @@ each download URL is scoped to the session that produced it.
 
 from __future__ import annotations
 
+from typing import Any, NamedTuple
+
 from langchain_core.runnables import RunnableConfig
 
 from app.services.file_store import get_file_store, is_session_id
@@ -36,3 +38,23 @@ def file_record(filename: str, file_type: str, config: RunnableConfig | None = N
         else f"/api/files/{filename}"
     )
     return {"filename": filename, "file_type": file_type, "download_url": download_url}
+
+
+def with_file(files: list[Any], record: dict[str, str]) -> list[dict[str, str]]:
+    """The session's file list with ``record`` in it: a regenerated PDF replaces
+    the earlier record of the same name (one download button per file)."""
+    out = [dict(f) for f in files or [] if isinstance(f, dict)]
+    for i, existing in enumerate(out):
+        if existing.get("filename") == record["filename"]:
+            out[i] = record
+            return out
+    return out + [record]
+
+
+class RenderedCv(NamedTuple):
+    """A CV PDF render: the updated file list, the file name (None when it
+    failed), layout notes for the user, and the error when it failed."""
+    files: list[dict[str, str]]
+    filename: str | None
+    notes: list[str]
+    error: str | None

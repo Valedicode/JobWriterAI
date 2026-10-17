@@ -24,6 +24,8 @@ import re
 import unicodedata
 from typing import Any
 
+from app.services.cv_extraction_checks import repeats_grade, same_text
+
 SECTION_LABELS: dict[str, str] = {
     "education": "Education",
     "work": "Experience",
@@ -409,6 +411,9 @@ def _rows_for_work(items: list[Any]) -> list[dict[str, Any]]:
         location = item.get("_location") or _location_text(item.get("location"))
         company = item.get("name") or ""
         position = item.get("position") or ""
+        if same_text(company, position):
+            # The title read twice (no employer named), not a company: print it once.
+            company = ""
 
         rows: list[dict[str, Any]] = []
         if company:
@@ -462,7 +467,8 @@ def _rows_for_education(items: list[Any]) -> list[dict[str, Any]]:
                 grade = f"Grade: {grade}"
             detail_rows.append(_row(grade))
         for detail in _bullets(item.get("_details")):
-            detail_rows.append(_row(detail))
+            if not repeats_grade(detail, str(score or "")):
+                detail_rows.append(_row(detail))
         for course in _bullets(item.get("courses")):
             detail_rows.append(_row(course))
 
@@ -498,6 +504,8 @@ def _rows_for_volunteer(items: list[Any]) -> list[dict[str, Any]]:
         )
         organization = item.get("organization") or ""
         position = item.get("position") or ""
+        if same_text(organization, position):
+            organization = ""
         location = item.get("_location") or _location_text(item.get("location"))
         summary = item.get("summary") or ""
         bullets = _bullets(item.get("highlights"))

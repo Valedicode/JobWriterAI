@@ -31,12 +31,13 @@ from app.agents.orchestrator import GateResolution, build_graph
 from app.agents.orchestrator.chat_actions import (
     ChatActionRefused,
     edit_bullet_resolution,
+    propose_cv_edit,
     propose_profile_update,
     propose_rerun,
     raise_confirm_gate,
     remember_chat_turn,
 )
-from app.agents.orchestrator.chat_agent import EditBullet, RerunFrom, UpdateProfile, interpret_chat
+from app.agents.orchestrator.chat_agent import EditBullet, EditCvLine, RerunFrom, UpdateProfile, interpret_chat
 from app.models.schemas import (
     GeneratedFile,
     OrchestratorGatePayload,
@@ -413,7 +414,7 @@ def _handle_message(request: OrchestratorMessageRequest) -> OrchestratorResponse
         elif isinstance(turn.call, EditBullet):
             resolution = edit_bullet_resolution(pending, turn.call.bullet_id, turn.call.instruction)
             response = _resume_from_chat(request.session_id, snapshot, pending, resolution, turn.reply)
-        elif isinstance(turn.call, (RerunFrom, UpdateProfile)):
+        elif isinstance(turn.call, (RerunFrom, UpdateProfile, EditCvLine)):
             response = _propose_from_chat(request.session_id, snapshot, pending, turn.call, text, turn.reply)
         else:
             # Pure Q&A / small talk: the session stays exactly as it was.
@@ -487,12 +488,13 @@ def _propose_from_chat(
     session_id: str,
     snapshot: Any,
     pending: OrchestratorGatePayload | None,
-    call: RerunFrom | UpdateProfile,
+    call: RerunFrom | UpdateProfile | EditCvLine,
     text: str,
     reply: str,
 ) -> OrchestratorResponse:
-    """Turn a re-run or profile update into a proposal at the confirm_change
-    gate. Nothing in the session changes until the user approves it there."""
+    """Turn a re-run, profile update or edit of the finished CV into a proposal
+    at the confirm_change gate. Nothing in the session changes until the user
+    approves it there."""
     graph = _get_graph()
     config = _thread_config(session_id)
     where = {
@@ -501,6 +503,8 @@ def _propose_from_chat(
     }
     if isinstance(call, RerunFrom):
         proposal = propose_rerun(graph, config, snapshot.values, step=call.step, note=call.note, **where)
+    elif isinstance(call, EditCvLine):
+        proposal = propose_cv_edit(snapshot.values, line_id=call.line_id, new_text=call.new_text, **where)
     else:
         proposal = propose_profile_update(
             graph, config, snapshot.values,

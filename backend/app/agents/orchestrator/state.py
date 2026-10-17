@@ -141,6 +141,9 @@ class OrchestratorState(TypedDict, total=False):
     chat_proposal: dict[str, Any] | None
     # Short-term chat memory: the last few {role, content} turns.
     chat_history: list[dict[str, str]]
+    # Where an approved chat edit of the finished CV returns after the PDF is
+    # generated again: the gate that was pending, or None for the end.
+    after_edit_goto: str | None
 
     # --- cv-review artifacts -----------------------------------------------
     review_outputs: dict[str, dict[str, Any]]

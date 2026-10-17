@@ -28,11 +28,15 @@ from langchain_core.tools import tool
 from app.openai_llm import chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
+import logging
 import fitz
 import dotenv
 
 # Import model from centralized schemas
 from app.models.schemas import ResumeInfo
+from app.services.cv_extraction_checks import clean_extracted_cv
+
+logger = logging.getLogger(__name__)
 
 dotenv.load_dotenv()
 
@@ -89,7 +93,11 @@ def extract_resume_info(pdf_path: str = "", pdf_bytes: bytes = b"") -> str:
          "(as written, e.g. 'Expected: September 2027'), grade if stated, and any awards/details. "
          "For experience: include the location of each role if stated. "
          "For leadership roles, extracurricular activities, and volunteer work: one leadership_activities "
-         "entry per activity with role, organization, location, dates, a short description, and impact bullets. "
+         "entry per activity with role, organization, location, dates, a short description, and its bullets. "
+         "Each bullet belongs only to the entry it is printed under: never copy a bullet into a second entry, "
+         "and leave an entry's bullet list empty when the CV gives it only a paragraph or nothing. "
+         "Give a grade only in `grade`, not again in details. Leave company empty when the CV names no "
+         "employer (e.g. private tutoring) instead of repeating the job title there. "
          "For spoken languages: one languages entry per language with the stated fluency "
          "(e.g. language='German', fluency='native'); do not put spoken languages into skills. "
          "For skills: one entry per skill name only (e.g. 'FastAPI'), without the CV's category "
@@ -102,8 +110,12 @@ def extract_resume_info(pdf_path: str = "", pdf_bytes: bytes = b"") -> str:
     chain = prompt | structured_llm
     result = chain.invoke({"text": text})
 
-    # Return json format as string
-    return result.model_dump_json(indent=2)
+    # The model sometimes copies bullets into a second entry or repeats a value;
+    # remove what the PDF's own text shows to be a copy or an echo.
+    cleaned, notes = clean_extracted_cv(result.model_dump(), text)
+    for note in notes:
+        logger.info("CV extraction check: %s", note)
+    return ResumeInfo.model_validate(cleaned).model_dump_json(indent=2)
 
 @tool
 def identify_ambiguities(resume_json: str) -> str:
