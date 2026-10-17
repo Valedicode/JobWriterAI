@@ -227,19 +227,7 @@ def generate_cover_letter(request: GenerateCoverLetterRequest):
         job_json = json.dumps(request.job_data)
         company_json = json.dumps(request.company_data) if request.company_data else ""
 
-        content_json = generate_cover_letter_content.invoke({
-            "cv_json": cv_json,
-            "job_json": job_json,
-            "company_json": company_json,
-        })
-
-        content_dict = json.loads(content_json)
-
-        applicant_name = request.cv_data.get('name', 'Applicant')
-        applicant_email = request.cv_data.get('email', '')
-        applicant_phone = request.cv_data.get('phone', '')
-        applicant_contact = f"{applicant_email} | {applicant_phone}"
-
+        # Resolved before drafting: the draft needs it, and a missing one shouldn't cost an LLM call.
         recipient_info = (
             (request.recipient_info or "").strip()
             or extract_recipient_name(request.job_data)
@@ -252,6 +240,20 @@ def generate_cover_letter(request: GenerateCoverLetterRequest):
                     "a contact person."
                 ),
             )
+
+        content_json = generate_cover_letter_content.invoke({
+            "cv_json": cv_json,
+            "job_json": job_json,
+            "company_json": company_json,
+            "recipient": recipient_info,
+        })
+
+        content_dict = json.loads(content_json)
+
+        applicant_name = request.cv_data.get('name', 'Applicant')
+        applicant_email = request.cv_data.get('email', '')
+        applicant_phone = request.cv_data.get('phone', '')
+        applicant_contact = f"{applicant_email} | {applicant_phone}"
 
         output_id = str(uuid.uuid4())
         pdf_result = generate_cover_letter_pdf.invoke({

@@ -39,7 +39,12 @@ from app.agents.writer_agent import (
     select_prioritize_content,
 )
 from app.agents.orchestrator.outputs import file_record, session_output_dir
-from app.services.latex_renderer import cv_content_language, extract_recipient_name
+from app.services.latex_renderer import (
+    cover_letter_framing,
+    cv_content_language,
+    extract_recipient_name,
+    strip_letter_framing,
+)
 from app.services.resume_adapter import normalize_skill_list
 from app.agents.scoring_agent import (
     apply_eligibility_answers,
@@ -1824,8 +1829,8 @@ def jt_gate_cover_letter_recipient(state: OrchestratorState) -> Command:
         step="cover_letter_recipient",
         kind="input",
         narration=(
-            "Who should the cover letter be addressed to? "
-            "Enter the recipient's name (no default is used)."
+            "Who should the cover letter be addressed to? Enter the name as it should appear, "
+            "with the title if you know it, e.g. 'Frau Anna Weber', 'Mr John Smith' or 'Hiring Team'."
         ),
         preview={},
         allowed_actions=["edit"],
@@ -1863,11 +1868,15 @@ def jt_step8_cover_letter_content(state: OrchestratorState) -> dict[str, Any]:
         "job_json": job_json,
         "company_json": company_json,
         "language": language,
+        "recipient": state.get("cover_letter_recipient") or "",
     })
     content = _safe_json_loads(content_json, None)
     error = _tool_error(content, "cover letter")
     if error:
         return _fail_step(JT_STEP8_COVER_LETTER_CONTENT, "Cover letter drafting", error)
+    # The salutation and sign-off come from the template (for the recipient the
+    # user named); paragraphs that bring their own would show two of each.
+    content = strip_letter_framing(content)
 
     narration_lines = [
         f"Cover letter drafted ({language}). Review the paragraphs and approve to export."
@@ -1886,12 +1895,22 @@ def route_after_cover_letter(state: OrchestratorState) -> str:
 # Gate: approve cover letter
 # --------------------------------------------------------------------------- #
 
+def _cover_letter_preview(state: OrchestratorState) -> dict[str, Any]:
+    """The letter as the PDF will print it: the salutation for the recipient
+    the user named, the paragraphs, and the sign-off."""
+    content = state.get("cover_letter_content") or {}
+    recipient = (state.get("cover_letter_recipient") or "").strip()
+    if not content or not recipient:
+        return content
+    return {**content, **cover_letter_framing(content, recipient)}
+
+
 def jt_gate_approve_cover_letter(state: OrchestratorState) -> Command:
     payload = GatePayload(
         step="approve_cover_letter",
         kind="approval",
         narration="Approve to export the cover letter, or edit to regenerate.",
-        preview=state.get("cover_letter_content") or {},
+        preview=_cover_letter_preview(state),
         allowed_actions=["approve", "edit", "reject"],
     ).model_dump()
 

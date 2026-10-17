@@ -1016,3 +1016,69 @@ def test_a_failed_job_summary_says_so_and_uses_the_posting_as_extracted(graph, p
     assert "I couldn't summarise the posting" in summary_text
     assert f"Role: {JOB['job_title']}" in summary_text and "Unknown" not in summary_text
     assert _interrupt_payload(result)["step"] == "present_score"
+
+
+# --------------------------------------------------------------------------- #
+# Cover letter: the review shows the letter as the PDF prints it
+# --------------------------------------------------------------------------- #
+
+GERMAN_LETTER_WITH_FRAMING = {
+    **COVER_LETTER_CONTENT,
+    "language": "german",
+    "betreff": "Bewerbung als ML Engineer",
+    "grussformel": "Mit freundlichen Grüßen",
+    "opening_paragraph": "Sehr geehrte Damen und Herren,\nmit großem Interesse bewerbe ich mich.",
+    "closing_paragraph": "Ich freue mich auf ein Gespräch.\n\nMit freundlichen Grüßen\nAda",
+}
+
+
+def test_cover_letter_review_shows_the_named_salutation_once(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    received = {}
+
+    def _draft(kwargs):
+        received.update(kwargs)
+        return json.dumps(GERMAN_LETTER_WITH_FRAMING)
+
+    config = {"configurable": {"thread_id": "test-cover-letter-framing"}}
+    with _patch("app.agents.orchestrator.nodes_job_tailoring.generate_cover_letter_content", _fake_tool(_draft)):
+        _to_cover_letter_language(graph, config)
+        result = graph.invoke(Command(resume={"action": "choose", "choice": "german"}), config=config)
+
+    assert received["recipient"] == "Dr. Jane Smith"
+    preview = _interrupt_payload(result)["preview"]
+    assert preview["salutation"] == "Guten Tag Dr. Jane Smith,"
+    assert preview["sign_off"] == "Mit freundlichen Grüßen"
+    assert preview["opening_paragraph"] == "mit großem Interesse bewerbe ich mich."
+    assert preview["closing_paragraph"] == "Ich freue mich auf ein Gespräch."
+
+
+def test_the_cover_letter_tool_gets_the_recipient_and_drops_a_written_salutation():
+    from unittest.mock import patch as _patch
+
+    from langchain_core.runnables import RunnableLambda
+
+    from app.agents import writer_agent
+    from app.models.schemas import CoverLetterContent
+
+    prompts = []
+
+    class _Model:
+        def __call__(self, role, *, temperature=None):
+            return self
+
+        def with_structured_output(self, schema):
+            def _answer(prompt_value):
+                prompts.append(prompt_value.to_string())
+                return CoverLetterContent(**{k: v for k, v in GERMAN_LETTER_WITH_FRAMING.items()})
+            return RunnableLambda(_answer)
+
+    with _patch.object(writer_agent, "chat_model", _Model()):
+        out = json.loads(writer_agent.generate_cover_letter_content.invoke({
+            "cv_json": "{}", "job_json": "{}", "language": "german", "recipient": "Frau Anna Weber",
+        }))
+    assert "Frau Anna Weber" in prompts[0]
+    assert "keine Anrede" in prompts[0]
+    assert out["opening_paragraph"] == "mit großem Interesse bewerbe ich mich."
+    assert out["closing_paragraph"] == "Ich freue mich auf ein Gespräch."

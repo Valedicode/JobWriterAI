@@ -759,6 +759,9 @@ interface CoverLetterPreview {
   closing_paragraph?: string;
   betreff?: string;
   grussformel?: string;
+  /** The salutation and sign-off the PDF prints around the paragraphs (from the named recipient). */
+  salutation?: string;
+  sign_off?: string;
 }
 
 function ApproveCoverLetter({ preview }: { preview: PreviewMap }) {
@@ -770,6 +773,7 @@ function ApproveCoverLetter({ preview }: { preview: PreviewMap }) {
     p.body_paragraph_3,
     p.closing_paragraph,
   ].filter((s): s is string => typeof s === 'string' && s.trim().length > 0);
+  const signOff = p.sign_off || p.grussformel;
   return (
     <div>
       {p.betreff && (
@@ -780,18 +784,15 @@ function ApproveCoverLetter({ preview }: { preview: PreviewMap }) {
       {paras.length > 0 ? (
         <Section title="Letter">
           <div className="max-w-[62ch] space-y-2.5 text-body text-ink [overflow-wrap:anywhere]">
+            {p.salutation && <p>{p.salutation}</p>}
             {paras.map((para, i) => (
               <p key={i}>{para}</p>
             ))}
+            {signOff && <p className="pt-1">{signOff}</p>}
           </div>
         </Section>
       ) : (
         <p className="text-body text-ink-muted">Draft not available yet.</p>
-      )}
-      {p.grussformel && (
-        <Section title="Grußformel">
-          <div className="text-body text-ink [overflow-wrap:anywhere]">{p.grussformel}</div>
-        </Section>
       )}
     </div>
   );
