@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from app.api import (
     audio_router,
     cv_router,
+    documents_router,
     job_router,
     orchestrator_router,
     writer_router,
@@ -90,6 +91,7 @@ app.include_router(job_router)
 app.include_router(writer_router)
 app.include_router(audio_router)
 app.include_router(orchestrator_router)
+app.include_router(documents_router)
 
 @app.get("/")
 async def root():
