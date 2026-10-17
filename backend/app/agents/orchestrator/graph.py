@@ -107,6 +107,7 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     jt_step8_cover_letter_content,
     jt_step9_cover_letter_files,
     jt_step_set_cover_letter_recipient,
+    route_after_cover_letter,
     route_after_rewrite,
     route_after_score,
     route_after_select,
@@ -214,11 +215,12 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # which language the CV should be in (once per session). Choosing a
     # language the CV isn't in translates it, reviewed at
     # JT_GATE_APPROVE_TRANSLATION, before the plan; the gates route on via Command.
+    # A failed score goes to JT_GATE_STEP_FAILED (retry or stop), like steps 4, 5 and 8.
     graph.add_conditional_edges(
         JT_STEP2_COMPATIBILITY,
         route_after_score,
         {JT_GATE_CONFIRM_ELIGIBILITY: JT_GATE_CONFIRM_ELIGIBILITY, JT_GATE_CV_LANGUAGE: JT_GATE_CV_LANGUAGE,
-         JT_STEP3_STRATEGY: JT_STEP3_STRATEGY},
+         JT_STEP3_STRATEGY: JT_STEP3_STRATEGY, JT_GATE_STEP_FAILED: JT_GATE_STEP_FAILED},
     )
     graph.add_conditional_edges(
         JT_STEP_TRANSLATE_CV,
@@ -247,7 +249,12 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_edge(JT_STEP7_GENERATE_CV_FILES, JT_GATE_COVER_LETTER)
     # JT_GATE_COVER_LETTER returns Command(goto=JT_STEP_SET_COVER_LETTER_RECIPIENT | END)
     # JT_STEP_SET_COVER_LETTER_RECIPIENT / JT_GATE_COVER_LETTER_RECIPIENT route via Command
-    graph.add_edge(JT_STEP8_COVER_LETTER_CONTENT, JT_GATE_APPROVE_COVER_LETTER)
+    # Step 8 goes to its review gate, or to JT_GATE_STEP_FAILED when the draft failed.
+    graph.add_conditional_edges(
+        JT_STEP8_COVER_LETTER_CONTENT,
+        route_after_cover_letter,
+        {JT_GATE_APPROVE_COVER_LETTER: JT_GATE_APPROVE_COVER_LETTER, JT_GATE_STEP_FAILED: JT_GATE_STEP_FAILED},
+    )
     # JT_GATE_APPROVE_COVER_LETTER returns Command(goto=JT_STEP9_COVER_LETTER_FILES | JT_STEP8... | END)
     graph.add_edge(JT_STEP9_COVER_LETTER_FILES, END)
 
