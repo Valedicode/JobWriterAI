@@ -1,9 +1,12 @@
 # NLP Course Project: Distilling JobWriterAI's Compatibility Scorer into a Small Fine-Tuned Model
 
-Plan v2, 2026-10-17. Supersedes the 2026-09-17 draft (v1). The proposal was approved on 2026-10-17.
+Plan v2.1, 2026-10-17. Supersedes the 2026-09-17 draft (v1). The proposal was approved on 2026-10-17.
 
 v2 keeps v1's scope and adds three things: what the data already in hand says (Section 2), a sturdier
 evaluation protocol (Sections 3, 8-11) and a phased plan with the current status (Section 13).
+
+v2.1 updates the status after the 2026-10-17 app fixes were merged, records what they mean for the
+teacher, and sets the order of distillation work versus app features (Section 13.0).
 
 ---
 
@@ -12,14 +15,17 @@ evaluation protocol (Sections 3, 8-11) and a phased plan with the current status
 | Area | State |
 |---|---|
 | Proposal | Approved 2026-10-17 |
-| Scaffolding: `backend/ml/` config, requirements, labelling, training script with a CPU smoke test | Committed on `feature/distillation` (`8f91d91`, 2026-09-18). The branch is 93 commits behind `develop` |
-| HF dataset prep and due-diligence report | Done (Appendix A). `prepare_hf_eval_dataset.py` exists only on disk: `backend/.gitignore` ignores every `data/` folder, including `backend/ml/data/` |
-| Teacher pilot | 200 train rows, run on the 2026-09-17 scorer. Outdated: the scorer has changed 13 times since (rubric, knockouts, eligibility, experience date ranges, model routing) |
-| Teacher frozen (tagged) | No |
+| App fixes | Merged into `develop` on 2026-10-17: the code-review fixes (#62–#68) and the base-app fixes (#69–#74). See "What the merged app fixes mean for the teacher" below |
+| Scaffolding: `backend/ml/` config, requirements, labelling, training script with a CPU smoke test | Committed on `feature/distillation` (`8f91d91`, 2026-09-18). `develop` was merged in locally (`05900e3`, up to #68, not pushed); #69–#74 still need merging in |
+| Phase 0 work in progress | Parked in `git stash` on `feature/distillation` ("phase0-wip"): dataset script moved to `backend/ml/dataprep/`, scheduler fix, extractor reads the app's prompt and uses the routed model, pinned requirements. The CPU smoke test hasn't run on it yet |
+| HF dataset prep and due-diligence report | Done (Appendix A). The script is committed only once the parked Phase 0 work lands (it lived in the ignored `backend/ml/data/`) |
+| Teacher pilot | 200 train rows, run on the 2026-09-17 scorer. Outdated: the scorer has changed 13 times since (rubric, knockouts, eligibility, experience date ranges, model routing), and the CV extraction changed with #71 |
+| Teacher frozen (tagged) | No. Nothing in `develop` blocks the tag now; it waits only for the teacher-model decision (Decisions needed, 4) |
 | Evaluation harness, baselines, inference wrapper, latency/cost harness, failure analysis | Not started |
 | Report, presentation | Not started |
 
-Problems found in the 2026-10-17 review, all scheduled in Phase 0/1:
+Problems found in the 2026-10-17 review, all scheduled in Phase 0/1 (the first three are fixed in
+the parked Phase 0 work):
 
 - `training/train_lora.py`: `lr_scheduler_type="cosine", warmup_steps=0.03` are inside a comment
   on the `learning_rate` line, so training runs at a constant learning rate with no warmup.
@@ -35,8 +41,23 @@ Problems found in the 2026-10-17 review, all scheduled in Phase 0/1:
   - retry/backoff
 - Labelling cost is read from `get_openai_callback`, which may not price OpenRouter model ids.
 - `requirements-ml.txt` uses `>=` ranges instead of pinned versions.
-- The seven app fixes from the 2026-10-17 code review are local branches, not yet merged. None
-  changes `scoring_agent.py`, so they don't change the teacher.
+
+**What the merged app fixes mean for the teacher.** All of #62–#74 are pre-existing-app
+maintenance and go in the report's disclosure table as such, never as course work.
+
+- **Only #71 changes the teacher's input.** The app's CV extraction got new prompt rules and
+  deterministic checks against the PDF text (`app/services/cv_extraction_checks.py`):
+  - bullets copied into a second entry are removed
+  - grade repeats are dropped
+  - a company that only repeats the job title is cleared
+
+  The teacher's text extractor must do the same: read the current prompt (the parked work already
+  does) and run `clean_extracted_cv(result, text)`. Otherwise the labels come from a different
+  extraction than the app's.
+- **None of #62–#74 changes `scoring_agent.py`.** The rest touch cover letters, page count, the
+  CV review, the editor and chat; they don't affect the teacher.
+- **The editor refactor (`refactor/cv-view-segments`) keeps the printed CV byte-identical,**
+  pinned by `tests/golden/cv_tex.json`, so it doesn't affect the teacher either.
 
 ---
 
@@ -498,16 +519,53 @@ Estimates are working days for one person, part-time. Dates are set once the dea
 run in parallel while labelling and training run on their own. Start the report skeleton in
 Phase 2.
 
-### Phase 0: repo hygiene and teacher freeze (0.5-1 day). Status: not started
-- [ ] Merge the seven 2026-10-17 fix PRs into `develop`.
-- [ ] Merge `develop` into `feature/distillation`. Use a merge, not a rebase: the branch is
-  already on GitHub.
-- [ ] Rename `backend/ml/data/` → `backend/ml/datasets/` and commit `prepare_hf_eval_dataset.py`.
-- [ ] `train_lora.py`: restore the cosine scheduler and warmup arguments.
-- [ ] Pin `requirements-ml.txt` and start `backend/ml/README.md`.
-- [ ] App commit on `develop`, disclosed as maintenance:
-  - Export the CV-extraction prompt from `cv_agent.py` as a module constant.
-  - `resume_text_extractor.py` imports it and uses `chat_model("extract")`.
+### 13.0 Work order: distillation first, app features in the waiting time
+
+The course project is graded and has a deadline (plus an early-submission bonus); the app features
+don't. Labelling and training also run unattended for long stretches. So the distillation's
+critical path goes first, and app work fills the waiting time instead of competing with it.
+
+| When | Distillation | App work |
+|---|---|---|
+| Now | Phase 0, then start Phase 1 (re-pilot, test-retest, full labelling: about a day unattended) | Commit the editor's segments refactor (done, tested) |
+| While labelling and training run | Phases 2, 3 and 5 in the gaps | The document editor: document API, cover-letter twin, CV twin |
+| After the course results (or once evaluation is stable) | Report polish, optional stretch ablations | Login and database, CV templates, job search matched to the CV |
+
+**Freeze rule.** From the `teacher-v1` tag until labelling is done, app work stays out of what
+the teacher runs:
+- `scoring_agent.py`, the skill graph
+- CV extraction (`cv_agent.py`, `cv_extraction_checks.py`) and job extraction (`job_agent.py`)
+- the LLM routing settings
+
+A fix that can't wait gets a new tag (`teacher-v2`) and the affected labels are regenerated; labels
+from two versions are never mixed. The editor, templates, login and job search don't touch any of
+these.
+
+**Why the larger features wait:**
+- **Login and database are the largest piece.** They mean accounts, storing CVs (personal data:
+  consent, deletion, retention), and moving sessions out of the 24-hour checkpoint store. They
+  need their own design pass.
+- **CV templates come after the editor.** The editor draws an on-screen twin of the template, so
+  each new template needs its twin; building the editor generically first keeps that cheap.
+- **Job search depends on a jobs source.** That's an API, or scraping with its terms-of-service
+  and legal questions, so it needs scoping first.
+
+### Phase 0: repo hygiene and teacher freeze (0.5-1 day). Status: in progress
+- [x] Merge the 2026-10-17 fix PRs into `develop` (#62–#68 and #69–#74).
+- [ ] Merge `develop` into `feature/distillation` again (the local merge `05900e3` stops at #68),
+  then push. Use a merge, not a rebase: the branch is already on GitHub.
+- [ ] Restore the parked work (`git stash pop` on `feature/distillation`) and commit it in small
+  commits:
+  - the dataset script moved to `backend/ml/dataprep/` (not `datasets/`, which would shadow the
+    Hugging Face `datasets` library)
+  - the scheduler fix
+  - pinned `requirements-ml.txt`
+  - the extractor reading the app's prompt from `cv_agent.py` and using `chat_model("extract")`
+    (no app change needed)
+- [ ] `resume_text_extractor.py`: run `clean_extracted_cv(result, text)` like the app does since
+  #71, and test it against the app's extraction.
+- [ ] Start `backend/ml/README.md`; run the CPU smoke test (`python -m ml.training.train_lora --smoke`).
+- [ ] Decide the teacher models (Decisions needed, 4) and write them into `teacher_meta.json`.
 - [ ] Tag `teacher-v1` on `develop`.
 
 **Done when:**
@@ -585,6 +643,16 @@ training. An early submission is realistic once the deadline is known.
    stronger.
 3. Whether the approved proposal words the RQs or the metric split differently from Section 3. If
    it does, Section 3 adopts that wording.
+4. **The teacher's models, before the tag.**
+   - **Today:** every role runs on `deepseek/deepseek-v4.1-flash` with reasoning off. The
+     extraction slip seen on 2026-10-17 depended on the model: the same CV came out right in one
+     run and wrong in another.
+   - **Option A: keep it.** Cheapest; record and discuss it as a limitation.
+   - **Option B: route `LLM_MODEL_EXTRACT` (and possibly `LLM_MODEL_JUDGE`) to a stronger model.**
+     Extraction is cached per distinct text, so even a strong model costs little here: about 1,000
+     extractions for train and test.
+   - **Either way:** the labels depend on this choice, it is recorded in `teacher_meta.json`, and
+     it can't change during labelling.
 
 ### How the plan maps to the grading
 
