@@ -856,10 +856,14 @@ class OrchestratorGatePayload(BaseModel):
 
 class BulletDecision(BaseModel):
     """Per-bullet decision attached to a gate resolution's `decisions` map."""
-    choice: Literal["accept", "keep_original", "custom", "include", "exclude"] = Field(
+    # Same values as app.agents.orchestrator.gates.BulletDecisionChoice; a
+    # value missing here is refused with 422 before the gate ever sees it.
+    choice: Literal["accept", "keep_original", "custom", "include", "exclude", "leave_out"] = Field(
         description=(
             "Rewrite gate: 'accept' the rewrite, 'keep_original' text, or "
-            "'custom' (see `text`). Selection gate: 'include' or 'exclude'."
+            "'custom' (see `text`). Selection gate: 'include' (tailor it), "
+            "'exclude' (keep it as it is) or 'leave_out' (drop it from the "
+            "tailored CV)."
         )
     )
     text: Optional[str] = Field(
