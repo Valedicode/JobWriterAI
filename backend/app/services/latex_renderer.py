@@ -7,18 +7,23 @@ taxonomy (see ``app.services.resume_adapter``).
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
+import string
 import subprocess
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.services.resume_adapter import build_harvard_sections
+
+logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates" / "latex"
 
@@ -60,18 +65,25 @@ def latex_escape(text: str | None) -> str:
     return "".join(replacements.get(ch, ch) for ch in text)
 
 
+# Characters a URL may contain as they are (RFC 3986 reserved and unreserved).
+_URL_CHARS = frozenset(string.ascii_letters + string.digits + "-._~:/?#[]@!$&'()*+,;=%")
+
+
 def latex_url(text: str | None) -> str:
-    """Escape a URL for use inside ``\\href{...}{...}``."""
+    """
+    Escape a URL (or a ``mailto:`` address) for use inside ``\\href{...}{...}``.
+
+    Every character outside the URL set is percent-encoded, so a backslash,
+    a brace or TeX's ``^^5c`` (a backslash spelled with carets) can't end the
+    argument or start a command: the URL comes from the CV, which the client
+    sends. The URL characters TeX treats specially are then escaped.
+    """
     if text is None:
         return ""
     if not isinstance(text, str):
         text = str(text)
-    return (
-        text.replace("\\", r"\textbackslash{}")
-        .replace("%", r"\%")
-        .replace("#", r"\#")
-        .replace("_", r"\_")
-    )
+    encoded = "".join(ch if ch in _URL_CHARS else quote(ch, safe="") for ch in text.strip())
+    return encoded.replace("%", r"\%").replace("#", r"\#").replace("_", r"\_")
 
 
 def _jinja_env() -> Environment:
@@ -554,6 +566,11 @@ def _compiler_binary() -> str:
     return shutil.which("tectonic") or "tectonic"
 
 
+# The compiler's output stays in the server log: it quotes the document's
+# text and server paths, and the error message is shown to the user.
+_SEE_SERVER_LOG = "The details are in the server log."
+
+
 def _run_tectonic(tex_path: Path, output_dir: Path) -> None:
     binary = _compiler_binary()
     result = subprocess.run(
@@ -565,9 +582,8 @@ def _run_tectonic(tex_path: Path, output_dir: Path) -> None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"Tectonic compilation failed (exit {result.returncode}).\n{detail}"
-        )
+        logger.error("Tectonic failed on %s (exit %s):\n%s", tex_path.name, result.returncode, detail)
+        raise RuntimeError(f"Tectonic compilation failed (exit {result.returncode}). {_SEE_SERVER_LOG}")
 
 
 def _run_pdflatex(tex_path: Path, output_dir: Path) -> None:
@@ -594,7 +610,8 @@ def _run_pdflatex(tex_path: Path, output_dir: Path) -> None:
     log_path = output_dir / f"{tex_path.stem}.log"
     if log_path.exists():
         last_error = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-    raise RuntimeError(f"pdflatex compilation failed.\n{last_error}")
+    logger.error("pdflatex failed on %s:\n%s", tex_path.name, last_error)
+    raise RuntimeError(f"pdflatex compilation failed. {_SEE_SERVER_LOG}")
 
 
 def compile_tex_to_pdf(tex_content: str, output_dir: Path, job_name: str) -> Path:
