@@ -905,6 +905,14 @@ def select_prioritize_content(
             "items_to_de_emphasize": []
         })
 
+def _language_rule(cv_language: str) -> str:
+    """The language instruction for rewrites: the user's choice, else the CV's own."""
+    names = {"english": "English", "german": "German"}
+    if cv_language in names:
+        return f"{names[cv_language]}, the language the candidate chose for the CV"
+    return "the language the CV is written in"
+
+
 @tool
 def rewrite_enhance_content(
     cv_json: str,
@@ -913,6 +921,7 @@ def rewrite_enhance_content(
     tailoring_strategy_json: str,
     locked_bullets_json: str = "[]",
     facts_block: str = "",
+    cv_language: str = "",
 ) -> str:
     """
     Rewrite and enhance resume content to emphasize job relevance.
@@ -956,8 +965,10 @@ def rewrite_enhance_content(
                 "already mention, even when a directive or the job asks for it.\n"
                 "- Weave in job keywords naturally — forced keyword stuffing degrades ATS scores.\n"
                 "- Lead each bullet with a strong action verb.\n"
-                "- Write every rewrite and the summary in the language the CV is written in. The CV "
-                "was already put into the language the candidate chose; never switch languages.\n"
+                "- Write every rewrite and the summary in {language_rule}. The job posting may be in "
+                "another language: it decides which keywords matter, never the language you write in. "
+                "Never switch languages; a keyword from the posting that is a technology or product "
+                "name stays as it is, anything else is expressed in the CV's language.\n"
                 "- Write naturally, the way a native professional writes a CV in that language: "
                 "idiomatic phrasing, no word-for-word constructions, no anglicisms in German.\n"
                 "- The summary (`updated_summary`) describes the candidate's profile and strengths. "
@@ -1002,6 +1013,7 @@ def rewrite_enhance_content(
 
         chain = prompt | structured_llm
         result: RewrittenContent = chain.invoke({
+            "language_rule": _language_rule(cv_language),
             "cv": cv_json,
             "job": job_json,
             "selected": selected_content_json,

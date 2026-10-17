@@ -3,7 +3,7 @@ Rewrite verifier: rewrites are fact-checked against the ledger before review.
 
 Unit checks (no graph): an invented technology, number or year blocks; a
 technology shown elsewhere on the CV but not cited, a cliché, a length blow-up
-or a language switch only warns; citations and number words are understood;
+or a language switch (with no chosen CV language) only warns, while a rewrite in another language than the chosen one blocks; citations and number words are understood;
 the summary is checked against the whole CV; user-written text is skipped.
 
 In the graph: a blocked pass is rewritten once with the problems as feedback
@@ -146,6 +146,45 @@ def test_length_and_language_warnings():
     assert ("length_blowup", "warn") in _checks(_verify({"bullet_id": API, "rewritten": long}))
     german = "Entwicklung einer REST API mit Django für die zwei Teams und den Betrieb"
     assert ("language_mismatch", "warn") in _checks(_verify({"bullet_id": API, "rewritten": german}))
+
+
+GERMAN_BULLET = "Entwicklung einer REST API mit Django für die zwei Teams und den Betrieb"
+
+
+def test_a_rewrite_in_another_language_than_the_chosen_one_blocks():
+    """A German posting must not turn an English CV German: with a chosen CV language a rewrite in
+    another one blocks (so it is written again), where before it only warned."""
+    def verify(language, **bullet):
+        return verify_rewrites(
+            {"rewritten_bullets": [{"bullet_id": API, **bullet}], "updated_summary": ""},
+            VLEDGER, VINDEX, cv_summary=VCV["summary"], cv_language=language,
+        )
+
+    blocked = verify("english", rewritten=GERMAN_BULLET)
+    assert ("language_mismatch", "block") in _checks(blocked) and not blocked.passed
+    assert "German" in blocked.issues[0].detail and "English" in blocked.issues[0].detail
+    assert "in the CV's language" in retry_feedback(blocked)
+    assert verify("german", rewritten=GERMAN_BULLET).passed
+    # Text too short to tell is not a switch; with no choice the old warning stays.
+    assert verify("english", rewritten="Built a REST API in Django for both teams").passed
+    assert ("language_mismatch", "warn") in _checks(verify(None, rewritten=GERMAN_BULLET))
+
+
+def test_a_summary_in_the_wrong_language_blocks_too():
+    german = "Backend-Entwickler mit Python und Docker, der die Teams bei der Arbeit unterstützt und für den Betrieb sorgt"
+    result = verify_rewrites(
+        {"rewritten_bullets": [], "updated_summary": german}, VLEDGER, VINDEX,
+        cv_summary=VCV["summary"], cv_language="english",
+    )
+    assert ("language_mismatch", "block") in _checks(result)
+
+
+def test_the_rewrite_prompt_names_the_chosen_language():
+    from app.agents.writer_agent import _language_rule
+
+    assert _language_rule("english").startswith("English")
+    assert _language_rule("german").startswith("German")
+    assert _language_rule("") == "the language the CV is written in"
 
 
 def test_retry_feedback_names_each_blocked_claim():
