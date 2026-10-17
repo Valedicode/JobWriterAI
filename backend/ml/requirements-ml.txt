@@ -1,11 +1,13 @@
 # Distillation project deps. Install on top of backend/requirements.txt (labeling reuses app code).
 # Local (Windows): install into the `jobwriterai` conda env straight from PyPI (its torch wheel is CPU-only).
 # Don't use the download.pytorch.org index: it downgrades typing_extensions and breaks pydantic.
-# Kaggle images ship torch preinstalled.
+# Pinned to the versions the CPU smoke test passes with (2026-10-17).
+# torch and bitsandbytes stay unpinned: Kaggle images ship a CUDA torch, and the bitsandbytes
+# version gets pinned from `pip freeze` after the first Kaggle smoke run.
 torch>=2.3
-transformers>=4.46
-peft>=0.13
-trl>=0.12
-accelerate>=1.0
-datasets>=3.0
+transformers==5.17.0
+peft==0.21.0
+trl==1.13.0
+accelerate==1.15.0
+datasets==5.0.1
 bitsandbytes>=0.44; platform_system == "Linux"
