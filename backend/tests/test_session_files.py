@@ -73,6 +73,16 @@ def test_download_needs_the_owning_session(client, _temporary_file_store):
     assert client.get(f"/api/files/{sid}/..%2F..%2Fsecret.pdf").status_code == 404
 
 
+def test_a_pdf_can_be_shown_inline_for_the_editor_preview(client, _temporary_file_store):
+    sid = str(uuid.uuid4())
+    _store_pdf(_temporary_file_store, sid)
+
+    inline = client.get(f"/api/files/{sid}/ada_cv_tailored.pdf?inline=true")
+    assert inline.headers["content-disposition"] == 'inline; filename="ada_cv_tailored.pdf"'
+    download = client.get(f"/api/files/{sid}/ada_cv_tailored.pdf")
+    assert download.headers["content-disposition"] == 'attachment; filename="ada_cv_tailored.pdf"'
+
+
 def test_generated_files_are_written_and_linked_per_session(client, _temporary_file_store, patched_tools):  # noqa: F811
     start = client.post(
         "/api/orchestrator/start", json={"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB},
