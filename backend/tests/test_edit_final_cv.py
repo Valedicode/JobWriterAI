@@ -23,7 +23,7 @@ import pytest
 import app.api.orchestrator as orchestrator_module
 from app.agents.orchestrator.chat_actions import ChatActionRefused, propose_cv_edit
 from app.agents.orchestrator.chat_agent import ChatTurn, EditCvLine, _state_context_block
-from app.agents.orchestrator.final_cv import final_cv, final_cv_lines
+from app.agents.orchestrator.final_documents import final_cv_document, final_cv_lines
 from tests.test_orchestrator_api import CV, JOB, enabled_client, patched_tools  # noqa: F401
 from tests.test_orchestrator_cv_review import CANNED_REVIEWS, CV_WITH_LEADERSHIP
 
@@ -164,14 +164,18 @@ def test_the_reviewed_cv_can_be_edited_too(enabled_client):
 FINISHED = {
     "flow": "job_tailoring",
     "generated_files": [{"filename": "ada_cv_tailored.pdf", "file_type": "cv", "download_url": "/x"}],
-    "tailored_cv_data": {"name": "Ada", "experience": [{"company": "AE", "responsibilities": ["Old line"]}]},
+    "final_cv_document": {
+        "cv": {"name": "Ada", "experience": [{"company": "AE", "responsibilities": ["Old line"]}]},
+        "filename": "ada_cv_tailored.pdf", "revision": 0, "rendered_revision": 0,
+    },
 }
 
 
-def test_the_final_cv_is_the_one_the_pdf_was_made_from():
-    assert final_cv(FINISHED) == ("tailored_cv_data", FINISHED["tailored_cv_data"])
-    assert final_cv({**FINISHED, "generated_files": []}) is None
-    reviewed = {"flow": "cv_review", "generated_files": FINISHED["generated_files"], "cv_data": {"summary": "Hi there."}}
+def test_the_final_cv_is_the_document_the_pdf_was_made_from():
+    assert final_cv_document(FINISHED) == FINISHED["final_cv_document"]
+    assert final_cv_document({**FINISHED, "generated_files": []}) is None
+    reviewed = {"flow": "cv_review", "generated_files": FINISHED["generated_files"],
+                "final_cv_document": {"cv": {"summary": "Hi there."}, "revision": 0}}
     assert final_cv_lines(reviewed) == [("summary", "Hi there.")]
 
 
@@ -179,7 +183,9 @@ def test_the_proposal_carries_the_change_without_applying_it():
     current = copy.deepcopy(FINISHED)
     proposal = propose_cv_edit(current, pending_node=None, pending_step=None,
                                line_id="experience.0.responsibilities.0", new_text="New line")
-    assert proposal["restore"]["tailored_cv_data"]["experience"][0]["responsibilities"] == ["New line"]
+    document = proposal["restore"]["final_cv_document"]
+    assert document["cv"]["experience"][0]["responsibilities"] == ["New line"]
+    assert (document["revision"], document["filename"]) == (1, "ada_cv_tailored.pdf")
     assert proposal["details"][:2] == ["Before: Old line", "After: New line"]
     assert current == FINISHED
 

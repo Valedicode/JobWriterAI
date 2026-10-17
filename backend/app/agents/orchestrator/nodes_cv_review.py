@@ -32,6 +32,7 @@ to inject deterministic stubs without touching ``langchain_openai`` directly.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from difflib import SequenceMatcher
@@ -43,8 +44,9 @@ from langgraph.graph import END
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ConfigDict
 
+from app.agents.orchestrator.final_documents import CV_DOCUMENT, GENERATED_CV_DOCUMENT, new_document, rendered
 from app.agents.orchestrator.gates import GatePayload, GateResolution
-from app.agents.orchestrator.outputs import RenderedCv, file_record, session_output_dir, with_file
+from app.agents.orchestrator.outputs import RenderedPdf, render_cv_document
 from app.agents.orchestrator.state import OrchestratorState
 from app.agents.writer_agent import generate_cv_pdf
 from app.openai_llm import chat_model
@@ -840,12 +842,6 @@ def cr_gate_assessment(state: OrchestratorState) -> Command:
 # no further gate follows.
 # --------------------------------------------------------------------------- #
 
-def _extract_filename(tool_message: str) -> str | None:
-    """Pull a filename out of a generate_* tool success message."""
-    match = re.search(r"The file '([^']+)' is ready for download", tool_message or "")
-    return match.group(1) if match else None
-
-
 _NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 _DETAIL_MATCH = 0.6
 
@@ -1061,47 +1057,45 @@ def _assemble_reviewed_cv(state: OrchestratorState) -> dict[str, Any]:
     return cv_data
 
 
-def render_reviewed_cv(cv: dict[str, Any], state: OrchestratorState, config: RunnableConfig) -> RenderedCv:
-    """Generate the reviewed CV's PDF (step 7, and again after a chat edit)."""
+def reviewed_cv_document(cv: dict[str, Any], state: OrchestratorState) -> dict[str, Any]:
+    """The reviewed CV as step 7 prints it (final_documents), with the length
+    the overall assessment recommended: the renderer keeps to it where the
+    content allows and says so where it doesn't."""
     applicant_name = cv.get("name", "Applicant")
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(applicant_name or "applicant"))[:80].strip("_").lower() or "applicant"
-    pdf_name = f"{slug}_cv_reviewed.pdf"
-
-    # The length the overall assessment recommended; the renderer keeps to it
-    # where the content allows and says so where it doesn't.
     recommended = ((state.get("review_outputs") or {}).get("assessment") or {}).get("recommended_pages")
-    files = list(state.get("generated_files") or [])
-    pdf_msg = generate_cv_pdf.invoke({
-        "cv_json": json.dumps(cv, default=str),
-        "output_filename": pdf_name,
-        "applicant_name": applicant_name,
-        "output_dir": session_output_dir(config),
-        "max_pages": recommended if recommended in (1, 2) else 0,
-    })
-    if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
-        filename = _extract_filename(pdf_msg) or pdf_name
-        notes = [line for line in pdf_msg.splitlines() if line.startswith("Layout note:")]
-        return RenderedCv(with_file(files, file_record(filename, "cv", config)), filename, notes, None)
-    return RenderedCv(files, None, [], str(pdf_msg))
+    return new_document(
+        cv=cv,
+        section_order=[],
+        convention="international",
+        max_pages=recommended if recommended in (1, 2) else 0,
+        filename=f"{slug}_cv_reviewed.pdf",
+    )
+
+
+def render_reviewed_cv(document: dict[str, Any], files: list[Any], config: RunnableConfig) -> RenderedPdf:
+    """Generate the PDF of the reviewed CV document (step 7, and again after a
+    chat edit or an editor save)."""
+    return render_cv_document(document, files, config, generate_cv_pdf)
 
 
 def cr_step7_finalize(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     """Assemble the revised CV and export a downloadable PDF via LaTeX."""
     revised_cv = _assemble_reviewed_cv(state)
-    rendered = render_reviewed_cv(revised_cv, state, config)
-    if rendered.filename:
+    document = reviewed_cv_document(revised_cv, state)
+    pdf = render_reviewed_cv(document, state.get("generated_files") or [], config)
+    update: dict[str, Any] = {"cv_data": revised_cv, "generated_files": pdf.files}
+    if pdf.filename:
+        update.update({CV_DOCUMENT: rendered(document), GENERATED_CV_DOCUMENT: copy.deepcopy(document)})
         narration = "\n".join([
             "CV review complete. I've applied the approved suggestions and generated "
-            f"a revised CV PDF: {rendered.filename}.",
-            *rendered.notes,
+            f"a revised CV PDF: {pdf.filename}.",
+            *pdf.notes,
         ])
     else:
-        narration = f"CV review complete, but I ran into a problem generating the revised PDF: {rendered.error}"
+        narration = f"CV review complete, but I ran into a problem generating the revised PDF: {pdf.error}"
 
-    return _narrate(
-        {"cv_data": revised_cv, "generated_files": rendered.files},
-        narration,
-    )
+    return _narrate(update, narration)
 
 
 # Backwards-compat shim. Some older imports referenced cv_review_stub; keep

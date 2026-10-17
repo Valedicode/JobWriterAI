@@ -21,7 +21,7 @@ from urllib.parse import quote
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from app.services.resume_adapter import build_harvard_sections
+from app.services.resume_adapter import build_harvard_sections, build_harvard_view
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +210,19 @@ def _cv_context(
             block["new_page"] = len(anchors) == break_before_block
             anchors.append(_block_anchor(section, block))
     return header, sections, anchors
+
+
+def cv_view(
+    cv_data: dict[str, Any], section_order: list[str] | None = None, *, convention: str = "international"
+) -> dict[str, Any]:
+    """The CV editor's view of what render_cv_pdf prints: the header and
+    sections with their segments, in the CV's content language, with spoken
+    languages merged into Skills as the PDF has them."""
+    language = cv_content_language(cv_data)
+    header, sections = build_harvard_view(
+        cv_data, section_order=section_order, language=language, convention=convention, merge_languages=True,
+    )
+    return {"language": language, "header": header, "sections": sections}
 
 
 def render_cv_tex(
@@ -486,7 +499,9 @@ def _english_sign_off(recipient_info: str) -> str:
 
 def cover_letter_framing(content: dict[str, Any], recipient_info: str) -> dict[str, str]:
     """The salutation and sign-off the PDF prints around the paragraphs, so the
-    review shows the letter exactly as it will be exported."""
+    review shows the letter exactly as it will be exported. An English letter
+    takes the sign-off the user set in the editor (``sign_off``), else the one
+    that fits the recipient."""
     if (content.get("language") or "english").lower() == "german":
         return {
             "salutation": _cover_letter_salutation(recipient_info, is_german=True),
@@ -494,8 +509,15 @@ def cover_letter_framing(content: dict[str, Any], recipient_info: str) -> dict[s
         }
     return {
         "salutation": _cover_letter_salutation(recipient_info, is_german=False),
-        "sign_off": _english_sign_off(recipient_info),
+        "sign_off": content.get("sign_off") or _english_sign_off(recipient_info),
     }
+
+
+def default_sign_off(content: dict[str, Any], recipient_info: str) -> str:
+    """The sign-off a letter gets when the user hasn't set one."""
+    if (content.get("language") or "english").lower() == "german":
+        return "Mit freundlichen Grüßen"
+    return _english_sign_off(recipient_info)
 
 
 # A salutation the model wrote into the first paragraph, e.g. "Sehr geehrte
@@ -580,6 +602,51 @@ def _cover_letter_context(
     }
 
 
+LETTER_PARAGRAPH_FIELDS = (
+    "opening_paragraph", "body_paragraph_1", "body_paragraph_2", "body_paragraph_3", "closing_paragraph",
+)
+
+
+def cover_letter_context(
+    content: dict[str, Any],
+    applicant_name: str,
+    applicant_contact: str = "",
+    recipient_info: str = "",
+    cv_data: dict[str, Any] | None = None,
+    job_data: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """
+    The cover letter's template and everything it prints: the header from the
+    CV, the date, the salutation for the recipient, the paragraphs and the
+    sign-off. ``paragraph_fields`` names each printed paragraph's content
+    field, for the editor. The PDF and the editor's view are both made from
+    this, so they can't disagree.
+    """
+    language = (content.get("language") or "english").lower()
+    is_german = language == "german"
+    # The template adds the salutation and sign-off; drop any the content brought along.
+    content = strip_letter_framing(content)
+    paragraph_fields = [
+        {"field": field, "text": content[field]}
+        for field in LETTER_PARAGRAPH_FIELDS
+        if isinstance(content.get(field), str) and content[field].strip()
+    ]
+    if is_german:
+        template_name = "cover_letter_de.tex.j2"
+        extra = {"betreff": content.get("betreff", ""), "document_title": "ANSCHREIBEN", "date_label": "Datum:"}
+    else:
+        template_name = "cover_letter.tex.j2"
+        extra = {"document_title": "COVER LETTER", "date_label": "Date:"}
+    return template_name, {
+        "current_date": _format_date(language),
+        "paragraphs": [p["text"] for p in paragraph_fields],
+        "paragraph_fields": paragraph_fields,
+        **_cover_letter_context(cv_data, job_data, applicant_name, applicant_contact),
+        **cover_letter_framing(content, recipient_info),
+        **extra,
+    }
+
+
 def render_cover_letter_tex(
     content: dict[str, Any],
     applicant_name: str,
@@ -589,51 +656,10 @@ def render_cover_letter_tex(
     job_data: dict[str, Any] | None = None,
 ) -> str:
     """Render a cover letter LaTeX document from CoverLetterContent JSON."""
-    language = (content.get("language") or "english").lower()
-    is_german = language == "german"
-    # The template adds the salutation and sign-off; drop any the content brought along.
-    content = strip_letter_framing(content)
-
-    paragraphs = [
-        content.get("opening_paragraph", ""),
-        content.get("body_paragraph_1", ""),
-        content.get("body_paragraph_2", ""),
-    ]
-    body_three = content.get("body_paragraph_3", "")
-    if isinstance(body_three, str) and body_three.strip():
-        paragraphs.append(body_three)
-    paragraphs.append(content.get("closing_paragraph", ""))
-    paragraphs = [p for p in paragraphs if isinstance(p, str) and p.strip()]
-
-    header = _cover_letter_context(cv_data, job_data, applicant_name, applicant_contact)
-
-    if is_german:
-        salutation = _cover_letter_salutation(recipient_info, is_german=True)
-        template_name = "cover_letter_de.tex.j2"
-        extra = {
-            "betreff": content.get("betreff", ""),
-            "sign_off": content.get("grussformel", "Mit freundlichen Grüßen"),
-            "salutation": salutation,
-            "document_title": "ANSCHREIBEN",
-            "date_label": "Datum:",
-        }
-    else:
-        template_name = "cover_letter.tex.j2"
-        extra = {
-            "salutation": _cover_letter_salutation(recipient_info, is_german=False),
-            "sign_off": _english_sign_off(recipient_info),
-            "document_title": "COVER LETTER",
-            "date_label": "Date:",
-        }
-
-    env = _jinja_env()
-    template = env.get_template(template_name)
-    return template.render(
-        current_date=_format_date(language),
-        paragraphs=paragraphs,
-        **header,
-        **extra,
+    template_name, context = cover_letter_context(
+        content, applicant_name, applicant_contact, recipient_info, cv_data, job_data,
     )
+    return _jinja_env().get_template(template_name).render(**context)
 
 
 def _compiler_binary() -> str:

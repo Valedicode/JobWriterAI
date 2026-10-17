@@ -992,6 +992,86 @@ class OrchestratorStateResponse(BaseModel):
 
 
 # ============================================
+# Documents API Models (the finished CV and cover letter in the editor)
+# ============================================
+
+class CvEdit(BaseModel):
+    """One change to the finished CV, addressed by a path from the CV's view."""
+    op: Literal["set", "insert", "delete"]
+    path: str = Field(..., min_length=1, max_length=200, description=(
+        "set: a segment's src path (e.g. 'experience.0.company'); insert: a bullet list's "
+        "bullets_src path; delete: a bullet's path (the list path plus its index)."
+    ))
+    value: Optional[Union[str, List[str]]] = Field(default=None, description="The new text (set, insert).")
+    index: Optional[int] = Field(default=None, ge=0, description="insert: the position; the end when omitted.")
+
+
+class CvEditRequest(BaseModel):
+    """Edits to the CV, applied in order to the revision the editor was showing."""
+    revision: int = Field(..., ge=0, description="The document revision the edits were made on.")
+    edits: List[CvEdit] = Field(default_factory=list, max_length=500)
+
+
+class CoverLetterEditRequest(BaseModel):
+    """New values for the letter's editable fields (the ones in CoverLetterView.fields)."""
+    revision: int = Field(..., ge=0, description="The document revision the edits were made on.")
+    fields: Dict[str, str] = Field(default_factory=dict)
+
+
+class DocumentResetRequest(BaseModel):
+    """Go back to the generated version of a document."""
+    revision: int = Field(..., ge=0, description="The document revision the editor was showing.")
+
+
+class CvDocumentView(BaseModel):
+    """The finished CV as the PDF prints it, with every printed piece's source field."""
+    revision: int
+    rendered_revision: Optional[int] = Field(
+        default=None, description="The revision the PDF shows; differs from revision when generating it failed."
+    )
+    edited: bool = Field(description="True when the CV differs from the version the flow generated.")
+    filename: str
+    download_url: Optional[str] = None
+    language: str
+    header: Dict[str, Any] = Field(description="name / label / summary / contact_parts, each with its *_segs.")
+    sections: List[Dict[str, Any]] = Field(description="{type, title, style, entries} with segments kept.")
+
+
+class CoverLetterView(BaseModel):
+    """The finished cover letter as the PDF prints it, and its editable fields."""
+    revision: int
+    rendered_revision: Optional[int] = None
+    edited: bool
+    filename: str
+    download_url: Optional[str] = None
+    language: str
+    fields: Dict[str, str] = Field(description=(
+        "The editable values: the paragraph fields, recipient, sign_off, and betreff for a German letter."
+    ))
+    letter: Dict[str, Any] = Field(description=(
+        "Everything the PDF prints: header (name, phone, email, links), document_title, date_label, "
+        "current_date, betreff, salutation, paragraph_fields [{field, text}], sign_off."
+    ))
+
+
+class DocumentsResponse(BaseModel):
+    """The session's finished documents; null where the PDF doesn't exist yet."""
+    success: bool = True
+    session_id: str
+    cv: Optional[CvDocumentView] = None
+    cover_letter: Optional[CoverLetterView] = None
+    editable: bool = Field(description=(
+        "False while a proposed change waits for confirmation in the chat; saving is refused then."
+    ))
+
+
+class DocumentSaveResponse(BaseModel):
+    """After a save or reset: the session as /message returns it, and the documents."""
+    session: OrchestratorResponse
+    documents: DocumentsResponse
+
+
+# ============================================
 # File Upload Models (for future multipart support)
 # ============================================
 

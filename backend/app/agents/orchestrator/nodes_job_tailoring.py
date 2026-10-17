@@ -27,6 +27,15 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from langgraph.types import Command, interrupt
 
+from app.agents.orchestrator.final_documents import (
+    COVER_LETTER_DOCUMENT,
+    CV_DOCUMENT,
+    GENERATED_COVER_LETTER,
+    GENERATED_CV_DOCUMENT,
+    letter_applicant,
+    new_document,
+    rendered,
+)
 from app.agents.orchestrator.gates import GatePayload, GateResolution
 from app.agents.orchestrator.state import OrchestratorState
 from app.agents.writer_agent import (
@@ -38,7 +47,7 @@ from app.agents.writer_agent import (
     rewrite_enhance_content,
     select_prioritize_content,
 )
-from app.agents.orchestrator.outputs import file_record, session_output_dir
+from app.agents.orchestrator.outputs import session_output_dir
 from app.services.latex_renderer import (
     cover_letter_framing,
     cv_content_language,
@@ -59,7 +68,7 @@ from app.services.bullet_index import index_cv_bullets as _index_cv_bullets
 from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
 from app.services.requirement_rubric import evidence_prompt_block, refresh_evidence, rubric_alignment
 from app.services.verifier import issue_notes, retry_feedback, text_language, verify_rewrites
-from app.agents.orchestrator.outputs import RenderedCv, with_file
+from app.agents.orchestrator.outputs import RenderedPdf, render_cv_document, rendered_pdf
 
 
 # --------------------------------------------------------------------------- #
@@ -303,12 +312,6 @@ def _without_bullets(
         elif isinstance(entry.get(ref["field"]), list) and ref["idx"] < len(entry[ref["field"]]):
             del entry[ref["field"]][ref["idx"]]
     return out
-
-
-def _extract_filename(tool_message: str) -> str | None:
-    """Pull a filename out of a generate_* tool success message."""
-    match = re.search(r"The file '([^']+)' is ready for download", tool_message or "")
-    return match.group(1) if match else None
 
 
 # --------------------------------------------------------------------------- #
@@ -1729,42 +1732,41 @@ def _with_project_order(cv_data: dict[str, Any], order: list[int]) -> dict[str, 
     return {**cv_data, "projects": ranked + rest}
 
 
-def render_tailored_cv(state: OrchestratorState, config: RunnableConfig) -> RenderedCv:
-    """Generate the tailored CV's PDF (step 7, and again after a chat edit)."""
+def tailored_cv_document(state: OrchestratorState) -> dict[str, Any]:
+    """The tailored CV as step 7 prints it (final_documents): the plan's
+    project order and skill groups applied, with the render settings."""
     cv_data = _tailored_cv(state)
-    applicant_name = cv_data.get("name", "Applicant")
-    base = _filename_base(cv_data)
     selected = state.get("selected_content") or {}
     plan = (state.get("tailoring_strategy") or {}).get("plan") or {}
-    # Selection follows the plan's order and the user reviewed it there; the
-    # plan's own order is the fallback.
-    section_order = selected.get("section_order") or plan.get("section_order") or []
-    files = list(state.get("generated_files") or [])
-
-    pdf_name = f"{base}_cv_tailored.pdf"
-    pdf_msg = generate_cv_pdf.invoke({
-        "cv_json": json.dumps(_with_skill_groups(
+    return new_document(
+        cv=_with_skill_groups(
             _with_project_order(cv_data, plan.get("project_order") or []), plan.get("skill_groups") or []
-        )),
-        "output_filename": pdf_name,
-        "applicant_name": applicant_name,
-        "section_order_json": json.dumps(section_order),
-        "output_dir": session_output_dir(config),
-        "convention": plan.get("convention") or "international",
-    })
-    if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
-        filename = _extract_filename(pdf_msg) or pdf_name
-        notes = [line for line in pdf_msg.splitlines() if line.startswith("Layout note:")]
-        return RenderedCv(with_file(files, file_record(filename, "cv", config)), filename, notes, None)
-    return RenderedCv(files, None, [], str(pdf_msg))
+        ),
+        # Selection follows the plan's order and the user reviewed it there;
+        # the plan's own order is the fallback.
+        section_order=selected.get("section_order") or plan.get("section_order") or [],
+        convention=plan.get("convention") or "international",
+        max_pages=0,
+        filename=f"{_filename_base(cv_data)}_cv_tailored.pdf",
+    )
+
+
+def render_tailored_cv(document: dict[str, Any], files: list[Any], config: RunnableConfig) -> RenderedPdf:
+    """Generate the PDF of the tailored CV document (step 7, and again after a
+    chat edit or an editor save)."""
+    return render_cv_document(document, files, config, generate_cv_pdf)
 
 
 def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     """Emit a tailored CV PDF from merged structured JSON."""
-    rendered = render_tailored_cv(state, config)
-    messages = ([f"PDF: {rendered.filename}", *rendered.notes] if rendered.filename
-                else [f"PDF generation failed: {rendered.error}"])
-    return _narrate({"generated_files": rendered.files}, "Generated CV files:\n" + "\n".join(messages))
+    document = tailored_cv_document(state)
+    pdf = render_tailored_cv(document, state.get("generated_files") or [], config)
+    messages = ([f"PDF: {pdf.filename}", *pdf.notes] if pdf.filename
+                else [f"PDF generation failed: {pdf.error}"])
+    update: dict[str, Any] = {"generated_files": pdf.files}
+    if pdf.filename:
+        update.update({CV_DOCUMENT: rendered(document), GENERATED_CV_DOCUMENT: copy.deepcopy(document)})
+    return _narrate(update, "Generated CV files:\n" + "\n".join(messages))
 
 
 # --------------------------------------------------------------------------- #
@@ -1944,13 +1946,38 @@ def jt_gate_approve_cover_letter(state: OrchestratorState) -> Command:
 # Step 9: cover letter PDF (LaTeX)
 # --------------------------------------------------------------------------- #
 
+def letter_cv(state: OrchestratorState) -> dict[str, Any]:
+    """The CV the cover letter's header is taken from: the finished CV as the
+    user last saved it, else the tailored CV."""
+    document = state.get(CV_DOCUMENT)
+    if isinstance(document, dict) and isinstance(document.get("cv"), dict):
+        return document["cv"]
+    return _tailored_cv(state)
+
+
+def render_cover_letter_document(
+    document: dict[str, Any], state: OrchestratorState, config: RunnableConfig
+) -> tuple[RenderedPdf, dict[str, Any]]:
+    """Generate the PDF of a stored cover letter (step 9, and again after an
+    editor save or a change to the CV's contact details). Returns the render
+    and the document as rendered (with the applicant details it printed)."""
+    cv_data = letter_cv(state)
+    message = generate_cover_letter_pdf.invoke({
+        "content_json": json.dumps(document["content"]),
+        "output_filename": document["filename"],
+        "applicant_name": cv_data.get("name", "Applicant"),
+        "applicant_contact": _applicant_contact(cv_data),
+        "recipient_info": document["recipient"],
+        "cv_json": json.dumps(cv_data),
+        "job_json": json.dumps(state.get("job_data") or {}),
+        "output_dir": session_output_dir(config),
+    })
+    pdf = rendered_pdf(message, document["filename"], "cover_letter", state.get("generated_files") or [], config)
+    return pdf, (rendered(document, applicant=letter_applicant(cv_data)) if pdf.filename else document)
+
+
 def jt_step9_cover_letter_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
-    cv_data = _tailored_cv(state)
-    content = state.get("cover_letter_content") or {}
     language = state.get("cover_letter_language") or "english"
-    base = _filename_base(cv_data)
-    applicant_name = cv_data.get("name", "Applicant")
-    applicant_contact = _applicant_contact(cv_data)
     recipient_info = (state.get("cover_letter_recipient") or "").strip()
     if not recipient_info:
         return _narrate(
@@ -1959,29 +1986,16 @@ def jt_step9_cover_letter_files(state: OrchestratorState, config: RunnableConfig
         )
 
     suffix = "anschreiben" if language == "german" else "cover_letter"
-    generated: list[dict[str, str]] = list(state.get("generated_files") or [])
-    messages: list[str] = []
-
-    pdf_name = f"{base}_{suffix}.pdf"
-    pdf_msg = generate_cover_letter_pdf.invoke({
-        "content_json": json.dumps(content),
-        "output_filename": pdf_name,
-        "applicant_name": applicant_name,
-        "applicant_contact": applicant_contact,
-        "recipient_info": recipient_info,
-        "cv_json": json.dumps(cv_data),
-        "job_json": json.dumps(state.get("job_data") or {}),
-        "output_dir": session_output_dir(config),
-    })
-    if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
-        filename = _extract_filename(pdf_msg) or pdf_name
-        generated.append(file_record(filename, "cover_letter", config))
-        messages.append(f"PDF: {filename}")
-    else:
-        messages.append(f"Cover-letter PDF failed: {pdf_msg}")
-
-    narration = (
-        "Cover letter exported:\n" + "\n".join(messages)
-        if messages else "No cover-letter files were generated."
+    document = new_document(
+        content=dict(state.get("cover_letter_content") or {}),
+        recipient=recipient_info,
+        filename=f"{_filename_base(letter_cv(state))}_{suffix}.pdf",
     )
-    return _narrate({"generated_files": generated}, narration)
+    pdf, document = render_cover_letter_document(document, state, config)
+    if not pdf.filename:
+        return _narrate({"generated_files": pdf.files}, f"Cover letter exported:\nCover-letter PDF failed: {pdf.error}")
+    return _narrate(
+        {"generated_files": pdf.files, COVER_LETTER_DOCUMENT: document,
+         GENERATED_COVER_LETTER: copy.deepcopy(document)},
+        f"Cover letter exported:\nPDF: {pdf.filename}",
+    )

@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from app.api import (
     audio_router,
     cv_router,
+    documents_router,
     job_router,
     orchestrator_router,
     writer_router,
@@ -90,6 +91,7 @@ app.include_router(job_router)
 app.include_router(writer_router)
 app.include_router(audio_router)
 app.include_router(orchestrator_router)
+app.include_router(documents_router)
 
 @app.get("/")
 async def root():
@@ -136,9 +138,12 @@ async def health_check():
     "/api/files/{session_id}/{filename}",
     response_class=FileResponse,
     summary="Download Generated File",
-    description="Download a PDF (CV or cover letter) generated in one orchestrator session.",
+    description=(
+        "Download a PDF (CV or cover letter) generated in one orchestrator session; "
+        "with ?inline=true the browser shows it instead (the editor's preview)."
+    ),
 )
-async def download_file(session_id: str, filename: str):
+async def download_file(session_id: str, filename: str, inline: bool = False):
     """
     Serve a generated PDF from its session's folder in the file store.
 
@@ -156,7 +161,7 @@ async def download_file(session_id: str, filename: str):
         filename=filename,
         media_type="application/pdf",
         headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Disposition": f'{"inline" if inline else "attachment"}; filename="{filename}"',
             "Cache-Control": "no-store",
         },
     )

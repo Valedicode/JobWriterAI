@@ -28,6 +28,11 @@ This state holds three classes of data:
    - chat_proposal              : a chat-requested change awaiting the
                                   confirm_change gate.
    - chat_history               : the last few chat turns.
+   - final_cv_document /
+     final_cover_letter         : the finished documents the PDFs are made
+                                  from, which the chat and the editor change;
+                                  generated_cv_document / generated_cover_letter
+                                  keep the generated versions (final_documents).
 
    CV-review branch:
    - review_outputs
@@ -141,9 +146,21 @@ class OrchestratorState(TypedDict, total=False):
     chat_proposal: dict[str, Any] | None
     # Short-term chat memory: the last few {role, content} turns.
     chat_history: list[dict[str, str]]
-    # Where an approved chat edit of the finished CV returns after the PDF is
-    # generated again: the gate that was pending, or None for the end.
+    # Where a change to a finished document (an approved chat edit, an editor
+    # save) returns after its PDF is generated again: the gate that was
+    # pending, or None for the end.
     after_edit_goto: str | None
+
+    # --- finished documents (app.agents.orchestrator.final_documents) -------
+    # {cv, section_order, convention, max_pages, filename, revision,
+    # rendered_revision}: the CV exactly as step 7 printed it, then as the
+    # user last changed it; the generated copy is for going back to it.
+    final_cv_document: dict[str, Any] | None
+    generated_cv_document: dict[str, Any] | None
+    # {content, recipient, filename, revision, rendered_revision, applicant}:
+    # the cover letter as step 9 printed it, then as the user last saved it.
+    final_cover_letter: dict[str, Any] | None
+    generated_cover_letter: dict[str, Any] | None
 
     # --- cv-review artifacts -----------------------------------------------
     review_outputs: dict[str, dict[str, Any]]
