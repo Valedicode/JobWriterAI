@@ -66,7 +66,9 @@ def _model(model: str | None) -> ChatOpenAI:
         api_key = get_settings().openai_api_key
         if vendor != "openai" or not name or not api_key:
             raise ValueError(f"{model}: a direct call needs an openai/<model> id and OPENAI_API_KEY in backend/.env")
-        return ChatOpenAI(model=name, temperature=0, timeout=OPENAI_REQUEST_TIMEOUT_S,
+        # OpenAI's reasoning models take only their default temperature; low
+        # effort keeps them close to the other candidates, which run without reasoning.
+        return ChatOpenAI(model=name, reasoning_effort="low", timeout=OPENAI_REQUEST_TIMEOUT_S,
                           max_retries=OPENAI_MAX_RETRIES, api_key=api_key)
     extra = {} if get_settings().llm_reasoning else {"extra_body": {"reasoning": {"enabled": False}}}
     return ChatOpenAI(model=model, temperature=0, timeout=OPENAI_REQUEST_TIMEOUT_S,
