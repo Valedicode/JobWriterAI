@@ -579,8 +579,10 @@ these.
   - pinned `requirements-ml.txt`
   - the extractor reading the app's prompt from `cv_agent.py` and using `chat_model("extract")`
     (no app change needed)
-- [ ] `resume_text_extractor.py`: run `clean_extracted_cv(result, text)` like the app does since
+- [x] `resume_text_extractor.py`: run `clean_extracted_cv(result, text)` like the app does since
   #71, and test it against the app's extraction.
+- [x] Compare candidate teacher models: extraction (`compare_extraction_models.py`) and the
+  score's judge (`compare_judge_models.py`); results under Decisions needed, 4.
 - [ ] Start `backend/ml/README.md`; run the CPU smoke test (`python -m ml.training.train_lora --smoke`).
 - [ ] Decide the teacher models (Decisions needed, 4) and write them into `teacher_meta.json`.
 - [ ] Tag `teacher-v1` on `develop`.
@@ -660,14 +662,36 @@ training. An early submission is realistic once the deadline is known.
    stronger.
 3. Whether the approved proposal words the RQs or the metric split differently from Section 3. If
    it does, Section 3 adopts that wording.
-4. **The teacher's models, before the tag.**
-   - **Today:** every role runs on `deepseek/deepseek-v4.1-flash` with reasoning off. The
-     extraction slip seen on 2026-10-17 depended on the model: the same CV came out right in one
-     run and wrong in another.
-   - **Option A: keep it.** Cheapest; record and discuss it as a limitation.
-   - **Option B: route `LLM_MODEL_EXTRACT` (and possibly `LLM_MODEL_JUDGE`) to a stronger model.**
-     Extraction is cached per distinct text, so even a strong model costs little here: about 1,000
-     extractions for train and test.
+4. **The teacher's models, before the tag.** Compared on 2026-10-17; raw results in
+   `data/ml/model_comparison/` and `data/ml/judge_comparison/` (git-ignored), scripts committed.
+   Only dated or versioned model ids are used, so the teacher can't change under a moving alias.
+   - **Extraction: decided, `mistralai/mistral-large-4-0`.** 12 train resumes, 2 runs each, 7
+     models reachable from China through OpenRouter, plus OpenAI's models through a direct key:
+
+     | model | failed | content kept | lines reworded | same bullet placement | per 1,000 |
+     |---|---|---|---|---|---|
+     | mistralai/mistral-large-4-0 | 0 | 0.862 | 1% | 0.974 | $6.21 |
+     | minimax/minimax-m3 | 0 | 0.851 | 0.2% | 0.966 | $2.44 |
+     | deepseek/deepseek-v4.1-flash-1017 | 0 | 0.826 | 0.3% | 0.926 | $1.28 |
+     | deepseek/deepseek-v4-pro-0813 | 1 | 0.813 | 2% | 0.961 | $4.78 |
+     | qwen/qwen3.8-flash | 0 | 0.772 | 0% | 0.849 | $1.09 |
+     | openai/gpt-6.1-sol (direct) | 0 | 0.662 | 43% | 0.654 | $23.06 |
+     | openai/gpt-6-luna (direct) | 0 | 0.625 | 50% | 0.484 | $1.22 |
+
+     No model returns byte-identical extractions twice, so extractions are cached per distinct
+     text (`caches.py`) and the labels are generated once. OpenAI's models reword about half the
+     lines and drop content (they also only accept temperature 1); `qwen3.8-max-0902` refuses
+     requests without reasoning.
+   - **The score's judge (`LLM_MODEL_JUDGE`): open, deepseek or mistral.** 20 train pairs
+     extracted once with Mistral, each scored twice per judge:
+
+     | judge | unjudged | mean / max change of the score between runs | same level | same skill verdict | full labelling |
+     |---|---|---|---|---|---|
+     | mistralai/mistral-large-4-0 | 0% | 0.010 / 0.029 | 95% | 93.4% | $27 |
+     | deepseek/deepseek-v4.1-flash-1017 | 0% | 0.018 / 0.074 | 95% | 90.5% | $6 |
+     | minimax/minimax-m3 | 97% | (its batched call failed) | | | |
+
+     Mistral halves the run-to-run noise of the teacher's score for about $21 more.
    - **Either way:** the labels depend on this choice, it is recorded in `teacher_meta.json`, and
      it can't change during labelling.
 
