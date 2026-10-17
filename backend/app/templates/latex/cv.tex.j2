@@ -1,13 +1,30 @@
 \documentclass[10pt]{article}
 \setlength{\parindent}{0pt}
-\linespread{0.96}
+\linespread{ {{- layout.linespread -}} }
+\usepackage{iftex}
+\ifPDFTeX
+% pdfLaTeX: 8-bit T1 fonts. cmap (loaded first) and lmodern map the glyphs back
+% to Unicode, so the PDF's text layer is searchable (ATS parsers read it).
+\usepackage{cmap}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\fi
+% XeTeX / Tectonic use Unicode fonts by default; T1 there drops dashes and
+% prints the sharp s as SS, so no font encoding is set for them.
 \usepackage{hyperref}
 \usepackage{enumitem}
 \setlist{leftmargin=1.3em}
-\usepackage[utf8]{inputenc}
-\usepackage[T1]{fontenc}
 \usepackage[english]{babel}
-\usepackage[left=1.06cm,top=0.8cm,right=1.06cm,bottom=0.4cm]{geometry}
+\usepackage[left={{ layout.margin_x }},top={{ layout.margin_top }},right={{ layout.margin_x }},bottom={{ layout.margin_bottom }}]{geometry}
+
+% Page breaks: never strand a single line at the top or bottom of a page, and
+% never break inside a block (a heading with its first entries, or one entry).
+\widowpenalty=10000
+\clubpenalty=10000
+\displaywidowpenalty=10000
+\raggedbottom
+\newenvironment{keeptogether}{\par\noindent\begin{minipage}{\linewidth}}{\end{minipage}\par}
 
 \pagestyle{empty}
 \begin{document}
@@ -38,21 +55,28 @@
 \end{center}
 {% endif %}
 {% for section in sections %}
+{% for block in section.blocks %}
+{% if block.new_page %}
 
-\vspace{1pt}
+\newpage
+{% endif %}
 
+\vspace{ {{- layout.section_gap if block.heading else layout.entry_gap -}} }
+\begin{keeptogether}
+{% if block.heading %}
 \begin{center}
     \textbf{\large {{ section.title | latex_escape }}}
 \end{center}
 
+{% endif %}
 {% if section.style == 'itemize' %}
 \begin{itemize}[noitemsep, topsep=0pt, partopsep=0pt, parsep=0pt]
-{% for entry in section.entries %}
+{% for entry in block.entries %}
     \item {% if entry.label %}\textbf{ {{- entry.label | latex_escape -}} :} {% endif %}{{ entry.text | latex_escape }}
 {% endfor %}
 \end{itemize}
 {% else %}
-{% for entry in section.entries %}
+{% for entry in block.entries %}
 {% for r in entry.rows %}
 {% if r.bold %}\textbf{ {{- r.left | latex_escape -}} }{% else %}{{ r.left | latex_escape }}{% endif %}{% if r.right %} \hfill {{ r.right | latex_escape }}{% endif %}{% if not loop.last %} \\{% endif %}
 
@@ -65,11 +89,13 @@
 \end{itemize}
 {% endif %}
 {% if not loop.last %}
-\vspace{4pt}
+\vspace{ {{- layout.entry_gap -}} }
 
 {% endif %}
 {% endfor %}
 {% endif %}
+\end{keeptogether}
+{% endfor %}
 {% endfor %}
 
 \end{document}

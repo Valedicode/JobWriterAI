@@ -5,22 +5,13 @@ This module defines all Pydantic models used for API communication.
 These models provide validation, serialization, and documentation for the API.
 """
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 
 
 # ============================================
 # CV Agent Models
 # ============================================
-
-class CVUploadRequest(BaseModel):
-    """Request to extract CV information from a PDF file."""
-    pdf_path: str = Field(
-        ...,
-        description="Path to the PDF resume file",
-        example="C:/Documents/resume.pdf"
-    )
-
 
 class ExperienceEntry(BaseModel):
     """One work-experience entry. OpenAI structured output requires explicit
@@ -86,6 +77,17 @@ class ProjectEntry(BaseModel):
     outcomes: List[str] = Field(default_factory=list, description="Outcomes or achievements")
 
 
+class LanguageEntry(BaseModel):
+    """One spoken language with its stated proficiency."""
+    model_config = ConfigDict(extra="forbid")
+
+    language: str = Field(description="Language name, e.g. 'German' or 'English'")
+    fluency: Optional[str] = Field(
+        default=None,
+        description="Proficiency as written, e.g. 'native', 'C1', 'fluent', 'business fluent'",
+    )
+
+
 class ResumeInfo(BaseModel):
     """Structured resume information extracted from CV."""
     model_config = ConfigDict(extra="forbid")
@@ -126,6 +128,41 @@ class ResumeInfo(BaseModel):
     leadership_activities: Optional[List[LeadershipEntry]] = Field(
         default=[],
         description="Leadership roles, extracurricular activities, volunteer work, or other relevant activities"
+    )
+    languages: List[LanguageEntry] = Field(
+        default_factory=list,
+        description="Spoken languages with proficiency, one entry per language (e.g. German native, English C1)",
+    )
+
+
+FactKind = Literal[
+    "bullet", "skill", "language", "education", "employer", "title",
+    "date_range", "metric", "certification", "user_stated",
+]
+
+
+class FactEntry(BaseModel):
+    """
+    One thing the candidate's CV (or the candidate, in this session) states.
+    The fact ledger is the set of these; rewrites may only claim what some
+    fact supports.
+    """
+    fact_id: str = Field(description=(
+        "Stable id. Bullet facts reuse the bullet_id; others look like "
+        "'skill.python', 'lang.german', 'experience.0.dates', 'experience.0.responsibilities.1.metric.0'."
+    ))
+    kind: FactKind
+    value: str = Field(description="Canonical value, e.g. 'Python', 'German (native)', 'Jan 2022 - Aug 2024'.")
+    source: Literal["cv_extraction", "user_confirmed", "user_added"]
+    source_text: str = Field(description="The CV text it came from, or the user's own words.")
+    bullet_id: Optional[str] = None
+    entities: List[str] = Field(
+        default_factory=list,
+        description="Technologies named in this fact, as skill_graph.normalize() forms.",
+    )
+    user_verified: bool = Field(
+        default=False,
+        description="True when the user explicitly confirmed it in this session (an answer or a confirm gate).",
     )
 
 
@@ -176,12 +213,99 @@ class JobTextRequest(BaseModel):
 class JobRequirements(BaseModel):
     """Structured job requirements extracted from posting."""
     job_title: str = Field(description="Job title")
+    short_title: str = Field(
+        default="",
+        description=(
+            "The role in one to three words, as a person would say it: 'Software Developer', "
+            "'Data Scientist'. No gender markers like (m/w/d), no seniority, no 'Student' or "
+            "'Intern' prefix, no team or project name."
+        ),
+    )
     job_level: str = Field(description="Experience level (entry, mid, senior, etc.)")
     required_skills: List[str] = Field(description="Required technical skills")
+    required_skill_groups: List[List[str]] = Field(
+        default_factory=list,
+        description=(
+            "Required skills grouped by OR-alternatives: each inner list means "
+            "'at least one of these satisfies this requirement', not all of "
+            "them. E.g. a posting asking for 'Java and WildFly/Quarkus/Spring "
+            "Boot' produces two groups: ['Java'] and ['WildFly', 'Quarkus', "
+            "'Spring Boot'] - a candidate with Java and Spring Boot fully "
+            "satisfies both groups even without WildFly or Quarkus. A "
+            "required skill with no stated alternative is still its own "
+            "single-item group. `required_skills` remains the flattened "
+            "union of every group's members, for display and backward "
+            "compatibility; leave this empty only when the posting truly "
+            "lists no OR-alternatives (every required skill is its own group "
+            "of one, implicitly)."
+        ),
+    )
     preferred_skills: List[str] = Field(default=[], description="Preferred skills")
+    learnable_skills: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Skills the posting says the employer will teach or that the candidate "
+            "may still be learning, e.g. 'was Du noch nicht kennst, lernst Du bei "
+            "uns', 'training provided', 'eager to learn X'. A skill listed here "
+            "appears in neither required_skills nor preferred_skills."
+        ),
+    )
+    required_languages: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Spoken languages the posting requires, with level when stated, e.g. "
+            "['German (C1)', 'English (fluent)']. Never put languages into "
+            "required_skills; they are eligibility requirements, not technical skills."
+        ),
+    )
+    education_requirements: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Degree, field-of-study, or enrollment requirements, one per entry, e.g. "
+            "['Enrolled student in Computer Science or related field', "
+            "\"Bachelor's degree in Engineering\"]. Never put these into required_skills."
+        ),
+    )
     years_experience: Optional[int] = Field(default=None, description="Years of experience required")
     employment_type: str = Field(description="Employment type (Full-time, Contract, etc.)")
     location: str = Field(description="Job location")
+    # Knockout conditions: stated hard conditions that rule a candidate out
+    # regardless of skills. Each stays empty unless the posting states it.
+    work_mode: Optional[Literal["onsite", "hybrid", "remote"]] = Field(
+        default=None,
+        description="Where the work happens, only when the posting says so.",
+    )
+    location_constraint: Optional[str] = Field(
+        default=None,
+        description=(
+            "A stated condition on where the candidate must live or be able to "
+            "work, e.g. 'within commuting distance of Munich', 'EU residents only'. "
+            "Not the office address; that is `location`."
+        ),
+    )
+    hours_per_week: Optional[str] = Field(
+        default=None,
+        description="Weekly hours as stated, e.g. '20', '16-20', 'up to 20'.",
+    )
+    start_date: Optional[str] = Field(
+        default=None,
+        description="Start date as stated, e.g. 'immediately', 'ab sofort', '2026-11-01'.",
+    )
+    work_permit: Optional[str] = Field(
+        default=None,
+        description=(
+            "A stated work-authorisation condition, e.g. 'EU work permit required', "
+            "'no visa sponsorship'."
+        ),
+    )
+    posting_language: Optional[str] = Field(
+        default=None,
+        description="ISO 639-1 code of the language the posting is written in, e.g. 'de', 'en'.",
+    )
+    country: Optional[str] = Field(
+        default=None,
+        description="ISO 3166-1 alpha-2 code of the country the job is in, e.g. 'DE', 'AT', 'CH'.",
+    )
     responsibilities: List[str] = Field(description="Key responsibilities")
     qualifications: List[str] = Field(default=[], description="Required qualifications")
     key_requirements: List[str] = Field(description="Critical must-have requirements")
@@ -192,6 +316,36 @@ class JobRequirements(BaseModel):
             "(e.g. 'Contact: Jane Smith'). Leave empty when not mentioned."
         ),
     )
+
+    @field_validator("work_mode", mode="before")
+    @classmethod
+    def _normalise_work_mode(cls, value: Any) -> Optional[str]:
+        # Models and older payloads write "On-site", "Remote-first",
+        # "Homeoffice"; an unrecognised value must not fail the whole posting.
+        if not isinstance(value, str):
+            return None
+        text = value.strip().lower()
+        if "hybrid" in text:
+            return "hybrid"
+        if "remote" in text or "homeoffice" in text or "home office" in text:
+            return "remote"
+        if text.replace("-", "").replace(" ", "") in {"onsite", "office", "inoffice", "vorort"}:
+            return "onsite"
+        return None
+
+    @field_validator("posting_language", mode="before")
+    @classmethod
+    def _normalise_language_code(cls, value: Any) -> Optional[str]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip().lower()
+
+    @field_validator("country", mode="before")
+    @classmethod
+    def _normalise_country_code(cls, value: Any) -> Optional[str]:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip().upper()
 
 
 class JobExtractionResponse(BaseModel):
@@ -261,11 +415,12 @@ class SkillMatch(BaseModel):
         default=None,
         description="Candidate skill that satisfies the requirement (None if missing)"
     )
-    kind: Literal["direct", "family", "transferable", "missing"] = Field(
+    kind: Literal["direct", "family", "transferable", "learnable", "missing"] = Field(
         description=(
             "How the match was resolved: direct (exact/alias), family "
             "(same skill-graph family), transferable (LLM/embedding judged "
-            "transferable), or missing"
+            "transferable), learnable (not held, but adjacent experience makes "
+            "it learnable - a gap, not coverage), or missing"
         )
     )
     transferability: float = Field(
@@ -289,6 +444,10 @@ class SkillMatch(BaseModel):
         default=True,
         description="True if this skill came from required_skills, False if preferred"
     )
+    scored_by: Optional[Literal["deterministic", "skill_graph", "embedding", "llm_judge"]] = Field(
+        default=None,
+        description="Which stage of the matching cascade decided this match.",
+    )
 
 
 class DimensionScore(BaseModel):
@@ -299,6 +458,20 @@ class DimensionScore(BaseModel):
     rationale: str = Field(default="", description="Short explanation of how the score was reached")
 
 
+class EligibilityCheck(BaseModel):
+    """A non-technical must-have (language, degree, enrollment) checked against the CV."""
+    requirement: str = Field(description="Requirement text as extracted from the posting")
+    kind: Literal["language", "education"] = Field(description="What kind of requirement this is")
+    status: Literal["met", "unclear", "unmet"] = Field(
+        description=(
+            "met: the CV satisfies it; unclear: the CV has no information to decide "
+            "(e.g. no languages section); unmet: the CV has the information and it falls short"
+        )
+    )
+    matched_with: Optional[str] = Field(default=None, description="CV entry that satisfied the requirement, if any")
+    rationale: str = Field(default="", description="Short explanation of the status")
+
+
 class GapAnalysis(BaseModel):
     """Bucketed view of where the candidate matches, can stretch, or falls short."""
     matched_skills: List[SkillMatch] = Field(
@@ -307,16 +480,105 @@ class GapAnalysis(BaseModel):
     )
     transferable_skills: List[SkillMatch] = Field(
         default_factory=list,
-        description="Skills with 0.55 <= transferability < 0.95 (each carries a bridge_bullet)"
+        description="Skills with 0.55 <= transferability < 0.95, counted as covered via a related skill"
+    )
+    learnable_skills: List[SkillMatch] = Field(
+        default_factory=list,
+        description=(
+            "Skills the CV does not show but adjacent experience makes learnable "
+            "(kind='learnable'). A gap, not coverage."
+        ),
     )
     missing_skills: List[SkillMatch] = Field(
         default_factory=list,
-        description="Skills with transferability < 0.55 (real gaps)"
+        description="Skills with transferability < 0.55 and no adjacent experience (real gaps)"
     )
     over_qualified_signals: List[str] = Field(
         default_factory=list,
         description="Senior signals on the CV not requested by the job (LLM-flagged)"
     )
+    eligibility: List[EligibilityCheck] = Field(
+        default_factory=list,
+        description="Language, degree, and enrollment requirements checked against the CV",
+    )
+
+
+RequirementStatus = Literal["met", "partial", "learnable_gap", "missing", "unclear"]
+
+
+class RequirementRow(BaseModel):
+    """One requirement from the posting, how the CV meets it, and where it shows."""
+    requirement_id: str = Field(description="'req.<n>' for skills, 'ko.<n>' for knockouts; stable for a posting.")
+    text: str = Field(description="The requirement as written in the posting.")
+    category: Literal["must_have", "nice_to_have", "learnable", "knockout"]
+    alternatives: List[str] = Field(
+        default_factory=list, description="OR-group members when any one of them satisfies it.",
+    )
+    status: RequirementStatus
+    matched_with: Optional[str] = Field(
+        default=None, description="The CV skill that meets it, or the adjacent one for a learnable gap.",
+    )
+    evidence_fact_ids: List[str] = Field(
+        default_factory=list, description="Fact-ledger ids that show the requirement (skills, bullets, languages).",
+    )
+    evidence_bullet_ids: List[str] = Field(
+        default_factory=list, description="The CV bullets among them: where a recruiter would see it.",
+    )
+    reason: str = ""
+    scored_by: Literal["deterministic", "skill_graph", "embedding", "llm_judge"] = "deterministic"
+    judge_model: Optional[str] = Field(default=None, description="Set when an LLM judge decided the status.")
+
+
+class KeywordPlanItem(BaseModel):
+    """A posting term the tailored CV may use, and the facts that justify it."""
+    keyword: str = Field(description="The term as the posting writes it, e.g. 'REST APIs'.")
+    requirement_id: str = Field(default="", description="The rubric row it serves, e.g. 'req.0'.")
+    allowed: bool = Field(
+        default=False,
+        description="Set by validation, not trusted from the model: True only when a cited fact names the term.",
+    )
+    evidence_fact_ids: List[str] = Field(
+        default_factory=list, description="Fact-list ids that show the candidate has it.",
+    )
+
+
+class SkillGroup(BaseModel):
+    """One labelled line of the CV's Skills section."""
+    label: str = Field(description="Group label in the CV's language, e.g. 'Programming languages'.")
+    skills: List[str] = Field(default_factory=list, description="Skills exactly as the CV lists them.")
+
+
+class StrategistPlan(BaseModel):
+    """The holistic tailoring plan, reviewed together with the score."""
+    positioning: str = Field(description=(
+        "One short paragraph: how to present this candidate for this role, honestly, "
+        "built on what the CV shows."
+    ))
+    headline: Optional[str] = Field(default=None, description=(
+        "A one-line profile headline for the top of the CV, using only facts from the list, "
+        "written in the language the CV is currently in; null when nothing honest fits."
+    ))
+    skill_groups: List["SkillGroup"] = Field(default_factory=list, description=(
+        "The CV's skills in 3-4 labelled groups (e.g. programming languages, backend/frontend, "
+        "ML/agents, tools), most relevant group first. Only skills from the CV's skills list."
+    ))
+    cv_language: Literal["english", "german"] = Field(description="Language the tailored CV should be in.")
+    convention: Literal["international", "dach"] = Field(description=(
+        "'dach' for postings in Germany, Austria or Switzerland, otherwise 'international'."
+    ))
+    section_order: List[str] = Field(default_factory=list, description=(
+        "CV sections, most important first, from: experience, projects, education, skills, "
+        "leadership_activities, languages, certificates, awards, publications, interests."
+    ))
+    project_order: List[int] = Field(default_factory=list, description="Indices into the CV's projects, best first.")
+    bullets_to_feature: List[str] = Field(default_factory=list, description=(
+        "bullet_ids from the bullet list that best evidence the must-haves."
+    ))
+    keyword_plan: List[KeywordPlanItem] = Field(default_factory=list)
+    red_flags: List[str] = Field(default_factory=list, description=(
+        "What a recruiter may question (unmet must-haves, unclear knockouts, gaps), "
+        "based only on the report and the CV."
+    ))
 
 
 class CompatibilityReport(BaseModel):
@@ -345,6 +607,17 @@ class CompatibilityReport(BaseModel):
         default_factory=list,
         description="Non-fatal issues encountered while computing the report"
     )
+    rubric: List[RequirementRow] = Field(
+        default_factory=list,
+        description="Every skill requirement with its status and CV evidence.",
+    )
+    knockouts: List[RequirementRow] = Field(
+        default_factory=list,
+        description=(
+            "Pass/fail conditions (languages, education, work mode, location, hours, "
+            "start date, work permit). Not part of aggregate_score; an unmet one caps the level."
+        ),
+    )
 
 
 class JobSummary(BaseModel):
@@ -362,6 +635,15 @@ class SelectedBullet(BaseModel):
     original_text: str = Field(description="Original bullet text from the CV")
     relevance_score: float = Field(ge=0.0, le=1.0, description="0-1 relevance score to the target job")
     reason: str = Field(default="", description="Why this bullet was selected")
+    bullet_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Stable id of this bullet from the CV bullet index (e.g. "
+            "'experience.0.responsibilities.2'). Echoed verbatim from the "
+            "numbered bullet list given in the prompt; None if the model "
+            "could not match an id."
+        ),
+    )
 
 
 class SelectedContent(BaseModel):
@@ -390,6 +672,48 @@ class BulletRewrite(BaseModel):
     rewritten: str = Field(description="Enhanced bullet text (no fabrication)")
     confidence: float = Field(ge=0.0, le=1.0, description="0-1 score indicating how well the rewritten bullet matches the job")
     keywords_added: List[str] = Field(default_factory=list, description="Job keywords naturally woven into the rewrite")
+    bullet_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Stable id of the bullet being rewritten, echoed verbatim from "
+            "the numbered bullet list given in the prompt; None if the model "
+            "could not match an id."
+        ),
+    )
+    cited_fact_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ids from the fact list that support anything the rewrite adds beyond "
+            "the original bullet's own wording (e.g. a skill from the skills list). "
+            "Empty when it only rewords the original."
+        ),
+    )
+
+
+class VerifierIssue(BaseModel):
+    """One problem the rewrite verifier found."""
+    bullet_id: Optional[str] = None
+    check: Literal[
+        "unknown_entity", "new_metric", "changed_dates", "missing_citation",
+        "banned_phrase", "length_blowup", "language_mismatch", "structure_changed",
+    ]
+    severity: Literal["block", "warn"]
+    detail: str
+    offending_span: Optional[str] = None
+
+
+class VerifierResult(BaseModel):
+    """Outcome of checking one rewrite pass against the fact ledger."""
+    passed: bool = Field(description="No 'block' issues.")
+    attempt: int = Field(ge=1)
+    issues: List[VerifierIssue] = Field(default_factory=list)
+    preservation_score: float = Field(
+        ge=0.0, le=1.0,
+        description="Share of the originals' technologies and numbers the rewrites kept.",
+    )
+
+    def blocked_ids(self) -> List[str]:
+        return list(dict.fromkeys(i.bullet_id for i in self.issues if i.severity == "block" and i.bullet_id))
 
 
 class RewrittenContent(BaseModel):
@@ -405,6 +729,10 @@ class RewrittenContent(BaseModel):
     keywords_inserted: List[str] = Field(
         default_factory=list,
         description="Complete list of job keywords incorporated across all rewrites"
+    )
+    warnings: List[str] = Field(
+        default_factory=list,
+        description="Non-fatal issues, e.g. rewrites that could not be matched to a CV bullet"
     )
 
 
@@ -526,10 +854,35 @@ class OrchestratorGatePayload(BaseModel):
     )
 
 
+class BulletDecision(BaseModel):
+    """Per-bullet decision attached to a gate resolution's `decisions` map."""
+    # Same values as app.agents.orchestrator.gates.BulletDecisionChoice; a
+    # value missing here is refused with 422 before the gate ever sees it.
+    choice: Literal["accept", "keep_original", "custom", "include", "exclude", "leave_out"] = Field(
+        description=(
+            "Rewrite gate: 'accept' the rewrite, 'keep_original' text, or "
+            "'custom' (see `text`). Selection gate: 'include' (tailor it), "
+            "'exclude' (keep it as it is) or 'leave_out' (drop it from the "
+            "tailored CV)."
+        )
+    )
+    text: Optional[str] = Field(
+        default=None,
+        description="Replacement text when choice='custom'; ignored otherwise.",
+    )
+
+
 class OrchestratorGateResolution(BaseModel):
     """Client reply to a pending OrchestratorGatePayload."""
     action: Literal["approve", "reject", "edit", "choose"] = Field(
         description="Selected action. Must be in the gate's allowed_actions."
+    )
+    step: Optional[str] = Field(
+        default=None,
+        description=(
+            "The `step` of the gate this answers. When set and it does not match "
+            "the pending gate, the answer is stale and is refused with 409."
+        ),
     )
     feedback: Optional[str] = Field(
         default=None,
@@ -538,6 +891,18 @@ class OrchestratorGateResolution(BaseModel):
     choice: Optional[str] = Field(
         default=None,
         description="Selected option for kind='choice' gates (required when action='choose')."
+    )
+    decisions: Optional[Dict[str, BulletDecision]] = Field(
+        default=None,
+        description=(
+            "Per-bullet decisions keyed by bullet_id, for approve_selection "
+            "and approve_rewrite gates. Bullets with no entry default to "
+            "'accept'/'include'."
+        ),
+    )
+    answers: Optional[Dict[str, str]] = Field(
+        default=None,
+        description="Answers keyed by question id, for gates whose preview lists `questions` (confirm_eligibility).",
     )
 
 
@@ -554,6 +919,13 @@ class OrchestratorStartRequest(BaseModel):
     company_data: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Optional company info from company research."
+    )
+    cv_language: Optional[Literal["english", "german"]] = Field(
+        default=None,
+        description=(
+            "The CV language, when the user already chose it. Without it, the "
+            "flow asks after scoring (job_tailoring only)."
+        ),
     )
 
 
@@ -578,6 +950,14 @@ class OrchestratorResponse(BaseModel):
     success: bool
     session_id: str
     narration: str = Field(default="", description="Latest assistant text from the graph.")
+    narrations: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Every assistant narration produced since the previous response, "
+            "in order. The frontend renders one chat bubble per entry. "
+            "`narration` mirrors the last relevant entry for older clients."
+        ),
+    )
     pending_gate: Optional[OrchestratorGatePayload] = Field(
         default=None,
         description="Populated when the graph is paused on a gate; null when the run is complete."
@@ -591,6 +971,13 @@ class OrchestratorResponse(BaseModel):
         description="True when the graph has reached END."
     )
     message: str = Field(default="ok", description="Status message")
+    run_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Id of the graph run this request started, for finding its trace. "
+            "Null when the request answered without running the graph."
+        ),
+    )
 
 
 class OrchestratorStateResponse(BaseModel):

@@ -25,8 +25,8 @@ Edit gates fold the user's feedback into the next call by appending it to the
 "feedback so far" block of the per-step prompt before re-invoking the LLM.
 
 Notes on testing:
-The module-level imports of ``chat_openai_mini`` and the schemas are intentional
-so unit tests can ``monkeypatch.setattr(nodes_cv_review.chat_openai_mini, ...)``
+The module-level imports of ``chat_model`` and the schemas are intentional
+so unit tests can ``monkeypatch.setattr(nodes_cv_review.chat_model, ...)``
 to inject deterministic stubs without touching ``langchain_openai`` directly.
 """
 
@@ -37,14 +37,16 @@ import re
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.agents.orchestrator.gates import GatePayload, GateResolution
+from app.agents.orchestrator.outputs import file_record, session_output_dir
 from app.agents.orchestrator.state import OrchestratorState
 from app.agents.writer_agent import generate_cv_pdf
-from app.openai_llm import chat_openai_mini
+from app.openai_llm import chat_model
 
 
 # --------------------------------------------------------------------------- #
@@ -262,7 +264,7 @@ def _run_step_review(
     it as a module-level callable rather than inlining the chain construction
     makes that monkeypatch a single seam.
     """
-    llm = chat_openai_mini(temperature=0.2)
+    llm = chat_model("writer", temperature=0.2)
     structured = llm.with_structured_output(schema_cls)
     user_content = _format_user_block(section_label, payload, feedback)
     result = structured.invoke(
@@ -991,11 +993,11 @@ def _assemble_reviewed_cv(state: OrchestratorState) -> dict[str, Any]:
     return cv_data
 
 
-def cr_step7_finalize(state: OrchestratorState) -> dict[str, Any]:
+def cr_step7_finalize(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
     """Assemble the revised CV and export a downloadable PDF via LaTeX."""
     revised_cv = _assemble_reviewed_cv(state)
     applicant_name = revised_cv.get("name", "Applicant")
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(applicant_name or "applicant")).strip("_").lower() or "applicant"
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(applicant_name or "applicant"))[:80].strip("_").lower() or "applicant"
     pdf_name = f"{slug}_cv_reviewed.pdf"
 
     generated = list(state.get("generated_files") or [])
@@ -1003,14 +1005,11 @@ def cr_step7_finalize(state: OrchestratorState) -> dict[str, Any]:
         "cv_json": json.dumps(revised_cv, default=str),
         "output_filename": pdf_name,
         "applicant_name": applicant_name,
+        "output_dir": session_output_dir(config),
     })
     if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
         filename = _extract_filename(pdf_msg) or pdf_name
-        generated.append({
-            "filename": filename,
-            "file_type": "cv",
-            "download_url": f"/api/files/{filename}",
-        })
+        generated.append(file_record(filename, "cv", config))
         narration = (
             "CV review complete. I've applied the approved suggestions and generated "
             f"a revised CV PDF: {filename}."

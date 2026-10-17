@@ -5,7 +5,7 @@
  * Falls back to a reject button only when 'reject' is in allowed_actions.
  */
 
-import type { OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
+import type { BulletDecision, OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
 import { humanizeStep } from './gateFormat';
 
 interface ChoiceGateProps {
@@ -13,7 +13,7 @@ interface ChoiceGateProps {
   isLoading: boolean;
   onSubmit: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string }
+    opts?: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> }
   ) => void | Promise<void>;
 }
 
@@ -23,8 +23,14 @@ const PRETTY_LABELS: Record<string, string> = {
   skip: 'Skip',
 };
 
+// The CV-language question offers the same values as the cover letter's.
+const STEP_LABELS: Record<string, Record<string, string>> = {
+  cv_language: { english: 'English CV', german: 'German CV (Lebenslauf)' },
+};
+
 export const ChoiceGate = ({ gate, isLoading, onSubmit }: ChoiceGateProps) => {
   const choices = gate.choices || [];
+  const labels = { ...PRETTY_LABELS, ...(STEP_LABELS[gate.step] ?? {}) };
   const allowsReject = gate.allowed_actions.includes('reject');
 
   return (
@@ -49,7 +55,7 @@ export const ChoiceGate = ({ gate, isLoading, onSubmit }: ChoiceGateProps) => {
             disabled={isLoading}
             className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-fg transition hover:bg-primary-hover active:scale-[0.97] disabled:opacity-50"
           >
-            {PRETTY_LABELS[c] ?? c}
+            {labels[c] ?? c}
           </button>
         ))}
         {allowsReject && (

@@ -1,18 +1,15 @@
 /**
  * useOrchestratorChat - drives the LangGraph orchestrator from the UI.
  *
- * Differences from `useWriterChat`:
- *  - Sessions are created via POST /api/orchestrator/start, not /writer/chat/start.
+ *  - Sessions are created via POST /api/orchestrator/start.
  *  - The graph pauses on structured gates; the hook exposes the latest
  *    `pendingGate` so the UI can render an ApprovalGate or ChoiceGate.
  *  - `submitGateResolution(action, opts)` resumes the graph through the
- *    corresponding REST call. Free-text chat (`handleSendMessage`) is folded
- *    in by the backend as 'edit' feedback for the currently pending gate when
- *    the gate allows edits; otherwise the backend replies with the set of
- *    actions that are actually available.
- *
- * Shape matches useWriterChat closely so `page.tsx` can swap one for the other
- * behind a feature flag without UI churn.
+ *    corresponding REST call.
+ *  - Free-text chat (`handleSendMessage`) goes to the backend's chat agent,
+ *    which answers, answers the pending gate, changes one rewritten bullet,
+ *    or proposes a re-run / profile update. A proposal comes back as a
+ *    `confirm_change` gate; nothing changes until the user confirms it.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -22,6 +19,7 @@ import {
   orchestratorStart,
 } from '@/lib/api';
 import type {
+  BulletDecision,
   DownloadableFile,
   JobRequirements,
   Message,
@@ -68,7 +66,12 @@ interface UseOrchestratorChatReturn {
   handleKeyDown: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
   submitGateResolution: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string }
+    opts?: {
+      feedback?: string;
+      choice?: string;
+      decisions?: Record<string, BulletDecision>;
+      answers?: Record<string, string>;
+    }
   ) => Promise<void>;
   clearError: () => void;
   resetSession: () => void;
@@ -121,21 +124,36 @@ export const useOrchestratorChat = ({
   }, [inputText]);
 
   // Helper: fold an OrchestratorResponse into local state.
+  //
+  // `narrations` carries every step narration produced while resolving this
+  // request (job summary, score, strategy, ...), not just the text attached
+  // to whichever gate the run stopped on. Each entry becomes its own chat
+  // bubble, in order, so multi-step turns no longer read as a single
+  // truncated reply. Older/malformed responses without `narrations` fall
+  // back to the single `narration` field.
   const applyResponse = useCallback((response: OrchestratorResponse) => {
     setSessionId(response.session_id);
-    if (response.narration) {
+    const narrations =
+      response.narrations && response.narrations.length > 0
+        ? response.narrations
+        : response.narration
+          ? [response.narration]
+          : [];
+    if (narrations.length > 0) {
       setMessages((prev) => [
         ...prev,
-        {
-          id: `assistant-${Date.now()}-${prev.length}`,
-          role: 'assistant',
-          content: response.narration,
+        ...narrations.map((content, i) => ({
+          id: `assistant-${Date.now()}-${prev.length}-${i}`,
+          role: 'assistant' as const,
+          content,
           timestamp: new Date(),
           generatedFiles:
-            response.generated_files && response.generated_files.length > 0
+            i === narrations.length - 1 &&
+            response.generated_files &&
+            response.generated_files.length > 0
               ? response.generated_files
               : null,
-        },
+        })),
       ]);
     }
     setPendingGate(response.pending_gate ?? null);
@@ -179,25 +197,48 @@ export const useOrchestratorChat = ({
   const submitGateResolution = useCallback(
     async (
       action: OrchestratorGateAction,
-      opts: { feedback?: string; choice?: string } = {}
+      opts: {
+        feedback?: string;
+        choice?: string;
+        decisions?: Record<string, BulletDecision>;
+        answers?: Record<string, string>;
+      } = {}
     ) => {
       if (!sessionId || isLoading) return;
 
+      const hasAnswers = Boolean(opts.answers && Object.keys(opts.answers).length > 0);
       const resolution: OrchestratorGateResolution = {
         action,
+        // Tie the answer to the gate on screen, so a double-submit or a stale
+        // view can't resolve whichever gate the session has moved on to.
+        ...(pendingGate ? { step: pendingGate.step } : {}),
         ...(opts.feedback ? { feedback: opts.feedback } : {}),
         ...(opts.choice ? { choice: opts.choice } : {}),
+        ...(opts.decisions && Object.keys(opts.decisions).length > 0
+          ? { decisions: opts.decisions }
+          : {}),
+        ...(hasAnswers ? { answers: opts.answers } : {}),
       };
 
       // Echo a user-side message describing the action so the transcript
       // shows what was decided.
+      const isQuestionGate = pendingGate?.step === 'confirm_eligibility';
+      const isConfirmGate = pendingGate?.step === 'confirm_change';
       const echoText =
         action === 'approve'
-          ? 'Approved.'
+          ? isQuestionGate
+            ? 'Skipped.'
+            : isConfirmGate
+              ? 'Confirmed.'
+              : 'Approved.'
           : action === 'reject'
-            ? 'Rejected.'
+            ? isConfirmGate
+              ? 'Cancelled.'
+              : 'Rejected.'
             : action === 'edit'
-              ? `Edit: ${opts.feedback || ''}`
+              ? hasAnswers
+                ? `Answered: ${opts.feedback || ''}`
+                : `Edit: ${opts.feedback || ''}`
               : `Selected: ${opts.choice || ''}`;
       setMessages((prev) => [
         ...prev,
@@ -234,7 +275,7 @@ export const useOrchestratorChat = ({
         setIsLoading(false);
       }
     },
-    [sessionId, isLoading, applyResponse]
+    [sessionId, isLoading, pendingGate, applyResponse]
   );
 
   const handleSendMessage = useCallback(async () => {

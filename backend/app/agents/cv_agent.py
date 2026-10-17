@@ -25,7 +25,7 @@ Data Model:
 
 from langchain.agents import create_agent
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from app.openai_llm import chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
 import fitz
@@ -78,7 +78,7 @@ def extract_resume_info(pdf_path: str = "", pdf_bytes: bytes = b"") -> str:
     doc.close()  # Always close the document
     
     # Use LLM to extract structured data
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_model("extract", temperature=0)
     structured_llm = llm.with_structured_output(ResumeInfo)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -89,7 +89,13 @@ def extract_resume_info(pdf_path: str = "", pdf_bytes: bytes = b"") -> str:
          "(as written, e.g. 'Expected: September 2027'), grade if stated, and any awards/details. "
          "For experience: include the location of each role if stated. "
          "For leadership roles, extracurricular activities, and volunteer work: one leadership_activities "
-         "entry per activity with role, organization, location, dates, a short description, and impact bullets."),
+         "entry per activity with role, organization, location, dates, a short description, and impact bullets. "
+         "For spoken languages: one languages entry per language with the stated fluency "
+         "(e.g. language='German', fluency='native'); do not put spoken languages into skills. "
+         "For skills: one entry per skill name only (e.g. 'FastAPI'), without the CV's category "
+         "labels such as 'Backend:' or 'ML / Agent Frameworks:'. "
+         "Contact fields hold text only: leave out icon symbols, and leave a field empty "
+         "rather than filling it with an icon or a label."),
         ("user", "{text}")
     ])
 
@@ -109,7 +115,7 @@ def identify_ambiguities(resume_json: str) -> str:
     Returns:
         List of clarifying questions to ask the user, or "No questions" if data is clear
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_model("extract", temperature=0)
     prompt = ChatPromptTemplate.from_messages([
         ("system", """Analyze the resume data for:
         - Missing important information
@@ -136,7 +142,7 @@ def update_resume_with_clarifications(resume_json: str, clarifications: str) -> 
     Returns:
         Updated resume JSON with clarifications incorporated
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_model("extract", temperature=0)
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Update the resume data by incorporating the user's clarifying answers. Return the complete updated JSON."),
@@ -148,7 +154,7 @@ def update_resume_with_clarifications(resume_json: str, clarifications: str) -> 
     return result.content
 
 # Create agent
-llm = ChatOpenAI(model="gpt-4o-mini")
+llm = chat_model("extract", temperature=None)
 system_prompt = """You are a resume extraction assistant. Your workflow:
 
 1. When given a PDF path, use extract_resume_info to extract information

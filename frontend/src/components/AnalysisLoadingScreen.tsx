@@ -1,6 +1,6 @@
 'use client';
 
-type StepState = 'pending' | 'active' | 'done' | 'skipped';
+type StepState = 'pending' | 'active' | 'done' | 'skipped' | 'failed';
 
 interface StepProps {
   title: string;
@@ -17,6 +17,16 @@ const Step = ({ title, description, state, showConnector = false, nextStepSkippe
         <div className="flex h-10 w-10 items-center justify-center rounded-full bg-success text-success-fg">
           <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+      );
+    }
+
+    if (state === 'failed') {
+      return (
+        <div className="flex h-10 w-10 items-center justify-center rounded-full border border-danger-border bg-danger-surface text-danger-text">
+          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
           </svg>
         </div>
       );
@@ -57,8 +67,8 @@ const Step = ({ title, description, state, showConnector = false, nextStepSkippe
       ? 'text-ink'
       : state === 'active'
         ? 'text-primary-text'
-        : state === 'skipped'
-          ? 'text-ink-muted'
+        : state === 'failed'
+          ? 'text-danger-text'
           : 'text-ink-muted';
 
   const descClass = state === 'active' ? 'text-ink' : 'text-ink-muted';
@@ -92,15 +102,22 @@ interface AnalysisLoadingScreenProps {
   resumeState: StepState;
   jobState: StepState;
   preparingState: StepState;
+  /** Why the analysis stopped (a failed CV or job extraction); replaces the progress copy. */
+  error?: string | null;
+  /** Back to the upload form, where the inputs can be fixed and the analysis started again. */
+  onBack?: () => void;
 }
 
 export const AnalysisLoadingScreen = ({
   resumeState,
   jobState,
   preparingState,
+  error,
+  onBack,
 }: AnalysisLoadingScreenProps) => {
-  const headline =
-    resumeState === 'active'
+  const headline = error
+    ? 'The analysis stopped'
+    : resumeState === 'active'
       ? 'Extracting your resume'
       : jobState === 'active'
         ? 'Analyzing the job description'
@@ -108,8 +125,9 @@ export const AnalysisLoadingScreen = ({
         ? 'Preparing your AI assistant'
         : 'Starting analysis';
 
-  const subheadline =
-    resumeState === 'active'
+  const subheadline = error
+    ? error
+    : resumeState === 'active'
       ? 'We’re extracting skills, experience, and achievements.'
       : jobState === 'active'
         ? 'Extracting key requirements, skills, and keywords to tailor your documents.'
@@ -121,21 +139,33 @@ export const AnalysisLoadingScreen = ({
     <div className="flex flex-1 items-center justify-center py-10">
       <div className="w-full max-w-3xl">
         <div className="rounded-2xl border border-border bg-surface p-10 shadow-lg shadow-black/5">
-          <div className="mx-auto max-w-xl text-center">
-            <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary-surface text-primary-text">
-              <svg className="h-9 w-9 animate-spin" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                />
-              </svg>
-            </div>
+          <div className="mx-auto max-w-xl text-center" role={error ? 'alert' : undefined}>
+            {error ? (
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl border border-danger-border bg-danger-surface text-danger-text">
+                <svg className="h-9 w-9" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+            ) : (
+              <div className="mx-auto mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary-surface text-primary-text">
+                <svg className="h-9 w-9 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  />
+                </svg>
+              </div>
+            )}
             <h2 className="text-2xl font-semibold tracking-title text-ink">
               {headline}
             </h2>
-            <p className="mx-auto mt-2 max-w-[42ch] text-body text-ink-muted">{subheadline}</p>
+            <p
+              className={`mx-auto mt-2 max-w-[42ch] text-body [overflow-wrap:anywhere] ${error ? 'text-danger-text' : 'text-ink-muted'}`}
+            >
+              {subheadline}
+            </p>
           </div>
 
           <div className="mt-10 space-y-6">
@@ -170,9 +200,24 @@ export const AnalysisLoadingScreen = ({
             />
           </div>
 
-          <div className="mt-10 rounded-xl border border-border bg-surface-sunken p-4 text-sm text-ink-muted">
-            You can keep this tab open — we’ll continue automatically.
-          </div>
+          {error ? (
+            <div className="mt-10 flex flex-col items-center gap-3 rounded-xl border border-border bg-surface-sunken p-4 text-center text-sm text-ink-muted sm:flex-row sm:justify-between sm:text-left">
+              <span>Go back to check your files, then start the analysis again.</span>
+              {onBack && (
+                <button
+                  type="button"
+                  onClick={onBack}
+                  className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-fg transition hover:bg-primary-hover active:scale-[0.97]"
+                >
+                  Back to your files
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="mt-10 rounded-xl border border-border bg-surface-sunken p-4 text-sm text-ink-muted">
+              You can keep this tab open — we’ll continue automatically.
+            </div>
+          )}
         </div>
       </div>
     </div>

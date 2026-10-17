@@ -25,7 +25,7 @@ Key Features:
 # sequencing explicitly via graph nodes that invoke the @tool functions in
 # this module directly.
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from app.openai_llm import chat_model
 from langchain_core.prompts import ChatPromptTemplate
 from pathlib import Path
 import json
@@ -40,6 +40,7 @@ from app.models.schemas import (
     JobSummary,
     SelectedContent,
     RewrittenContent,
+    BulletRewrite,
 )
 from app.agents.scoring_agent import (
     calculate_semantic_similarity,
@@ -51,9 +52,11 @@ from app.agents.scoring_agent import (
     build_gap_analysis,
     _calculate_compatibility_score_v2_internal,
 )
+from app.services.file_store import UNSAFE_FILENAME_MESSAGE, is_safe_filename
 from app.services.latex_renderer import (
     compile_tex_to_pdf,
     render_cover_letter_tex,
+    render_cv_pdf,
     render_cv_tex,
 )
 
@@ -64,6 +67,18 @@ dotenv.load_dotenv()
 # ============================================
 
 DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent.parent / "data"
+
+
+def _resolve_output_dir(output_dir: str) -> Path:
+    """The requested output directory, which must lie inside data/ (normally
+    a session folder from app.services.file_store)."""
+    if not output_dir:
+        return DEFAULT_OUTPUT_DIR
+    root = DEFAULT_OUTPUT_DIR.resolve()
+    target = Path(output_dir).resolve()
+    if target != root and root not in target.parents:
+        raise RuntimeError("output_dir must be inside the data directory")
+    return target
 
 # ============================================
 # Tools (Agent Capabilities)
@@ -91,7 +106,7 @@ def analyze_cv_job_alignment(cv_json: str, job_json: str) -> str:
         >>> plan = analyze_cv_job_alignment(cv_data, job_data)
         >>> # Returns detailed plan with matching experiences, skills, keywords, etc.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_model("extract", temperature=0)
     structured_llm = llm.with_structured_output(CVTailoringPlan)
     
     prompt = ChatPromptTemplate.from_messages([
@@ -148,7 +163,8 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
                                   and Grußformel
 
     Returns:
-        JSON string with CoverLetterContent structure.
+        JSON string with CoverLetterContent structure, or {"error": ...}
+        when the call fails.
         For English: opening/body/closing paragraphs populated; betreff and
         grussformel are empty strings.
         For German: betreff and grussformel populated; opening_paragraph →
@@ -170,7 +186,7 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
         - Schlussteil: Motivation summary, request for interview
         - Grußformel: Formal valediction
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.4)
+    llm = chat_model("writer", temperature=0.4)
     structured_llm = llm.with_structured_output(CoverLetterContent)
 
     # Build context with optional company info
@@ -264,8 +280,11 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
         Write a compelling, tailored cover letter.""")
         ])
 
-    chain = prompt | structured_llm
-    result = chain.invoke({"cv": cv_json, "job": job_json, "company": company_context})
+    try:
+        chain = prompt | structured_llm
+        result = chain.invoke({"cv": cv_json, "job": job_json, "company": company_context})
+    except Exception as e:  # noqa: BLE001 - reported to the node as a step failure
+        return json.dumps({"error": str(e)})
 
     return result.model_dump_json(indent=2)
 
@@ -275,6 +294,8 @@ def generate_cv_pdf(
     output_filename: str,
     applicant_name: str,
     section_order_json: str = "",
+    output_dir: str = "",
+    convention: str = "international",
 ) -> str:
     """
     Generate a tailored CV PDF via LaTeX (Harvard-style, JSON Resume taxonomy).
@@ -286,13 +307,17 @@ def generate_cv_pdf(
         output_filename: Filename for the PDF (e.g., "kevin_ha_cv_tailored.pdf")
         applicant_name: Full name for document metadata
         section_order_json: Optional JSON list of section keys for ordering
+        output_dir: Directory to write into (a session folder inside data/);
+            defaults to data/ itself
+        convention: "dach" for DACH date style, else "international"
 
     Returns:
-        Success message with the filename for download
+        Success message with the filename for download, then one
+        "Layout note: ..." line per page-layout problem that couldn't be fixed
     """
     try:
-        if not output_filename.lower().endswith(".pdf"):
-            return "Error: Output filename must end with .pdf"
+        if not is_safe_filename(output_filename):
+            return f"Error: {UNSAFE_FILENAME_MESSAGE}"
 
         try:
             cv_data = json.loads(cv_json)
@@ -308,17 +333,21 @@ def generate_cv_pdf(
             except json.JSONDecodeError:
                 pass
 
-        tex_content = render_cv_tex(cv_data, section_order=section_order)
-        output_dir = DEFAULT_OUTPUT_DIR
-        output_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = _resolve_output_dir(output_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         stem = Path(output_filename).stem
-        pdf_path = compile_tex_to_pdf(tex_content, output_dir, stem)
-        final_path = output_dir / output_filename
+        pdf_path, layout = render_cv_pdf(
+            cv_data, target_dir, stem, section_order=section_order,
+            convention="dach" if convention == "dach" else "international",
+        )
+        final_path = target_dir / output_filename
         if pdf_path != final_path:
             pdf_path.replace(final_path)
 
-        return f"CV PDF generated successfully! The file '{output_filename}' is ready for download."
+        message = f"CV PDF generated successfully! The file '{output_filename}' is ready for download."
+        notes = [f"{problem}; consider shortening or removing a section." for problem in layout["problems"]]
+        return message + "".join(f"\nLayout note: {note}" for note in notes)
 
     except RuntimeError as e:
         return f"Error: {str(e)}"
@@ -335,15 +364,19 @@ def generate_cover_letter_pdf(
     recipient_info: str = "",
     cv_json: str = "",
     job_json: str = "",
+    output_dir: str = "",
 ) -> str:
     """
     Generate cover letter PDF from structured content via LaTeX.
 
     WARNING: Only call this tool after the user has explicitly approved the cover letter content!
+
+    ``output_dir`` is the directory to write into (a session folder inside
+    data/); it defaults to data/ itself.
     """
     try:
-        if not output_filename.lower().endswith(".pdf"):
-            return "Error: Output filename must end with .pdf"
+        if not is_safe_filename(output_filename):
+            return f"Error: {UNSAFE_FILENAME_MESSAGE}"
 
         try:
             content = json.loads(content_json)
@@ -390,12 +423,12 @@ def generate_cover_letter_pdf(
             cv_data=cv_data if isinstance(cv_data, dict) else {},
             job_data=job_data if isinstance(job_data, dict) else None,
         )
-        output_dir = DEFAULT_OUTPUT_DIR
-        output_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = _resolve_output_dir(output_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
 
         stem = Path(output_filename).stem
-        pdf_path = compile_tex_to_pdf(tex_content, output_dir, stem)
-        final_path = output_dir / output_filename
+        pdf_path = compile_tex_to_pdf(tex_content, target_dir, stem)
+        final_path = target_dir / output_filename
         if pdf_path != final_path:
             pdf_path.replace(final_path)
 
@@ -429,8 +462,9 @@ def generate_job_summary(job_json: str) -> str:
         - required_skills: List of required skills
         - preferred_skills: Nice-to-have skills
         - key_notes: Other important points
+        or {"error": ...} when the call fails.
     """
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_model("extract", temperature=0)
     structured_llm = llm.with_structured_output(JobSummary)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -447,14 +481,8 @@ def generate_job_summary(job_json: str) -> str:
         chain = prompt | structured_llm
         summary: JobSummary = chain.invoke({"job": job_json})
         return summary.model_dump_json()
-    except Exception as e:
-        return json.dumps({
-            "role": "Unknown",
-            "responsibilities": [],
-            "required_skills": [],
-            "preferred_skills": [],
-            "key_notes": [f"Summarization failed: {str(e)[:120]}"]
-        })
+    except Exception as e:  # noqa: BLE001 - the node falls back to the posting as extracted
+        return json.dumps({"error": str(e)})
 
 def _extract_compatibility_report(compatibility_data: Dict[str, Any]) -> Optional[CompatibilityReport]:
     """
@@ -493,21 +521,23 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
     directives: List[Dict[str, Any]] = []
     focus_areas: List[str] = []
 
-    # Hard skills: emit per-transferable directives with bridge bullets
-    for sk in gap.transferable_skills:
+    # Hard skills: point the writer at the adjacent experience the CV already
+    # has. No drafted bullet text goes in here - the scorer's bridge_bullet is
+    # a claim about the required skill, and handing it to the rewriter as an
+    # instruction is how a skill the CV never mentions ends up on it.
+    adjacent = gap.transferable_skills + gap.learnable_skills
+    for sk in adjacent:
+        if not sk.matched_with:
+            continue
         directives.append({
-            "type": "inject_bridge_bullet",
+            "type": "surface_adjacent_experience",
             "section": "experience_or_projects",
             "required_skill": sk.required_skill,
             "candidate_skill": sk.matched_with,
-            "kind": sk.kind,
-            "transferability": sk.transferability,
-            "bullet": sk.bridge_bullet or (
-                f"Leveraged {sk.matched_with} on prior work; "
-                f"{sk.matched_with} and {sk.required_skill} share core paradigms."
-                if sk.matched_with else f"Highlight transferable experience related to {sk.required_skill}."
+            "guidance": (
+                f"Where an existing bullet already shows {sk.matched_with}, make that experience "
+                f"explicit. Do not claim {sk.required_skill}: the CV does not show it."
             ),
-            "rationale": sk.rationale,
         })
 
     if gap.matched_skills:
@@ -518,8 +548,8 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
             "rationale": "These job-required skills are explicitly held by the candidate; surface them prominently.",
         })
 
-    if gap.transferable_skills:
-        focus_areas.append("inject_bridge_bullets")
+    if any(sk.matched_with for sk in adjacent):
+        focus_areas.append("surface_adjacent_experience")
 
     if gap.missing_skills:
         focus_areas.append("address_missing_skills")
@@ -551,12 +581,21 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
             "section": "experience",
             "guidance": "Where truthful, use scope/leadership verbs (led, owned, mentored, drove) and add team/scope sizing.",
         })
-    if dim_lookup.get("ats_keywords") and dim_lookup["ats_keywords"].score < 0.55:
-        focus_areas.append("inject_ats_keywords")
+    # Exact posting wording only for skills the CV already has (e.g. the CV
+    # says "Postgres", the posting says "PostgreSQL"); inserting required-skill
+    # terms the CV lacks would be keyword stuffing of skills the candidate
+    # doesn't hold.
+    posting_terms = [m.required_skill for m in gap.matched_skills if m.required_skill]
+    if dim_lookup.get("ats_keywords") and dim_lookup["ats_keywords"].score < 0.55 and posting_terms:
+        focus_areas.append("use_posting_terms")
         directives.append({
-            "type": "inject_keywords",
+            "type": "use_posting_terms",
             "section": "skills_and_summary",
-            "guidance": "Insert exact-match required-skill terms in the skills section and summary so ATS keyword filters pass.",
+            "skills": posting_terms,
+            "guidance": (
+                "Where the CV already shows these skills, use the posting's exact wording for them. "
+                "Never add a skill the CV does not already show."
+            ),
         })
     if dim_lookup.get("domain") and dim_lookup["domain"].score < 0.5:
         focus_areas.append("reframe_domain_language")
@@ -585,6 +624,7 @@ def _build_directives_from_report(report: CompatibilityReport) -> Dict[str, Any]
         "summary": {
             "matched_skills_count": len(gap.matched_skills),
             "transferable_skills_count": len(gap.transferable_skills),
+            "learnable_skills_count": len(gap.learnable_skills),
             "missing_skills_count": len(gap.missing_skills),
             "over_qualified_signals_count": len(gap.over_qualified_signals),
         },
@@ -598,11 +638,14 @@ def decide_tailoring_strategy(compatibility_score_json: str, cv_json: str, job_j
     compatibility score response.
 
     Produces concrete per-skill directives:
-    - inject_bridge_bullet for each transferable skill (with draft bullet)
+    - surface_adjacent_experience for each transferable skill (no drafted
+      bullet text, and never a claim of the required skill itself)
     - emphasize_skills_section listing directly matched skills
     - handle_missing_skills with omit/soften guidance
-    - amplify_outcomes / strengthen_seniority_language / inject_keywords /
-      reframe_domain when those dimensions score low
+    - amplify_outcomes / strengthen_seniority_language / reframe_domain when
+      those dimensions score low
+    - use_posting_terms (exact posting wording, matched skills only) when the
+      ATS keyword dimension scores low
     - temper_seniority if over-qualification signals were detected
 
     These directives are consumed directly by select_prioritize_content and
@@ -664,8 +707,82 @@ def decide_tailoring_strategy(compatibility_score_json: str, cv_json: str, job_j
 
     return json.dumps(_build_directives_from_report(report), indent=2)
 
+
+def _format_directives(directives: List[Any]) -> str:
+    """
+    Render step 3's directives as one readable line each for a prompt.
+
+    decide_tailoring_strategy emits dicts ({"type": ..., "guidance": ...}). A
+    bare "\\n".join() on them raised TypeError before the LLM was ever called,
+    and the tools' blanket except turned that into an empty result.
+    """
+    lines: List[str] = []
+    for directive in directives or []:
+        if isinstance(directive, dict):
+            details = "; ".join(
+                f"{key}: {', '.join(str(v) for v in value) if isinstance(value, list) else value}"
+                for key, value in directive.items()
+                if key != "type" and value not in (None, "", [])
+            )
+            kind = directive.get("type", "directive")
+            lines.append(f"- {kind}: {details}" if details else f"- {kind}")
+        elif directive:
+            lines.append(f"- {directive}")
+    return "\n".join(lines) if lines else "None provided."
+
+
+def _format_plan(strategy_data: Dict[str, Any], step: str) -> str:
+    """The parts of the user-approved strategist plan this step acts on.
+    Keywords are only those validation found on the CV."""
+    plan = strategy_data.get("plan")
+    if not isinstance(plan, dict):
+        return "None."
+    lines = [f"Positioning: {plan.get('positioning', '')}"]
+    if step == "select":
+        if plan.get("section_order"):
+            lines.append(f"Section order: {', '.join(plan['section_order'])} (use it as `section_order`)")
+        if plan.get("bullets_to_feature"):
+            lines.append(f"Feature these bullets: {', '.join(plan['bullets_to_feature'])}")
+        if plan.get("project_order"):
+            lines.append(f"Project order (indices, best first): {plan['project_order']}")
+    else:
+        if plan.get("headline"):
+            lines.append(f"Headline idea for the summary's opening (the CV prints no separate headline): "
+                         f"{plan['headline']}")
+        keywords = [k for k in plan.get("keyword_plan") or [] if isinstance(k, dict)]
+        usable = [k["keyword"] for k in keywords if k.get("allowed")]
+        unusable = [k["keyword"] for k in keywords if not k.get("allowed")]
+        if usable:
+            lines.append(f"Posting terms the CV supports (use where they fit naturally): {', '.join(usable)}")
+        if unusable:
+            lines.append(f"Posting terms the CV does NOT support (never use): {', '.join(unusable)}")
+    return "\n".join(lines)
+
+
+def _format_feedback(strategy_data: Dict[str, Any], stages: tuple[str, ...]) -> str:
+    """
+    The user's (and the verifier's) notes for this step, oldest first.
+
+    Gate edits and chat notes are appended to the strategy's ``user_feedback``
+    as {stage, text}; without this they reached the step's state but never
+    its prompt, so "edit with feedback" re-ran the step unchanged.
+    """
+    notes = [
+        str(entry.get("text", "")).strip()
+        for entry in strategy_data.get("user_feedback") or []
+        if isinstance(entry, dict) and entry.get("stage") in stages and str(entry.get("text", "")).strip()
+    ]
+    return "\n".join(f"- {note}" for note in notes) if notes else "None."
+
+
 @tool
-def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_json: str) -> str:
+def select_prioritize_content(
+    cv_json: str,
+    job_json: str,
+    tailoring_strategy_json: str,
+    bullet_index_block: str = "",
+    evidence_block: str = "",
+) -> str:
     """
     Select and prioritize the most relevant resume content based on job requirements.
 
@@ -673,17 +790,23 @@ def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_js
         cv_json: ResumeInfo JSON string
         job_json: JobRequirements JSON string
         tailoring_strategy_json: JSON string from decide_tailoring_strategy
+        bullet_index_block: Numbered "[bullet_id] text" list of every bullet
+            in the CV. When provided, each selected bullet must echo the
+            matching bullet_id verbatim so downstream steps can address it.
+        evidence_block: The requirement rubric as "[req.N] category skill
+            (status): bullet ids that show it" lines, from the scorer.
 
     Returns:
         JSON string with selected bullets, recommended section order, and emphasis plan
-        (fields: selected_bullets, section_order, sections_to_emphasize, items_to_de_emphasize)
+        (fields: selected_bullets[{section, original_text, relevance_score, reason, bullet_id}],
+         section_order, sections_to_emphasize, items_to_de_emphasize)
     """
     try:
         strategy_data = json.loads(tailoring_strategy_json)
         focus_areas: List[str] = strategy_data.get("focus_areas", [])
-        directives: List[str] = strategy_data.get("directives", [])
+        directives: List[Dict[str, Any]] = strategy_data.get("directives", [])
 
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        llm = chat_model("writer", temperature=0)
         structured_llm = llm.with_structured_output(SelectedContent)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -694,13 +817,33 @@ def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_js
                 "- Only work with content that EXISTS in the CV — do not invent bullets.\n"
                 "- Score each bullet 0–1 for relevance to the job requirements.\n"
                 "- Recommend a section ordering that puts the most impactful sections first.\n"
-                "- Mark low-value items for de-emphasis (do not delete — the candidate reviews first)."
+                "- Mark low-value items for de-emphasis (do not delete — the candidate reviews first).\n"
+                "- A numbered bullet index (`[bullet_id] text`) may be provided below. When it is, "
+                "set `bullet_id` on every selected bullet to the exact id of the matching line — "
+                "never invent an id or alter its text.\n"
+                "- An evidence map may be provided: for each job requirement, the bullets that "
+                "already show it. Prefer bullets that evidence must-have requirements, then "
+                "nice-to-haves; when several bullets show the same requirement, the strongest one "
+                "is usually enough. Say in `reason` which requirement a bullet evidences.\n"
+                "- NEVER return an empty `selected_bullets` list if the CV has any bullets at all. "
+                "Even on a weak or poor fit, select the CV's best-available bullets (aim for at "
+                "least 3-5, or every bullet if the CV has fewer): the strongest, most quantified, "
+                "most senior-sounding ones, and ones that use ANY vocabulary adjacent to the job's "
+                "required/preferred skills, even loosely. Low relevance is still worth reporting as "
+                "a low `relevance_score` with an honest `reason` (e.g. 'no direct overlap, included "
+                "as the strongest available bullet') - it is never a reason to select nothing. The "
+                "user relies on this step to see their CV's best foot forward, not silence."
             )),
             ("user", (
                 "CV Data:\n{cv}\n\n"
                 "Job Data:\n{job}\n\n"
+                "Bullet Index:\n{bullet_index}\n\n"
+                "Evidence Map (requirement -> bullets that show it):\n{evidence}\n\n"
+                "Tailoring Plan (approved by the user):\n{plan}\n\n"
                 "Focus Areas: {focus}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
+                "User Feedback on earlier selections (follow it; it overrides the directives "
+                "where they conflict):\n{feedback}\n\n"
                 "Select and prioritise the most relevant content."
             ))
         ])
@@ -709,8 +852,12 @@ def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_js
         result: SelectedContent = chain.invoke({
             "cv": cv_json,
             "job": job_json,
+            "bullet_index": bullet_index_block or "(not provided)",
+            "evidence": evidence_block or "(not provided)",
+            "plan": _format_plan(strategy_data, "select"),
             "focus": ", ".join(focus_areas),
-            "directives": "\n".join(directives) if directives else "None provided."
+            "directives": _format_directives(directives),
+            "feedback": _format_feedback(strategy_data, ("approve_selection", "chat")),
         })
         return result.model_dump_json()
 
@@ -724,7 +871,14 @@ def select_prioritize_content(cv_json: str, job_json: str, tailoring_strategy_js
         })
 
 @tool
-def rewrite_enhance_content(cv_json: str, job_json: str, selected_content_json: str, tailoring_strategy_json: str) -> str:
+def rewrite_enhance_content(
+    cv_json: str,
+    job_json: str,
+    selected_content_json: str,
+    tailoring_strategy_json: str,
+    locked_bullets_json: str = "[]",
+    facts_block: str = "",
+) -> str:
     """
     Rewrite and enhance resume content to emphasize job relevance.
 
@@ -733,17 +887,28 @@ def rewrite_enhance_content(cv_json: str, job_json: str, selected_content_json: 
         job_json: JobRequirements JSON string
         selected_content_json: JSON string from select_prioritize_content
         tailoring_strategy_json: JSON string from decide_tailoring_strategy
+        locked_bullets_json: JSON list of {bullet_id, original, rewritten,
+            confidence, keywords_added} for bullets the user has already
+            accepted in a previous pass. These must be echoed back verbatim,
+            unrewritten - only the remaining selected bullets are rewritten.
+        facts_block: "[fact_id] value" lines from the fact ledger that a
+            rewrite may cite in ``cited_fact_ids``.
 
     Returns:
         JSON string with rewritten bullets, updated summary, and per-bullet confidence scores
-        (fields: rewritten_bullets[{original, rewritten, confidence, keywords_added}],
+        (fields: rewritten_bullets[{original, rewritten, confidence, keywords_added, bullet_id}],
          updated_summary, keywords_inserted)
     """
     try:
         strategy_data = json.loads(tailoring_strategy_json)
-        directives: List[str] = strategy_data.get("directives", [])
+        directives: List[Dict[str, Any]] = strategy_data.get("directives", [])
+        try:
+            locked_bullets = json.loads(locked_bullets_json) or []
+        except json.JSONDecodeError:
+            locked_bullets = []
+        locked_ids = {b.get("bullet_id") for b in locked_bullets if isinstance(b, dict) and b.get("bullet_id")}
 
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.3)
+        llm = chat_model("writer", temperature=0.3)
         structured_llm = llm.with_structured_output(RewrittenContent)
 
         prompt = ChatPromptTemplate.from_messages([
@@ -752,19 +917,51 @@ def rewrite_enhance_content(cv_json: str, job_json: str, selected_content_json: 
                 "Apply the strategy directives precisely.\n\n"
                 "ABSOLUTE RULES:\n"
                 "- Reword EXISTING content only — never fabricate experience, metrics, or skills.\n"
+                "- Never add a skill, tool, or technology that the original bullet and CV do not "
+                "already mention, even when a directive or the job asks for it.\n"
                 "- Weave in job keywords naturally — forced keyword stuffing degrades ATS scores.\n"
                 "- Lead each bullet with a strong action verb.\n"
+                "- Write every rewrite and the summary in the language the CV is written in. The CV "
+                "was already put into the language the candidate chose; never switch languages.\n"
+                "- Write naturally, the way a native professional writes a CV in that language: "
+                "idiomatic phrasing, no word-for-word constructions, no anglicisms in German.\n"
+                "- The summary (`updated_summary`) describes the candidate's profile and strengths. "
+                "Never state that they are looking for a job, a position or an internship ('seeking "
+                "a working student role', 'sucht eine Werkstudentenstelle'): the application itself "
+                "says that. If the CV has a summary, always return an improved `updated_summary`, "
+                "with any such sentence removed.\n"
                 "- Keep the candidate's authentic voice.\n"
                 "- Only enhance descriptions — do not replace their substance.\n"
                 "- For each bullet, report a confidence score (0–1) for how well the rewrite "
-                "matches the job, and list keywords actually added."
+                "matches the job, and list keywords actually added.\n"
+                "- Each selected bullet carries a `bullet_id`; copy it verbatim into the matching "
+                "rewrite's `bullet_id` field.\n"
+                "- Every technology, number and date in a rewrite must come from the original "
+                "bullet or from a fact in the Facts list. When a rewrite uses something from the "
+                "Facts list (e.g. a skill from the skills section), put that fact's id in "
+                "`cited_fact_ids`; leave it empty when you only reword the original. Only cite a "
+                "fact when it is plausibly true for that bullet's work. Rewrites are fact-checked "
+                "against this list and anything unsupported is rejected.\n"
+                "- Locked bullets (listed below, already approved by the user in an earlier pass) "
+                "must be echoed back UNCHANGED — do not rewrite them again, just include them as-is "
+                "in the output so the final list stays complete.\n"
+                "- Produce one entry in `rewritten_bullets` for EVERY bullet in Selected Content "
+                "(locked ones included). NEVER return an empty list when Selected Content is "
+                "non-empty. If a bullet has no obvious job keyword to weave in, still tighten its "
+                "wording and lead with a strong verb, and leave `keywords_added` empty for it — "
+                "that is a valid, honest result. Doing nothing to a selected bullet is not."
             )),
             ("user", (
                 "Original CV:\n{cv}\n\n"
                 "Job Requirements:\n{job}\n\n"
                 "Selected Content:\n{selected}\n\n"
+                "Locked Bullets (echo back unchanged):\n{locked}\n\n"
+                "Facts (what the CV and the candidate state; cite by id):\n{facts}\n\n"
+                "Tailoring Plan (approved by the user):\n{plan}\n\n"
                 "Strategy Directives:\n{directives}\n\n"
-                "Rewrite and enhance the content."
+                "User Feedback on earlier rewrites (follow it; it overrides the directives "
+                "where they conflict, but never the absolute rules):\n{feedback}\n\n"
+                "Rewrite and enhance the content that is not locked."
             ))
         ])
 
@@ -773,8 +970,34 @@ def rewrite_enhance_content(cv_json: str, job_json: str, selected_content_json: 
             "cv": cv_json,
             "job": job_json,
             "selected": selected_content_json,
-            "directives": "\n".join(directives) if directives else "None provided."
+            "locked": json.dumps(locked_bullets) if locked_bullets else "(none)",
+            "facts": facts_block or "(not provided)",
+            "plan": _format_plan(strategy_data, "rewrite"),
+            "directives": _format_directives(directives),
+            "feedback": _format_feedback(strategy_data, ("approve_rewrite", "chat", "verifier")),
         })
+
+        # Belt-and-braces: force locked bullets back into the result verbatim
+        # even if the model's echo drifted, then de-dupe by bullet_id/text.
+        by_key: dict[str, Any] = {}
+        for b in result.rewritten_bullets:
+            key = b.bullet_id or b.original
+            by_key[key] = b
+        for locked in locked_bullets:
+            if not isinstance(locked, dict):
+                continue
+            key = locked.get("bullet_id") or locked.get("original")
+            if key:
+                by_key[key] = BulletRewrite(**{
+                    "original": locked.get("original", ""),
+                    "rewritten": locked.get("rewritten", locked.get("original", "")),
+                    "confidence": float(locked.get("confidence", 1.0)),
+                    "keywords_added": locked.get("keywords_added", []) or [],
+                    "bullet_id": locked.get("bullet_id"),
+                    "cited_fact_ids": locked.get("cited_fact_ids", []) or [],
+                })
+        result.rewritten_bullets = list(by_key.values())
+
         return result.model_dump_json()
 
     except Exception as e:

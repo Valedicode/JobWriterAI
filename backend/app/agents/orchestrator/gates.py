@@ -21,6 +21,17 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+# Selection: include (tailor it), exclude (keep it as it is), leave_out (drop it
+# from the tailored CV). Rewrite: accept, keep_original, custom.
+BulletDecisionChoice = Literal["accept", "keep_original", "custom", "include", "exclude", "leave_out"]
+
+
+class BulletDecision(BaseModel):
+    """Per-bullet decision attached to a gate resolution's `decisions` map."""
+
+    choice: BulletDecisionChoice
+    text: str | None = None
+
 
 # --------------------------------------------------------------------------- #
 # Enums
@@ -118,6 +129,21 @@ class GateResolution(BaseModel):
         description=(
             "Selected option for kind='choice' gates. Required when action='choose'; "
             "must be one of the GatePayload.choices values."
+        ),
+    )
+    decisions: dict[str, BulletDecision] | None = Field(
+        default=None,
+        description=(
+            "Per-bullet decisions keyed by bullet_id, for approve_selection "
+            "and approve_rewrite gates. Bullets with no entry default to "
+            "'accept'/'include'."
+        ),
+    )
+    answers: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Answers keyed by question id, for gates whose preview lists "
+            "`questions` (confirm_eligibility). Unanswered ids are skipped."
         ),
     )
 

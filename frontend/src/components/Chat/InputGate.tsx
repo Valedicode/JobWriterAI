@@ -4,7 +4,7 @@
  */
 
 import { useState } from 'react';
-import type { OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
+import type { BulletDecision, OrchestratorGateAction, OrchestratorGatePayload } from '@/types';
 import { humanizeStep } from './gateFormat';
 
 interface InputGateProps {
@@ -12,7 +12,7 @@ interface InputGateProps {
   isLoading: boolean;
   onSubmit: (
     action: OrchestratorGateAction,
-    opts?: { feedback?: string; choice?: string }
+    opts?: { feedback?: string; choice?: string; decisions?: Record<string, BulletDecision> }
   ) => void | Promise<void>;
 }
 

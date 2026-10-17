@@ -7,17 +7,23 @@ taxonomy (see ``app.services.resume_adapter``).
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
+import string
 import subprocess
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.services.resume_adapter import build_harvard_sections
+
+logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates" / "latex"
 
@@ -59,18 +65,25 @@ def latex_escape(text: str | None) -> str:
     return "".join(replacements.get(ch, ch) for ch in text)
 
 
+# Characters a URL may contain as they are (RFC 3986 reserved and unreserved).
+_URL_CHARS = frozenset(string.ascii_letters + string.digits + "-._~:/?#[]@!$&'()*+,;=%")
+
+
 def latex_url(text: str | None) -> str:
-    """Escape a URL for use inside ``\\href{...}{...}``."""
+    """
+    Escape a URL (or a ``mailto:`` address) for use inside ``\\href{...}{...}``.
+
+    Every character outside the URL set is percent-encoded, so a backslash,
+    a brace or TeX's ``^^5c`` (a backslash spelled with carets) can't end the
+    argument or start a command: the URL comes from the CV, which the client
+    sends. The URL characters TeX treats specially are then escaped.
+    """
     if text is None:
         return ""
     if not isinstance(text, str):
         text = str(text)
-    return (
-        text.replace("\\", r"\textbackslash{}")
-        .replace("%", r"\%")
-        .replace("#", r"\#")
-        .replace("_", r"\_")
-    )
+    encoded = "".join(ch if ch in _URL_CHARS else quote(ch, safe="") for ch in text.strip())
+    return encoded.replace("%", r"\%").replace("#", r"\#").replace("_", r"\_")
 
 
 def _jinja_env() -> Environment:
@@ -85,15 +98,276 @@ def _jinja_env() -> Environment:
     return env
 
 
+# --------------------------------------------------------------------------- #
+# CV page layout
+#
+# Page-break rules (the template enforces the first four, the PDF check the rest):
+# - a heading never ends a page: it travels with its section's first entries;
+# - an entry (title rows plus bullets) never splits across pages;
+# - no section leaves a single entry on one side of a break: sections of up to
+#   SMALL_SECTION_ENTRIES move as a whole, longer ones break only with at least
+#   two entries on each side;
+# - no stranded single lines (maximum widow / club penalties);
+# - no short orphan section alone on the last page, and no nearly empty last
+#   page: re-render compactly, then fold Languages into Skills, else flag it.
+# --------------------------------------------------------------------------- #
+
+CV_LAYOUTS: dict[str, dict[str, str]] = {
+    # section_gap sits above a heading: inside the keep-together box the
+    # center environment adds no space of its own, so the gap carries it.
+    "normal": {"linespread": "0.96", "margin_x": "1.06cm", "margin_top": "0.8cm", "margin_bottom": "0.6cm",
+               "section_gap": "10pt", "entry_gap": "4pt"},
+    "compact": {"linespread": "0.92", "margin_x": "0.9cm", "margin_top": "0.6cm", "margin_bottom": "0.5cm",
+                "section_gap": "6pt", "entry_gap": "3pt"},
+}
+
+SMALL_SECTION_ENTRIES = 3
+SMALL_ITEMIZE_ENTRIES = 8
+# A block taller than this many estimated lines may not fit a page; it is
+# split into per-entry blocks instead (LaTeX can't break inside a block).
+_MAX_BLOCK_LINES = 40
+MIN_LAST_PAGE_FILL = 0.38
+ORPHAN_SECTION_LINES = 4
+# How many of the last sections the balancing pass tries to start on page 2.
+BALANCE_CANDIDATES = 3
+
+_STOPWORDS = {
+    "english": {"the", "and", "with", "for", "of", "to", "in", "a", "on", "as", "by", "from"},
+    "german": {"der", "die", "das", "und", "mit", "für", "von", "zu", "im", "ein", "eine", "bei", "auf", "als"},
+}
+
+
+def cv_content_language(cv_data: dict[str, Any]) -> str:
+    """'german' when the CV's own sentences are mostly German, else 'english'.
+    Section titles follow the content, so they never contradict it."""
+    texts: list[str] = [str(cv_data.get("summary") or "")]
+    for section, field in (("experience", "responsibilities"), ("projects", "outcomes"),
+                           ("leadership_activities", "highlights")):
+        for entry in cv_data.get(section) or []:
+            if isinstance(entry, dict):
+                texts.extend(str(t) for t in entry.get(field) or [])
+    words = re.findall(r"[a-zäöüß]+", " ".join(texts).casefold())
+    german = sum(w in _STOPWORDS["german"] for w in words)
+    english = sum(w in _STOPWORDS["english"] for w in words)
+    return "german" if german > english else "english"
+
+
+def _estimated_lines(entry: dict[str, Any]) -> int:
+    lines = len(entry.get("rows") or []) or 1
+    for bullet in entry.get("bullets") or []:
+        lines += 1 + len(bullet) // 110
+    if entry.get("text"):
+        lines += len(entry["text"]) // 110
+    return lines
+
+
+def _page_blocks(section: dict[str, Any]) -> list[dict[str, Any]]:
+    """Split a section into blocks LaTeX may only break between."""
+    entries = section.get("entries") or []
+    small = SMALL_ITEMIZE_ENTRIES if section.get("style") == "itemize" else SMALL_SECTION_ENTRIES
+    total_lines = sum(_estimated_lines(e) for e in entries)
+    if len(entries) <= small and total_lines <= _MAX_BLOCK_LINES:
+        return [{"heading": True, "entries": entries}]
+    if len(entries) <= 3:
+        # Too tall to keep whole: heading with the first entry, then one block each.
+        return [{"heading": True, "entries": entries[:1]}] + [{"heading": False, "entries": [e]} for e in entries[1:]]
+    # At least two entries on each side of any break.
+    middle = entries[2:-2]
+    return (
+        [{"heading": True, "entries": entries[:2]}]
+        + [{"heading": False, "entries": [e]} for e in middle]
+        + [{"heading": False, "entries": entries[-2:]}]
+    )
+
+
+def _block_anchor(section: dict[str, Any], block: dict[str, Any]) -> str:
+    """The first text a block prints, used to find it in the rendered PDF."""
+    if block["heading"]:
+        return section["title"]
+    entry = block["entries"][0] if block["entries"] else {}
+    if entry.get("rows"):
+        return entry["rows"][0].get("left", "")
+    return entry.get("label") or entry.get("text", "")
+
+
+def _cv_context(
+    cv_data: dict[str, Any],
+    section_order: list[str] | None,
+    *,
+    convention: str,
+    merge_languages: bool,
+    break_before_block: int | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[str]]:
+    """Template context plus the anchor text of every block, in print order."""
+    header, sections = build_harvard_sections(
+        cv_data, section_order=section_order, language=cv_content_language(cv_data),
+        convention=convention, merge_languages=merge_languages,
+    )
+    anchors: list[str] = []
+    for section in sections:
+        section["blocks"] = _page_blocks(section)
+        for block in section["blocks"]:
+            block["new_page"] = len(anchors) == break_before_block
+            anchors.append(_block_anchor(section, block))
+    return header, sections, anchors
+
+
 def render_cv_tex(
     cv_data: dict[str, Any],
     section_order: list[str] | None = None,
+    *,
+    layout: str = "normal",
+    convention: str = "international",
+    merge_languages: bool = True,
+    break_before_block: int | None = None,
 ) -> str:
-    """Render a Harvard-style CV LaTeX document from structured CV JSON."""
-    header, sections = build_harvard_sections(cv_data, section_order=section_order)
+    """Render a Harvard-style CV LaTeX document from structured CV JSON.
+    ``break_before_block`` starts that block (in print order) on a new page."""
+    header, sections, _ = _cv_context(
+        cv_data, section_order, convention=convention,
+        merge_languages=merge_languages, break_before_block=break_before_block,
+    )
     env = _jinja_env()
     template = env.get_template("cv.tex.j2")
-    return template.render(**header, sections=sections)
+    return template.render(**header, sections=sections, layout=CV_LAYOUTS[layout])
+
+
+def _normalized(text: str) -> str:
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text or "")).strip().casefold()
+
+
+def _first_block_on_page_two(page_two_first_line: str, anchors: list[str]) -> int | None:
+    """Index of the block that starts page 2, matched by its first text."""
+    line = _normalized(page_two_first_line)
+    if not line:
+        return None
+    for index, anchor in enumerate(anchors):
+        key = _normalized(anchor)[:25]
+        if key and line.startswith(key):
+            return index
+    return None
+
+
+# Margins are at most ~1.4cm top + bottom; the usable height of a page is the
+# page height minus this.
+_MARGIN_ALLOWANCE_PT = 40.0
+# Balancing must not leave page 1 half empty.
+MIN_FIRST_PAGE_FILL = 0.5
+
+
+def analyze_cv_pdf(pdf_path: Path) -> dict[str, Any]:
+    """Pages, how full the first and last pages are (share of the usable page
+    height), and how many text lines the last page holds."""
+    import pymupdf
+
+    with pymupdf.open(str(pdf_path)) as doc:
+        def lines(page: Any) -> list[tuple[float, float, str]]:
+            found = []
+            for block in page.get_text("dict")["blocks"]:
+                for line in block.get("lines", []):
+                    text = "".join(span["text"] for span in line["spans"])
+                    if text.strip():
+                        found.append((line["bbox"][1], line["bbox"][3], text))
+            return sorted(found)
+
+        first_lines, last_lines = lines(doc[0]), lines(doc[-1])
+        second_lines = lines(doc[1]) if doc.page_count > 1 else []
+        first = [(t, b) for t, b, _ in first_lines]
+        last = [(t, b) for t, b, _ in last_lines]
+        pages = doc.page_count
+        usable = doc[0].rect.height - _MARGIN_ALLOWANCE_PT
+
+    def fill(found: list[tuple[float, float]]) -> float:
+        if not found:
+            return 0.0
+        return round(min((max(b for _, b in found) - min(t for t, _ in found)) / usable, 1.0), 3)
+
+    return {"pages": pages, "first_page_fill": fill(first), "last_page_fill": fill(last),
+            "last_page_lines": len({round(t) for t, _ in last}),
+            "page_two_first_line": second_lines[0][2] if second_lines else ""}
+
+
+def layout_problems(analysis: dict[str, Any]) -> list[str]:
+    """What breaks the page rules, in the user's terms; empty when it's fine."""
+    pages = analysis["pages"]
+    if pages <= 1:
+        return []
+    problems = []
+    if analysis["last_page_lines"] <= ORPHAN_SECTION_LINES:
+        problems.append(f"the last page holds only {analysis['last_page_lines']} line(s)")
+    elif analysis["last_page_fill"] < MIN_LAST_PAGE_FILL:
+        problems.append(f"the last page is only {analysis['last_page_fill']:.0%} full")
+    if analysis.get("first_page_fill", 1.0) < MIN_FIRST_PAGE_FILL:
+        problems.append(f"the first page is only {analysis['first_page_fill']:.0%} full")
+    if pages > 2:
+        problems.append(f"the CV runs to {pages} pages")
+    return problems
+
+
+def render_cv_pdf(
+    cv_data: dict[str, Any],
+    output_dir: Path,
+    job_name: str,
+    *,
+    section_order: list[str] | None = None,
+    convention: str = "international",
+) -> tuple[Path, dict[str, Any]]:
+    """
+    Compile the CV, check the page rules on the PDF, and re-render until they
+    hold: first compact spacing, then whole blocks moved to page 2. Returns the
+    PDF and a report ({pages, layout, page_break_before_block, problems});
+    problems left after the last attempt are reported, not hidden.
+    """
+    results: list[tuple[tuple[str, bool, int | None], dict[str, Any], str]] = []
+
+    def attempt(layout: str, merge: bool, break_before_block: int | None) -> bool:
+        """Render and measure one variant; True when it keeps every rule."""
+        tex = render_cv_tex(cv_data, section_order, layout=layout, convention=convention,
+                            merge_languages=merge, break_before_block=break_before_block)
+        name = f"{job_name}__try{len(results)}"
+        analysis = analyze_cv_pdf(compile_tex_to_pdf(tex, output_dir, name))
+        results.append(((layout, merge, break_before_block), analysis, name))
+        return not layout_problems(analysis)
+
+    # Spoken languages are a line in Skills (when there is a Skills section),
+    # so a short Languages section can't be stranded on the last page.
+    # 1. As designed; 2. compact, to fit on one page.
+    done = attempt("normal", True, None) or attempt("compact", True, None)
+    # 4. Balance two pages: move whole blocks (a section, or entries of a long
+    # one) from the end of page 1 to page 2 by breaking one to three blocks
+    # earlier than LaTeX did.
+    if not done and results[0][1]["pages"] == 2:
+        _, _, anchors = _cv_context(cv_data, section_order, convention=convention,
+                                    merge_languages=True, break_before_block=None)
+        first_on_two = _first_block_on_page_two(results[0][1]["page_two_first_line"], anchors)
+        if first_on_two:
+            for back in range(1, BALANCE_CANDIDATES + 1):
+                if first_on_two - back <= 0 or attempt("normal", True, first_on_two - back):
+                    break
+
+    # The first attempt that keeps every rule, else the least bad one.
+    def badness(result: tuple[Any, dict[str, Any], str]) -> tuple[int, int, float]:
+        _, analysis, _ = result
+        return len(layout_problems(analysis)), analysis["pages"], -analysis["last_page_fill"]
+
+    best = next((r for r in results if not layout_problems(r[1])), None) or min(results, key=badness)
+    (layout, merge, break_before), analysis, name = best
+    analysis = {k: v for k, v in analysis.items() if k != "page_two_first_line"}
+    final_pdf = output_dir / f"{job_name}.pdf"
+    (output_dir / f"{name}.pdf").replace(final_pdf)
+    for _, _, other in results:
+        for suffix in (".pdf", ".tex", ".aux", ".log", ".out"):
+            leftover = output_dir / f"{other}{suffix}"
+            if leftover.exists() and leftover != final_pdf:
+                leftover.unlink()
+    return final_pdf, {
+        **analysis,
+        "layout": layout,
+        "merged_languages": merge,
+        "page_break_before_block": break_before,
+        "attempts": len(results),
+        "problems": layout_problems(analysis),
+    }
 
 
 def _format_date(language: str) -> str:
@@ -145,13 +419,44 @@ def extract_recipient_name(job_data: dict[str, Any] | None) -> str:
     return ""
 
 
+_GENERIC_RECIPIENT_RE = re.compile(
+    r"\b(team|hiring|recruit\w*|hr\b|human resources|personalabteilung|sir or madam|damen und herren)",
+    re.IGNORECASE,
+)
+_FEMALE_TITLE_RE = re.compile(r"^(frau|ms\.?|mrs\.?|miss)\s+", re.IGNORECASE)
+_MALE_TITLE_RE = re.compile(r"^(herr|mr\.?)\s+", re.IGNORECASE)
+
+
+def is_generic_recipient(recipient: str) -> bool:
+    """'Hiring Team', 'HR', 'Sir or Madam': no named person."""
+    return bool(_GENERIC_RECIPIENT_RE.search(recipient or ""))
+
+
 def _cover_letter_salutation(recipient_info: str, *, is_german: bool) -> str:
+    """
+    German: 'Sehr geehrte Frau Weber,' / 'Sehr geehrter Herr Weber,' when the
+    title is given, else the neutral 'Guten Tag Alex Weber,' (no guessing a
+    gender from a name); 'Sehr geehrte Damen und Herren,' for a team.
+    English: 'Dear Ms Weber,' / 'Dear Alex Weber,' / 'Dear Hiring Team,'.
+    """
     recipient = (recipient_info or "").strip()
     if not recipient:
         raise ValueError("recipient_info is required for the cover letter salutation")
     if is_german:
-        return f"Sehr geehrte/r {recipient},"
+        if is_generic_recipient(recipient):
+            return "Sehr geehrte Damen und Herren,"
+        female, male = _FEMALE_TITLE_RE.match(recipient), _MALE_TITLE_RE.match(recipient)
+        if female:
+            return f"Sehr geehrte Frau {recipient[female.end():].strip()},"
+        if male:
+            return f"Sehr geehrter Herr {recipient[male.end():].strip()},"
+        return f"Guten Tag {recipient},"
     return f"Dear {recipient},"
+
+
+def _english_sign_off(recipient_info: str) -> str:
+    """'Yours sincerely' to a named person, 'Yours faithfully' to a team."""
+    return "Yours faithfully" if is_generic_recipient(recipient_info) else "Yours sincerely"
 
 
 def _cover_letter_context(
@@ -236,7 +541,7 @@ def render_cover_letter_tex(
         template_name = "cover_letter.tex.j2"
         extra = {
             "salutation": _cover_letter_salutation(recipient_info, is_german=False),
-            "sign_off": "Yours Faithfully",
+            "sign_off": _english_sign_off(recipient_info),
             "document_title": "COVER LETTER",
             "date_label": "Date:",
         }
@@ -261,6 +566,11 @@ def _compiler_binary() -> str:
     return shutil.which("tectonic") or "tectonic"
 
 
+# The compiler's output stays in the server log: it quotes the document's
+# text and server paths, and the error message is shown to the user.
+_SEE_SERVER_LOG = "The details are in the server log."
+
+
 def _run_tectonic(tex_path: Path, output_dir: Path) -> None:
     binary = _compiler_binary()
     result = subprocess.run(
@@ -272,9 +582,8 @@ def _run_tectonic(tex_path: Path, output_dir: Path) -> None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"Tectonic compilation failed (exit {result.returncode}).\n{detail}"
-        )
+        logger.error("Tectonic failed on %s (exit %s):\n%s", tex_path.name, result.returncode, detail)
+        raise RuntimeError(f"Tectonic compilation failed (exit {result.returncode}). {_SEE_SERVER_LOG}")
 
 
 def _run_pdflatex(tex_path: Path, output_dir: Path) -> None:
@@ -301,7 +610,8 @@ def _run_pdflatex(tex_path: Path, output_dir: Path) -> None:
     log_path = output_dir / f"{tex_path.stem}.log"
     if log_path.exists():
         last_error = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-    raise RuntimeError(f"pdflatex compilation failed.\n{last_error}")
+    logger.error("pdflatex failed on %s:\n%s", tex_path.name, last_error)
+    raise RuntimeError(f"pdflatex compilation failed. {_SEE_SERVER_LOG}")
 
 
 def compile_tex_to_pdf(tex_content: str, output_dir: Path, job_name: str) -> Path:

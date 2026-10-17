@@ -6,11 +6,17 @@
 
 const STEP_LABELS: Record<string, string> = {
   present_score: 'Compatibility',
+  confirm_eligibility: 'Requirements check',
   approve_selection: 'Bullet selection',
   approve_rewrite: 'Rewrite',
   cover_letter_language: 'Cover letter language',
   cover_letter_recipient: 'Cover letter recipient',
   approve_cover_letter: 'Cover letter',
+  step_failed: 'Step failed',
+  verifier_failed: 'Fact check',
+  approve_translation: 'Translation',
+  cv_language: 'CV language',
+  confirm_change: 'Confirm change',
   cv_review_header: 'Header',
   cv_review_education: 'Education',
   cv_review_experience: 'Experience',

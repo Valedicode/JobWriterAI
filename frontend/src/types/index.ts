@@ -47,6 +47,11 @@ export interface LeadershipEntry {
   highlights?: string[];
 }
 
+export interface LanguageEntry {
+  language: string;
+  fluency?: string;
+}
+
 export interface ResumeInfo {
   name: string;
   email: string;
@@ -61,6 +66,7 @@ export interface ResumeInfo {
   experience: ExperienceEntry[];
   projects?: ProjectEntry[];
   leadership_activities?: LeadershipEntry[];
+  languages?: LanguageEntry[];
 }
 
 export interface CVExtractionResponse {
@@ -88,12 +94,25 @@ export interface CVClarificationResponse {
 
 export interface JobRequirements {
   job_title: string;
+  /** The role in one to three words, e.g. "Software Developer"; may be empty. */
+  short_title?: string;
   job_level: string;
   required_skills: string[];
+  required_skill_groups?: string[][];
   preferred_skills: string[];
+  learnable_skills?: string[];
+  required_languages?: string[];
+  education_requirements?: string[];
   years_experience?: number;
   employment_type: string;
   location: string;
+  work_mode?: 'onsite' | 'hybrid' | 'remote' | null;
+  location_constraint?: string | null;
+  hours_per_week?: string | null;
+  start_date?: string | null;
+  work_permit?: string | null;
+  posting_language?: string | null;
+  country?: string | null;
   responsibilities: string[];
   qualifications: string[];
   key_requirements: string[];
@@ -312,10 +331,43 @@ export interface OrchestratorGatePayload {
   choices?: string[] | null;
 }
 
+/** Selection: include (tailor it), exclude (keep as is), leave_out (drop from the
+ * tailored CV). Rewrite: accept, keep_original, custom. */
+export type BulletDecisionChoice =
+  | 'accept'
+  | 'keep_original'
+  | 'custom'
+  | 'include'
+  | 'exclude'
+  | 'leave_out';
+
+export interface BulletDecision {
+  choice: BulletDecisionChoice;
+  text?: string | null;
+}
+
 export interface OrchestratorGateResolution {
   action: OrchestratorGateAction;
+  /** Step of the gate being answered; a stale answer (step mismatch) is refused with 409. */
+  step?: string;
   feedback?: string;
   choice?: string;
+  /** Per-bullet decisions keyed by bullet_id, for approve_selection / approve_rewrite gates. */
+  decisions?: Record<string, BulletDecision>;
+  /** Answers keyed by question id, for gates whose preview lists `questions` (confirm_eligibility). */
+  answers?: Record<string, string>;
+}
+
+/** One question in a confirm_eligibility gate preview. */
+export interface EligibilityQuestion {
+  id: string;
+  requirement: string;
+  kind: 'language' | 'education';
+  prompt: string;
+  language?: string;
+  options?: string[];
+  placeholder?: string;
+  matched_with?: string;
 }
 
 export interface OrchestratorStartRequest {
@@ -336,10 +388,14 @@ export interface OrchestratorResponse {
   success: boolean;
   session_id: string;
   narration: string;
+  /** Every assistant narration produced since the previous response, in order. */
+  narrations?: string[];
   pending_gate: OrchestratorGatePayload | null;
   generated_files: DownloadableFile[];
   done: boolean;
   message: string;
+  /** Id of the graph run this request started, for finding its trace. */
+  run_id?: string | null;
 }
 
 export interface OrchestratorStateResponse {

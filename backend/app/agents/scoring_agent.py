@@ -24,14 +24,14 @@ from __future__ import annotations
 
 from pydantic import Field, BaseModel
 from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
+from app.openai_llm import chat_model, model_for, model_id, openai_client
 from langchain_core.prompts import ChatPromptTemplate
 from functools import lru_cache
+import copy
 import json
-import os
 import re
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Literal, Optional, Tuple
 
 import numpy as np
 from rank_bm25 import BM25Okapi
@@ -42,8 +42,12 @@ from app.models.schemas import (
     DimensionScore,
     GapAnalysis,
     CompatibilityReport,
+    EligibilityCheck,
 )
 from app.services import skill_graph as skill_graph_service
+from app.services.bullet_index import index_cv_bullets
+from app.services.fact_ledger import build_fact_ledger
+from app.services.requirement_rubric import knockout_rows, skill_rows
 
 
 # ============================================
@@ -51,11 +55,8 @@ from app.services import skill_graph as skill_graph_service
 # ============================================
 
 def _get_openai_client() -> OpenAI:
-    """Get OpenAI client for embeddings."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY not found in environment variables")
-    return OpenAI(api_key=api_key)
+    """Get the OpenAI-compatible client for embeddings (OpenRouter or OpenAI)."""
+    return openai_client()
 
 
 # ============================================
@@ -88,7 +89,7 @@ def get_embeddings(texts: List[str], model: str = "text-embedding-3-small") -> L
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         response = client.embeddings.create(
-            model=model,
+            model=model_id(model),
             input=batch
         )
         batch_embeddings = [item.embedding for item in response.data]
@@ -263,10 +264,14 @@ def calculate_bm25_score(resume_sections: str, job_requirements: str) -> str:
 
 COMPATIBILITY_WEIGHTS: Dict[str, float] = {
     "hard_skills": 0.40,
+    # Languages / degree / enrollment are knockouts: pass/fail, not a degree of
+    # fit, so they stay out of the weighted sum. The dimension is still shown
+    # (weight 0), and an unmet one caps the level instead.
+    "eligibility": 0.0,
     "experience": 0.15,
-    "seniority": 0.15,
-    "domain": 0.15,
-    "ats_keywords": 0.15,
+    "seniority": 0.10,
+    "domain": 0.10,
+    "ats_keywords": 0.10,
 }
 
 COMPATIBILITY_BANDS = [
@@ -282,6 +287,33 @@ EMBEDDING_TRANSFERABILITY_THRESHOLD = 0.60
 # Gap analysis bucketing thresholds
 MATCHED_THRESHOLD = 0.95
 TRANSFERABLE_THRESHOLD = 0.55
+
+# How much the preferred (nice-to-have) skills count inside hard_skills, by
+# role level. A student posting lists its stack as a wish-list and expects
+# most applicants to miss parts of it; a senior posting expects most of it.
+# Required-skill coverage always carries the remaining share.
+PREFERRED_SKILL_WEIGHT_BY_LEVEL: Dict[str, float] = {
+    "student": 0.15,
+    "junior": 0.20,
+    "mid": 0.25,
+    "senior": 0.30,
+}
+
+# Nice-to-haves can lift hard_skills at most this far above required-skill
+# coverage, so a candidate missing the one must-have never outscores a
+# candidate who has it.
+REQUIRED_COVERAGE_HEADROOM = 0.15
+
+# Eligibility item scores by status. 'unclear' (the CV has no information) is
+# not scored at all: discounting it lowered the score for something the CV
+# simply doesn't say, so it is reported as an open question instead.
+ELIGIBILITY_STATUS_SCORE: Dict[str, float] = {"met": 1.0, "unmet": 0.0}
+
+# Raw cosine between two long-text embeddings rarely leaves [0.25, 0.80] for
+# text-embedding-3-small; stretch that band onto [0, 1] so domain fit moves
+# the aggregate instead of sitting near 0.5 for everyone.
+DOMAIN_COSINE_FLOOR = 0.25
+DOMAIN_COSINE_CEIL = 0.80
 
 
 # ============================================
@@ -302,41 +334,47 @@ def _flatten_cv_skill_mentions(cv_data: Dict[str, Any]) -> List[str]:
     direct-skill mentions even when they aren't in the dedicated skills list.
     """
     mentions: List[str] = []
+
+    def _text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return " ".join(_text(v) for v in value if v)
+        if isinstance(value, dict):
+            return " ".join(_text(v) for v in value.values() if v)
+        return str(value)
+
+    def _entries(value: Any, fields: List[str]) -> None:
+        if isinstance(value, str):
+            mentions.append(value)
+            return
+        if not isinstance(value, list):
+            return
+        for entry in value:
+            if isinstance(entry, str):
+                mentions.append(entry)
+            elif isinstance(entry, dict):
+                joined = " ".join(_text(entry.get(f)) for f in fields)
+                mentions.append(joined)
+
+    summary = cv_data.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        mentions.append(summary)
+
     skills = cv_data.get("skills") or []
     if isinstance(skills, list):
         mentions.extend(str(s) for s in skills if s)
     elif isinstance(skills, str):
         mentions.append(skills)
 
-    experience = cv_data.get("experience") or cv_data.get("experiences") or []
-    if isinstance(experience, list):
-        for exp in experience:
-            if isinstance(exp, str):
-                mentions.append(exp)
-            elif isinstance(exp, dict):
-                parts = [
-                    str(exp.get("position", "")),
-                    str(exp.get("company", "")),
-                ]
-                resp = exp.get("responsibilities")
-                if isinstance(resp, list):
-                    parts.extend(str(r) for r in resp if r)
-                elif isinstance(resp, str):
-                    parts.append(resp)
-                mentions.append(" ".join(p for p in parts if p))
-    elif isinstance(experience, str):
-        mentions.append(experience)
-
-    projects = cv_data.get("projects") or []
-    if isinstance(projects, list):
-        for proj in projects:
-            if isinstance(proj, str):
-                mentions.append(proj)
-            elif isinstance(proj, dict):
-                parts = [str(proj.get("name", "")), str(proj.get("description", ""))]
-                mentions.append(" ".join(p for p in parts if p))
-    elif isinstance(projects, str):
-        mentions.append(projects)
+    _entries(cv_data.get("experience") or cv_data.get("experiences") or [],
+             ["position", "title", "company", "responsibilities"])
+    # Project technologies and outcomes are where students keep most of their
+    # stack; the old flattener read only name + description and missed them.
+    _entries(cv_data.get("projects") or [], ["name", "description", "technologies", "outcomes"])
+    _entries(cv_data.get("education") or [], ["degree", "institution", "details"])
+    _entries(cv_data.get("leadership_activities") or [], ["role", "organization", "description", "highlights"])
+    _entries(cv_data.get("languages") or [], ["language", "fluency"])
 
     return [m for m in mentions if m and m.strip()]
 
@@ -357,20 +395,27 @@ def _detect_direct_match(required_skill: str, cv_data: Dict[str, Any]) -> Option
     (preferred match), then in free-text mentions across experience/projects.
     Returns the matched candidate skill string if found, else None.
     """
-    norm_req = skill_graph_service.normalize(required_skill)
-    if not norm_req:
+    pattern = _skill_mention_pattern(required_skill)
+    if pattern is None:
         return None
 
     declared = _candidate_skills_normalized(cv_data)
     for cand in declared:
         if skill_graph_service.is_direct_match(required_skill, cand):
             return cand
+    # A declared entry such as 'Java (advanced)' or 'Python, Django' still
+    # names the skill; alias equality alone would miss it.
+    for cand in declared:
+        if pattern.search(cand):
+            return cand
 
-    pattern = re.compile(rf"\b{re.escape(norm_req)}\b", re.IGNORECASE)
     for blob in _flatten_cv_skill_mentions(cv_data):
-        if pattern.search(blob.lower()):
+        if pattern.search(blob):
             return required_skill
     return None
+
+
+_skill_mention_pattern = skill_graph_service.mention_pattern
 
 
 def _detect_family_match(
@@ -394,6 +439,18 @@ def _embedding_transferability(
     """
     if not candidate_skills:
         return None
+    # When the curated graph places both skills in *different* families, that
+    # is a deliberate 'not the same thing' verdict (Java vs JavaScript, C vs
+    # C#). Raw cosine on such short names is unreliable, so leave those pairs
+    # to the LLM judge instead of letting a lexical neighbour score them.
+    required_family = skill_graph_service.find_family(required_skill)
+    if required_family:
+        candidate_skills = [
+            c for c in candidate_skills
+            if skill_graph_service.find_family(c) in (None, required_family)
+        ]
+        if not candidate_skills:
+            return None
     try:
         req_emb = get_skill_embedding(required_skill)
         if not req_emb:
@@ -425,22 +482,37 @@ def _embedding_transferability(
 # LLM Transferability Assessment
 # ============================================
 
+TransferVerdict = Literal["same_family", "adjacent", "distant", "none"]
+
+# The judge names a category; the score comes from this table, not from the
+# model. A free 0-1 number put the judge's "adjacent" band (0.55-0.75) right
+# on TRANSFERABLE_THRESHOLD, so any adjacent skill - Spring Boot via Django -
+# counted as covered. Only same_family clears the threshold; adjacent is a
+# learnable gap with partial credit.
+VERDICT_SCORES: Dict[str, Tuple[str, float]] = {
+    "same_family": ("transferable", 0.80),
+    "adjacent": ("learnable", 0.45),
+    "distant": ("missing", 0.25),
+    "none": ("missing", 0.0),
+}
+
+
 class _LLMTransferabilityItem(BaseModel):
     """Schema for a single LLM-judged transferability assessment."""
     required_skill: str = Field(description="The required skill being assessed")
     best_candidate_skill: Optional[str] = Field(
         default=None,
-        description="Best candidate skill that could bridge to the required skill, if any"
+        description="Best candidate skill that relates to the required skill, if any"
     )
-    transferability: float = Field(
-        ge=0.0, le=1.0,
-        description="0-1 score for how well candidate skills cover this requirement"
+    verdict: TransferVerdict = Field(
+        description=(
+            "same_family: interchangeable tools of one kind (React/Vue, Postgres/MySQL); "
+            "adjacent: related but a different paradigm or ecosystem, real learning needed "
+            "(Django -> Spring Boot, Python -> Go); distant: same broad field only; "
+            "none: unrelated or nothing on the CV"
+        )
     )
-    rationale: str = Field(description="Short explanation of the transferability judgment")
-    bridge_bullet: Optional[str] = Field(
-        default=None,
-        description="Suggested resume bullet phrasing that surfaces the bridge skill (only when transferability >= 0.55)"
-    )
+    rationale: str = Field(description="Short explanation of the judgment")
 
 
 class _LLMTransferabilityBatch(BaseModel):
@@ -463,36 +535,36 @@ def _assess_transferability_llm(
     if not unresolved_required:
         return {}
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    llm = chat_model("judge", temperature=0)
     structured_llm = llm.with_structured_output(_LLMTransferabilityBatch)
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a senior staff engineer and technical recruiter.
 
-For each required skill, decide how well the candidate's declared skills and
-experience cover it. Think in terms of underlying paradigms and learning curve,
-not surface keywords:
+For each required skill, decide how the candidate's declared skills and
+experience relate to it. Think in terms of underlying paradigms and learning
+curve, not surface keywords, and pick exactly one verdict:
 
-- Frameworks in the same family (e.g. React/Vue/Angular, PyTorch/TensorFlow,
-  Postgres/MySQL) are highly transferable - rate 0.80-0.92.
-- Cross-paradigm but adjacent (e.g. Java -> Kotlin, Python -> Ruby,
-  REST -> GraphQL) - rate 0.55-0.75.
-- Same general domain but meaningful learning curve (e.g. frontend -> backend
-  in same language) - rate 0.35-0.55.
-- Genuinely missing or unrelated - rate 0.0-0.30.
+- same_family: the candidate holds an interchangeable tool of the same kind,
+  productive within days (React <-> Vue, PyTorch <-> TensorFlow,
+  Postgres <-> MySQL).
+- adjacent: related, but a different paradigm, language, or ecosystem; real
+  learning is needed (Django -> Spring Boot, Python -> Go, REST -> GraphQL,
+  Java -> Kotlin).
+- distant: only the same broad field (frontend -> embedded, data analysis ->
+  backend APIs).
+- none: unrelated, or the CV shows nothing relevant.
 
-Score 1.0 only if the candidate already lists the exact skill.
+The candidate does not hold the required skill itself; skills they list
+verbatim were matched before this step. When in doubt between two verdicts,
+choose the lower one: overstating coverage misleads the candidate more than
+understating it.
 
 For each item return:
-- required_skill: echo the input
+- required_skill: echo the input exactly
 - best_candidate_skill: the single most relevant candidate skill (or null)
-- transferability: 0-1 (calibrated as above)
-- rationale: 1-2 sentences explaining the bridge or why it's missing
-- bridge_bullet: ONLY when transferability >= 0.55, draft a single resume bullet
-  (<= 25 words, action-verb led, no fabrication) that surfaces the candidate's
-  existing experience in language that demonstrates readiness for the required
-  skill. Use only facts implied by the candidate's declared skills/experience.
-  Otherwise return null.
+- verdict: one of same_family, adjacent, distant, none
+- rationale: 1-2 sentences naming what the candidate has and what they'd need to learn
 """),
         ("user", """Candidate declared skills:
 {candidate_skills}
@@ -510,10 +582,12 @@ Return a transferability assessment for each required skill.""")
     try:
         result: _LLMTransferabilityBatch = chain.invoke({
             "candidate_skills": ", ".join(candidate_skills) if candidate_skills else "(none)",
-            "cv_summary": cv_summary_text[:2000],
+            "cv_summary": cv_summary_text[:4000],
             "required": "\n".join(f"- {s}" for s in unresolved_required),
         })
-        return {item.required_skill: item for item in result.assessments}
+        # Key on the normalized echo: the model may return 'spring boot' for
+        # 'Spring Boot', and an exact-string lookup would silently drop it.
+        return {_norm_key(item.required_skill): item for item in result.assessments}
     except Exception:
         return {}
 
@@ -522,16 +596,124 @@ Return a transferability assessment for each required skill.""")
 # Skill Matching Cascade
 # ============================================
 
+def _norm_key(text: Any) -> str:
+    """Lookup key for skill names: casefolded, whitespace-collapsed."""
+    return re.sub(r"\s+", " ", str(text or "")).strip().casefold()
+
+
+def _technical_skill_lists(job_data: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    """
+    Required / preferred technical skill lists with eligibility items removed.
+
+    The extraction prompt asks for languages and education to go into their
+    own fields, but models still occasionally drop 'German' or "Bachelor's
+    degree" into required_skills. Those would then be 'missing' technical
+    skills nobody can bridge; route them to the eligibility check instead.
+    """
+    def _clean(raw: Any) -> List[str]:
+        if not isinstance(raw, list):
+            return []
+        return [str(s).strip() for s in raw if s and str(s).strip()]
+
+    required = [s for s in _clean(job_data.get("required_skills") or job_data.get("skills"))
+                if _eligibility_kind(s) is None]
+    # Skills the employer will teach used to be extracted as preferred; they
+    # still score as nice-to-haves until the scorer gives them their own role.
+    preferred = [s for s in _clean(job_data.get("preferred_skills")) + _clean(job_data.get("learnable_skills"))
+                 if _eligibility_kind(s) is None]
+    return required, list(dict.fromkeys(preferred))
+
+
+def _collapse_required_skill_groups(
+    matches: List[SkillMatch],
+    groups: List[List[str]],
+) -> List[SkillMatch]:
+    """
+    Collapse OR-alternative requirement groups into a single SkillMatch per
+    group, so a candidate who satisfies ANY ONE alternative isn't penalized
+    for lacking the others.
+
+    Without this, a posting phrased as "Java and WildFly/Quarkus/Spring
+    Boot" - which is really two requirements, Java and *any one* JVM
+    framework - gets flattened into four independent required skills, and a
+    candidate with Java + Spring Boot alone shows two "genuine gaps" (WildFly,
+    Quarkus) for a requirement they've fully satisfied.
+
+    Required matches not covered by any group pass through unchanged (a
+    posting is not required to group everything); preferred matches are
+    never touched, since grouping only applies to hard requirements.
+    """
+    if not groups:
+        return matches
+
+    by_name = {m.required_skill: m for m in matches if m.is_required}
+    grouped_names: set[str] = set()
+    collapsed: List[SkillMatch] = []
+
+    for group in groups:
+        group_matches = [by_name[name] for name in group if name in by_name]
+        if not group_matches:
+            continue
+        grouped_names.update(group)
+        if len(group_matches) == 1:
+            collapsed.append(group_matches[0])
+            continue
+
+        best = max(group_matches, key=lambda m: m.transferability)
+        label = " / ".join(group)
+        collapsed.append(best.model_copy(update={
+            "required_skill": label,
+            "rationale": (
+                f"Posting accepts any of {label} for this requirement; "
+                f"strongest match is '{best.matched_with}' for '{best.required_skill}'. "
+                if best.matched_with else
+                f"Posting accepts any of {label} for this requirement; none matched. "
+            ) + best.rationale,
+        }))
+
+    # Every match not swallowed into a group above - required-but-ungrouped
+    # skills, and all preferred skills - passes through untouched.
+    passthrough = [m for m in matches if not (m.is_required and m.required_skill in grouped_names)]
+    return passthrough + collapsed
+
+
+def _match_from_verdict(unresolved: SkillMatch, judged: "_LLMTransferabilityItem") -> SkillMatch:
+    """
+    Turn the judge's verdict into a SkillMatch.
+
+    The curated skill graph outranks the judge: when it places the required
+    skill and the candidate's skill in different families (Spring Boot in
+    JVM frameworks, Django in Python frameworks), they are not the same
+    thing, so "same_family" is capped at "adjacent" - learnable, not covered.
+    """
+    verdict = judged.verdict
+    candidate = judged.best_candidate_skill
+    if verdict == "same_family" and candidate:
+        required_family = skill_graph_service.find_family(unresolved.required_skill)
+        candidate_family = skill_graph_service.find_family(candidate)
+        if required_family and candidate_family and required_family != candidate_family:
+            verdict = "adjacent"
+    if not candidate and verdict in ("same_family", "adjacent"):
+        verdict = "distant"  # nothing on the CV to build on
+    kind, score = VERDICT_SCORES[verdict]
+    return SkillMatch(
+        required_skill=unresolved.required_skill,
+        matched_with=candidate,
+        kind=kind,
+        transferability=score,
+        rationale=judged.rationale,
+        bridge_bullet=None,
+        is_required=unresolved.is_required,
+        scored_by="llm_judge",
+    )
+
+
 def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> List[SkillMatch]:
     """
     Resolve every required and preferred job skill against the candidate's CV
     using the cascade: direct -> family -> embedding -> LLM.
     """
-    required_raw = job_data.get("required_skills") or job_data.get("skills") or []
-    preferred_raw = job_data.get("preferred_skills") or []
-
-    required_list = [str(s).strip() for s in required_raw if s and str(s).strip()] if isinstance(required_raw, list) else []
-    preferred_list = [str(s).strip() for s in preferred_raw if s and str(s).strip()] if isinstance(preferred_raw, list) else []
+    required_list, preferred_list = _technical_skill_lists(job_data)
 
     declared_candidate = _candidate_skills_normalized(cv_data)
     cv_summary_parts = _flatten_cv_skill_mentions(cv_data)
@@ -552,6 +734,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
                 rationale=f"Candidate explicitly lists or mentions '{direct}'.",
                 bridge_bullet=None,
                 is_required=is_required,
+                scored_by="deterministic",
             )
 
         # 2. Family match via skill graph
@@ -570,6 +753,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
                 ),
                 bridge_bullet=None,
                 is_required=is_required,
+                scored_by="skill_graph",
             )
 
         # 3. Embedding fallback
@@ -587,6 +771,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
                 ),
                 bridge_bullet=None,
                 is_required=is_required,
+                scored_by="embedding",
             )
 
         return SkillMatch(
@@ -597,6 +782,7 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
             rationale="No direct, family, or semantic match found in candidate skills.",
             bridge_bullet=None,
             is_required=is_required,
+            scored_by="deterministic",
         )
 
     for skill in required_list:
@@ -621,29 +807,23 @@ def _match_skill_pairs_internal(cv_data: Dict[str, Any], job_data: Dict[str, Any
             for idx, m in enumerate(matches):
                 if m.kind != "missing":
                     continue
-                judged = llm_results.get(m.required_skill)
+                judged = llm_results.get(_norm_key(m.required_skill))
                 if judged is None:
                     continue
-                if judged.transferability >= TRANSFERABLE_THRESHOLD:
-                    matches[idx] = SkillMatch(
-                        required_skill=m.required_skill,
-                        matched_with=judged.best_candidate_skill,
-                        kind="transferable",
-                        transferability=float(judged.transferability),
-                        rationale=judged.rationale,
-                        bridge_bullet=judged.bridge_bullet,
-                        is_required=m.is_required,
-                    )
-                else:
-                    matches[idx] = SkillMatch(
-                        required_skill=m.required_skill,
-                        matched_with=judged.best_candidate_skill,
-                        kind="missing",
-                        transferability=float(judged.transferability),
-                        rationale=judged.rationale,
-                        bridge_bullet=None,
-                        is_required=m.is_required,
-                    )
+                matches[idx] = _match_from_verdict(m, judged)
+
+    # 5. Collapse OR-alternative requirement groups (see
+    # `required_skill_groups` on JobRequirements) AFTER every skill has been
+    # through the full cascade, so the group's representative is whichever
+    # alternative actually scored best - not an arbitrary pick made before
+    # the LLM had a chance to assess every option.
+    groups_raw = job_data.get("required_skill_groups") or []
+    normalized_groups = [
+        [str(s).strip() for s in g if s and str(s).strip()]
+        for g in groups_raw if isinstance(g, list) and g
+    ]
+    if normalized_groups:
+        matches = _collapse_required_skill_groups(matches, normalized_groups)
 
     return matches
 
@@ -694,7 +874,8 @@ def assess_transferability_llm(unresolved_pairs_json: str) -> str:
 
     Returns:
         JSON list of assessments, each with required_skill, best_candidate_skill,
-        transferability (0-1), rationale, and bridge_bullet (when applicable).
+        verdict (same_family / adjacent / distant / none; scored via
+        VERDICT_SCORES), and rationale.
     """
     try:
         payload = json.loads(unresolved_pairs_json) if isinstance(unresolved_pairs_json, str) else unresolved_pairs_json
@@ -714,66 +895,699 @@ def assess_transferability_llm(unresolved_pairs_json: str) -> str:
 
 
 # ============================================
+# Eligibility — languages, degree, enrollment
+# ============================================
+#
+# These are the requirements that decide whether an application is viable at
+# all (a Werkstudent posting needs an enrolled student who speaks German),
+# and they are not technical skills: nothing in the skill graph, embeddings,
+# or the rewrite step can bridge them. They get their own check with three
+# outcomes - met / unclear / unmet - where 'unclear' means the CV simply has
+# no information (no languages section), which is a prompt to add it, not a
+# verdict against the candidate.
+
+_LANGUAGE_CANONICAL: Dict[str, str] = {
+    "german": "german", "deutsch": "german",
+    "english": "english", "englisch": "english",
+    "french": "french", "französisch": "french", "francais": "french", "français": "french",
+    "spanish": "spanish", "spanisch": "spanish", "español": "spanish",
+    "italian": "italian", "italienisch": "italian",
+    "dutch": "dutch", "niederländisch": "dutch", "nederlands": "dutch",
+    "portuguese": "portuguese", "portugiesisch": "portuguese",
+    "russian": "russian", "russisch": "russian",
+    "polish": "polish", "polnisch": "polish",
+    "turkish": "turkish", "türkisch": "turkish",
+    "chinese": "chinese", "mandarin": "chinese", "chinesisch": "chinese",
+    "japanese": "japanese", "japanisch": "japanese",
+    "korean": "korean", "koreanisch": "korean",
+    "arabic": "arabic", "arabisch": "arabic",
+    "hindi": "hindi",
+    "vietnamese": "vietnamese", "vietnamesisch": "vietnamese",
+    "swedish": "swedish", "schwedisch": "swedish",
+    "danish": "danish", "dänisch": "danish",
+    "norwegian": "norwegian", "norwegisch": "norwegian",
+    "finnish": "finnish", "finnisch": "finnish",
+    "czech": "czech", "tschechisch": "czech",
+    "greek": "greek", "griechisch": "greek",
+    "ukrainian": "ukrainian", "ukrainisch": "ukrainian",
+    "romanian": "romanian", "rumänisch": "romanian",
+    "hungarian": "hungarian", "ungarisch": "hungarian",
+}
+
+# Proficiency ordinal: CEFR levels plus the words postings and CVs use.
+_LANGUAGE_LEVELS: List[Tuple["re.Pattern[str]", int]] = [
+    (re.compile(r"\b(?:native|mother tongue|muttersprache|muttersprachlich|muttersprachler(?:in)?)\b", re.I), 7),
+    (re.compile(r"\bc2\b", re.I), 6),
+    (re.compile(r"\b(?:c1|fluent|fließend|fliessend|verhandlungssicher|business fluent|full professional|proficient|advanced|sehr gut)\b", re.I), 5),
+    (re.compile(r"\b(?:b2|upper intermediate|professional working|gut|good)\b", re.I), 4),
+    (re.compile(r"\b(?:b1|intermediate|conversational|limited working)\b", re.I), 3),
+    (re.compile(r"\b(?:a2|basic|elementary|grundkenntnisse)\b", re.I), 2),
+    (re.compile(r"\b(?:a1|beginner|anfänger)\b", re.I), 1),
+]
+
+_LEVEL_LABEL = {7: "native", 6: "C2", 5: "C1/fluent", 4: "B2", 3: "B1", 2: "A2", 1: "A1"}
+
+_EDUCATION_HINT_RE = re.compile(
+    r"\b(?:degree|bachelor(?:'s)?|master(?:'s)?|b\.?\s?sc\.?|m\.?\s?sc\.?|b\.?\s?eng|m\.?\s?eng|phd|ph\.d|doctorate|"
+    r"diploma|diplom|abschluss|studium|student(?:in)?|enrolled|eingeschrieben|immatrikuliert|"
+    r"university|hochschule|graduate|studies|studying)\b",
+    re.I,
+)
+_ENROLLMENT_RE = re.compile(
+    r"\b(?:enrolled|enrolment|enrollment|student(?:in)?|studying|currently studying|eingeschrieben|"
+    r"immatrikuliert|werkstudent(?:in)?|studium|im studium)\b",
+    re.I,
+)
+_ONGOING_DATES_RE = re.compile(
+    r"\b(?:expected|present|current|now|today|ongoing|voraussichtlich|heute|laufend|seit)\b", re.I
+)
+_DEGREE_LEVEL_PATTERNS: List[Tuple["re.Pattern[str]", int]] = [
+    (re.compile(r"\b(?:phd|ph\.d|doctorate|doktor|promotion)\b", re.I), 3),
+    (re.compile(r"\b(?:master(?:'s)?|m\.?\s?sc\.?|m\.?\s?eng|m\.?\s?a\.?|msc|meng|mba|diplom)\b", re.I), 2),
+    (re.compile(r"\b(?:bachelor(?:'s)?|b\.?\s?sc\.?|b\.?\s?eng|b\.?\s?a\.?|bsc|beng|undergraduate)\b", re.I), 1),
+]
+
+# Field-of-study families: a requirement naming any term of a family is met
+# by a CV degree naming any term of the same family.
+_FIELD_FAMILIES: Dict[str, List[str]] = {
+    "computer science": [
+        "computer science", "informatik", "informatics", "software engineering", "software",
+        "computer engineering", "information systems", "wirtschaftsinformatik", "information technology",
+        "it", "computing", "data science", "artificial intelligence", "machine learning", "cs",
+        "technische informatik", "angewandte informatik", "medieninformatik", "cybersecurity",
+    ],
+    "engineering": [
+        "engineering", "ingenieur", "elektrotechnik", "electrical", "mechanical", "maschinenbau",
+        "mechatronics", "mechatronik", "automation", "robotics",
+    ],
+    "mathematics": ["mathematics", "mathematik", "math", "statistics", "statistik", "physics", "physik"],
+    "business": [
+        "business", "economics", "bwl", "betriebswirtschaft", "volkswirtschaft", "management",
+        "finance", "accounting", "marketing", "wirtschaft",
+    ],
+    "design": ["design", "hci", "human-computer interaction", "media", "ux", "user experience"],
+    "natural sciences": ["biology", "biologie", "chemistry", "chemie", "life sciences", "bioinformatics"],
+}
+_RELATED_FIELD_RE = re.compile(
+    r"\b(?:related|similar|comparable|equivalent|vergleichbar|ähnlich|verwandt|or similar|oder ähnlich)\b", re.I
+)
+
+
+def _eligibility_kind(text: str) -> Optional[str]:
+    """
+    'language' if the text names a spoken language (optionally with a level),
+    'education' if it reads like a degree/enrollment requirement, else None.
+    Used both to classify job fields and to catch misfiled required_skills.
+    """
+    if not text:
+        return None
+    low = text.casefold()
+    if _parse_language(low)[0] is not None:
+        return "language"
+    if _EDUCATION_HINT_RE.search(low):
+        return "education"
+    return None
+
+
+def _parse_language(text: str) -> Tuple[Optional[str], Optional[int]]:
+    """(canonical language, level ordinal or None) for a requirement or CV entry."""
+    if not text:
+        return None, None
+    low = str(text).casefold()
+    # Strip parentheses, colons etc so 'German (C1)' and 'Deutsch: fließend' parse.
+    words = re.findall(r"[a-zäöüß]+", low)
+    language = None
+    for w in words:
+        canon = _LANGUAGE_CANONICAL.get(w)
+        if canon:
+            language = canon
+            break
+    if language is None:
+        return None, None
+    level = None
+    for pattern, value in _LANGUAGE_LEVELS:
+        if pattern.search(low):
+            level = value
+            break
+    return language, level
+
+
+def _cv_languages(cv_data: Dict[str, Any]) -> List[Tuple[str, Optional[int], str]]:
+    """(canonical, level, original text) for every language the CV states."""
+    found: List[Tuple[str, Optional[int], str]] = []
+    raw = cv_data.get("languages") or []
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                text = " ".join(str(item.get(k) or "") for k in ("language", "fluency", "level", "proficiency"))
+            else:
+                text = str(item)
+            canon, level = _parse_language(text)
+            if canon:
+                found.append((canon, level, text.strip()))
+    # Older extractions crammed 'German (native)' into skills; honour those too.
+    skills = cv_data.get("skills") or []
+    if isinstance(skills, list):
+        for s in skills:
+            canon, level = _parse_language(str(s))
+            if canon and _eligibility_kind(str(s)) == "language":
+                found.append((canon, level, str(s).strip()))
+    return found
+
+
+def _check_language(requirement: str, cv_langs: List[Tuple[str, Optional[int], str]]) -> EligibilityCheck:
+    want, want_level = _parse_language(requirement)
+    if want is None:
+        return EligibilityCheck(requirement=requirement, kind="language", status="unclear",
+                                rationale="Could not identify which language is required.")
+    if not cv_langs:
+        return EligibilityCheck(
+            requirement=requirement, kind="language", status="unclear",
+            rationale="CV lists no languages. Add a Languages section so this requirement can be confirmed.",
+        )
+    have = [(lvl, text) for canon, lvl, text in cv_langs if canon == want]
+    if not have:
+        return EligibilityCheck(
+            requirement=requirement, kind="language", status="unmet",
+            rationale=f"CV lists languages but not {want.title()}.",
+        )
+    best_level, best_text = max(have, key=lambda h: (h[0] if h[0] is not None else -1))
+    if want_level is None or best_level is None:
+        note = "" if want_level is None else f" Required level {_LEVEL_LABEL.get(want_level, want_level)}; CV states no level, so it is assumed met."
+        return EligibilityCheck(requirement=requirement, kind="language", status="met",
+                                matched_with=best_text, rationale=f"CV lists {best_text}.{note}")
+    if best_level >= want_level:
+        return EligibilityCheck(requirement=requirement, kind="language", status="met",
+                                matched_with=best_text, rationale=f"CV lists {best_text}, at or above the required level.")
+    return EligibilityCheck(
+        requirement=requirement, kind="language", status="unmet", matched_with=best_text,
+        rationale=(f"CV states {best_text} ({_LEVEL_LABEL.get(best_level, best_level)}), below the required "
+                   f"{_LEVEL_LABEL.get(want_level, want_level)}."),
+    )
+
+
+def _cv_education_entries(cv_data: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """(searchable text, display label) for each education entry (dict or str)."""
+    out: List[Tuple[str, str]] = []
+    raw = cv_data.get("education") or []
+    if not isinstance(raw, list):
+        return out
+    for entry in raw:
+        if isinstance(entry, dict):
+            degree = str(entry.get("degree") or "")
+            institution = str(entry.get("institution") or "")
+            dates = str(entry.get("dates") or entry.get("duration") or "")
+            details = " ".join(str(d) for d in (entry.get("details") or []) if d)
+            text = " ".join(p for p in (degree, institution, dates, details) if p)
+            label = degree or institution or text[:60]
+        else:
+            text = str(entry)
+            label = text[:60]
+        if text.strip():
+            out.append((text, label))
+    return out
+
+
+def _fields_in(text: str) -> set:
+    low = text.casefold()
+    hits = set()
+    for family, terms in _FIELD_FAMILIES.items():
+        for term in terms:
+            if re.search(rf"(?<![\w-]){re.escape(term)}(?![\w-])", low):
+                hits.add(family)
+                break
+    return hits
+
+
+def _degree_level_in(text: str) -> Optional[int]:
+    levels = [lvl for pattern, lvl in _DEGREE_LEVEL_PATTERNS if pattern.search(text)]
+    return max(levels) if levels else None
+
+
+def _entry_is_ongoing(text: str) -> bool:
+    if _ONGOING_DATES_RE.search(text):
+        return True
+    years = [int(y) for y in re.findall(r"\b(20\d{2}|19\d{2})\b", text)]
+    return bool(years) and max(years) >= datetime.now().year
+
+
+def _check_education(requirement: str, entries: List[Tuple[str, str]]) -> EligibilityCheck:
+    req_low = requirement.casefold()
+    wants_enrollment = bool(_ENROLLMENT_RE.search(req_low))
+    want_fields = _fields_in(requirement)
+    want_level = _degree_level_in(requirement)
+    related_ok = bool(_RELATED_FIELD_RE.search(req_low))
+
+    if not _education_is_checkable(requirement):
+        return EligibilityCheck(requirement=requirement, kind="education", status="unclear",
+                                rationale="Requirement is too vague to check automatically.")
+    if not entries:
+        return EligibilityCheck(requirement=requirement, kind="education", status="unclear",
+                                rationale="CV lists no education entries.")
+
+    best: Optional[Tuple[int, str, List[str]]] = None  # (score, label, problems)
+    for text, label in entries:
+        problems: List[str] = []
+        if want_fields:
+            have_fields = _fields_in(text)
+            if not (have_fields & want_fields) and not (related_ok and have_fields):
+                problems.append(f"field of study does not match ({', '.join(sorted(want_fields))})")
+        if want_level is not None:
+            have_level = _degree_level_in(text)
+            # An enrolled Bachelor student satisfies "student in CS"; a
+            # completed-degree requirement needs the level itself.
+            if not wants_enrollment and (have_level is None or have_level < want_level):
+                problems.append("degree level below requirement")
+        if wants_enrollment and not _entry_is_ongoing(text):
+            problems.append("no ongoing enrollment visible (no 'expected'/'present' date)")
+        score = 3 - len(problems)
+        if best is None or score > best[0]:
+            best = (score, label, problems)
+
+    assert best is not None
+    score, label, problems = best
+    if not problems:
+        return EligibilityCheck(requirement=requirement, kind="education", status="met",
+                                matched_with=label, rationale=f"Satisfied by '{label}'.")
+    # Only a field mismatch or level shortfall is a real miss; a missing
+    # enrollment date is more often a CV formatting gap than a fact.
+    status = "unmet" if any(not p.startswith("no ongoing") for p in problems) else "unclear"
+    return EligibilityCheck(requirement=requirement, kind="education", status=status,
+                            matched_with=label, rationale=f"Closest entry '{label}': {'; '.join(problems)}.")
+
+
+def _check_eligibility(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> List[EligibilityCheck]:
+    """Every language / education requirement on the posting, checked against the CV."""
+    def _clean(raw: Any) -> List[str]:
+        return [str(s).strip() for s in raw if s and str(s).strip()] if isinstance(raw, list) else []
+
+    languages = _clean(job_data.get("required_languages"))
+    education = _clean(job_data.get("education_requirements"))
+    # Misfiled items from the skill lists (see _technical_skill_lists).
+    known_languages = {_parse_language(l)[0] for l in languages}
+    for s in _clean(job_data.get("required_skills") or job_data.get("skills")):
+        kind = _eligibility_kind(s)
+        if kind == "language":
+            canon = _parse_language(s)[0]
+            if canon not in known_languages:
+                languages.append(s)
+                known_languages.add(canon)
+        elif kind == "education" and _norm_key(s) not in {_norm_key(e) for e in education}:
+            education.append(s)
+
+    checks: List[EligibilityCheck] = []
+    if languages:
+        cv_langs = _cv_languages(cv_data)
+        checks.extend(_check_language(req, cv_langs) for req in languages)
+    if education:
+        entries = _cv_education_entries(cv_data)
+        checks.extend(_check_education(req, entries) for req in education)
+    return checks
+
+
+# ============================================
+# Eligibility questions — asking instead of guessing
+# ============================================
+#
+# An 'unclear' requirement means the CV is silent. Rather than leaving it
+# unscored for good, the orchestrator asks the user (confirm_eligibility
+# gate) and feeds the answers back through the same deterministic checks.
+
+LANGUAGE_LEVEL_OPTIONS: List[str] = ["native", "C2", "C1", "B2", "B1", "A2", "A1", "none"]
+_NEGATIVE_ANSWERS = {"no", "none", "nein", "keine", "kein", "n", "-"}
+_LEVEL_OPTION_BY_ORDINAL = {7: "native", 6: "C2", 5: "C1", 4: "B2", 3: "B1", 2: "A2", 1: "A1"}
+
+
+def _education_is_checkable(requirement: str) -> bool:
+    """False for requirements too vague for _check_education ('good education')."""
+    return bool(
+        _ENROLLMENT_RE.search(requirement.casefold())
+        or _fields_in(requirement)
+        or _degree_level_in(requirement) is not None
+    )
+
+
+def eligibility_questions(checks: List[Any]) -> List[Dict[str, Any]]:
+    """
+    One question per unclear requirement the user can settle: a language
+    level, current enrollment, or the degree when the CV lists none.
+    Requirements too vague to check get no question. Ids are positional
+    (q0, q1, ...) and stable for the same report.
+    """
+    questions: List[Dict[str, Any]] = []
+    for raw in checks or []:
+        check = raw if isinstance(raw, EligibilityCheck) else EligibilityCheck.model_validate(raw)
+        if check.status != "unclear":
+            continue
+        question: Dict[str, Any] = {"requirement": check.requirement, "kind": check.kind}
+        if check.kind == "language":
+            language = _parse_language(check.requirement)[0]
+            if not language:
+                continue
+            question.update(
+                language=language.title(),
+                prompt=f"What is your {language.title()} level?",
+                options=LANGUAGE_LEVEL_OPTIONS,
+            )
+        else:
+            if not _education_is_checkable(check.requirement):
+                continue
+            if check.matched_with:
+                question.update(
+                    matched_with=check.matched_with,
+                    prompt=(
+                        f"Are you currently enrolled in {check.matched_with}? If so, when do you "
+                        "expect to graduate? Answer 'no' if you're not enrolled."
+                    ),
+                    placeholder="e.g. Expected: September 2027",
+                )
+            else:
+                question.update(
+                    prompt="Which degree or study program have you completed or are you enrolled in? Answer 'no' if none.",
+                    placeholder="e.g. B.Sc. Computer Science, expected 2027",
+                )
+        question["id"] = f"q{len(questions)}"
+        questions.append(question)
+    return questions
+
+
+def eligibility_answers_from_text(questions: List[Dict[str, Any]], text: str) -> Dict[str, str]:
+    """
+    Best-effort answers from free text such as "German native, English C1",
+    for answers that arrive through chat instead of the form. Only language
+    levels are read this way; anything ambiguous is left unanswered.
+    """
+    answers: Dict[str, str] = {}
+    segments = [s for s in re.split(r"[,;\n]|\band\b|\bund\b", text or "", flags=re.IGNORECASE) if s.strip()]
+    for q in questions:
+        if q.get("kind") != "language":
+            continue
+        for segment in segments:
+            language, level = _parse_language(segment)
+            if language and language.title() == q["language"] and level is not None:
+                answers[q["id"]] = _LEVEL_OPTION_BY_ORDINAL[level]
+                break
+    return answers
+
+
+def rescore_eligibility(
+    report: CompatibilityReport,
+    cv_data: Dict[str, Any],
+    job_data: Dict[str, Any],
+    overrides: Optional[Dict[str, EligibilityCheck]] = None,
+) -> CompatibilityReport:
+    """
+    Recompute eligibility (and with it the aggregate, level and
+    interpretation) for an updated CV without re-running the embedding and
+    LLM parts of scoring. ``overrides`` replaces the computed check for a
+    requirement, keyed by requirement text.
+    """
+    overrides = overrides or {}
+    checks = [overrides.get(c.requirement, c) for c in _check_eligibility(cv_data, job_data)]
+    other_warnings = [w for w in report.warnings if not w.startswith("Level capped")]
+    rescored = _finish_report(report.dimensions, checks, report.gap_analysis, other_warnings)
+    # Skill rows don't depend on eligibility; the knockouts do.
+    return rescored.model_copy(update={
+        "rubric": list(report.rubric),
+        "knockouts": knockout_rows(checks, job_data),
+    })
+
+
+def apply_eligibility_answers(
+    cv_data: Dict[str, Any],
+    job_data: Dict[str, Any],
+    report: CompatibilityReport,
+    answers: Dict[str, str],
+) -> Tuple[Dict[str, Any], CompatibilityReport, List[str]]:
+    """
+    Fold the user's confirm_eligibility answers into the CV and the report.
+
+    - A language level is added to the CV's languages (the user stated it,
+      and DACH postings expect a Languages section); 'none' marks it unmet.
+    - Enrollment / degree answers are checked with the same rules as CV
+      entries but are not written into the CV's education entries, which
+      would restructure them; the narration suggests adding them instead.
+    - Questions left unanswered keep their 'unclear' status: adding one
+      language must not turn every other language requirement into "CV
+      lists languages but not X".
+
+    Returns (updated cv_data, rescored report, notes for the narration).
+    """
+    questions = eligibility_questions(report.gap_analysis.eligibility)
+    previous = {c.requirement: c for c in report.gap_analysis.eligibility}
+    cv = copy.deepcopy(cv_data)
+    overrides: Dict[str, EligibilityCheck] = {}
+    notes: List[str] = []
+    education_entries = {label: text for text, label in _cv_education_entries(cv)}
+
+    for q in questions:
+        requirement = q["requirement"]
+        answer = (answers.get(q["id"]) or "").strip()
+        if not answer:
+            overrides[requirement] = previous[requirement]
+            continue
+        negative = answer.casefold() in _NEGATIVE_ANSWERS
+        if q["kind"] == "language":
+            if negative:
+                overrides[requirement] = EligibilityCheck(
+                    requirement=requirement, kind="language", status="unmet",
+                    rationale=f"You said you don't speak {q['language']}.",
+                )
+            else:
+                languages = cv.get("languages")
+                if not isinstance(languages, list):
+                    languages = []
+                languages.append({"language": q["language"], "fluency": answer})
+                cv["languages"] = languages
+                notes.append(f"Added {q['language']} ({answer}) to your CV's Languages section.")
+            continue
+
+        if negative:
+            overrides[requirement] = EligibilityCheck(
+                requirement=requirement, kind="education", status="unmet",
+                rationale="You said this does not apply to you.",
+            )
+            continue
+        label = q.get("matched_with") or answer
+        entry_text = education_entries.get(q.get("matched_with") or "", "")
+        check = _check_education(requirement, [(f"{entry_text} {answer}".strip(), label)])
+        overrides[requirement] = check.model_copy(update={
+            "rationale": f"You confirmed: {answer}. {check.rationale}",
+        }) if check.status != "unclear" else previous[requirement]
+        notes.append(
+            f"Noted '{answer}' for scoring. Your CV doesn't show it yet; add it to the "
+            "education entry if you want recruiters to see it."
+        )
+
+    return cv, rescore_eligibility(report, cv, job_data, overrides), notes
+
+
+def _score_eligibility(checks: List[EligibilityCheck]) -> Tuple[Optional[float], str]:
+    """
+    Score over the requirements the CV lets us decide. Returns a None score
+    when nothing is decidable (no requirements, or all unclear), and the
+    caller then leaves the dimension out of the weighted sum.
+    """
+    unclear = [c.requirement for c in checks if c.status == "unclear"]
+    decided = [c for c in checks if c.status != "unclear"]
+    if not decided:
+        if not checks:
+            return None, "Posting states no language or education requirements."
+        return None, f"Not scored until confirmed (the CV says nothing about): {', '.join(unclear)}."
+    score = sum(ELIGIBILITY_STATUS_SCORE[c.status] for c in decided) / len(decided)
+    met = [c.requirement for c in decided if c.status == "met"]
+    unmet = [c.requirement for c in decided if c.status == "unmet"]
+    parts = [f"{len(met)} of {len(decided)} checked requirements met."]
+    if unmet:
+        parts.append(f"Unmet: {', '.join(unmet)}.")
+    if unclear:
+        parts.append(f"Not scored until confirmed: {', '.join(unclear)}.")
+    return score, " ".join(parts)
+
+
+# ============================================
 # Dimension Scorers
 # ============================================
 
-def _score_hard_skills(matches: List[SkillMatch]) -> Tuple[float, str]:
+SkillBucket = Literal["matched", "transferable", "learnable", "missing"]
+
+
+def _bucket(match: SkillMatch) -> SkillBucket:
+    """The GapAnalysis bucket of one match. Learnable is decided by kind, not
+    score, so a learnable skill never drifts into 'transferable' (covered)."""
+    if match.kind == "learnable":
+        return "learnable"
+    if match.transferability >= MATCHED_THRESHOLD:
+        return "matched"
+    if match.transferability >= TRANSFERABLE_THRESHOLD:
+        return "transferable"
+    return "missing"
+
+
+def _bucket_counts(matches: List[SkillMatch]) -> Tuple[int, int, int, int]:
+    """(matched, transferable, learnable, missing), the same split as GapAnalysis."""
+    buckets = [_bucket(m) for m in matches]
+    return (buckets.count("matched"), buckets.count("transferable"),
+            buckets.count("learnable"), buckets.count("missing"))
+
+
+def _bucket_summary(matches: List[SkillMatch]) -> str:
+    matched, transferable, learnable, missing = _bucket_counts(matches)
+    parts = [f"{matched} matched", f"{transferable} transferable"]
+    if learnable:
+        parts.append(f"{learnable} learnable")
+    parts.append(f"{missing} missing")
+    return ", ".join(parts)
+
+
+def _score_hard_skills(matches: List[SkillMatch], job_level: str = "") -> Tuple[float, str]:
     """
-    Weighted average of transferability across required + preferred skills.
-    Required skills are weighted 2x preferred.
+    Required-skill coverage first, nice-to-haves as a level-scaled bonus.
+
+    - required coverage = mean transferability over required skills (after
+      OR-group collapse); this is the backbone of the score.
+    - preferred coverage = mean over preferred skills, blended in with a
+      weight that depends on the role level (student postings barely expect
+      their wish-list; senior postings expect most of it).
+    - the blend can lift the score at most REQUIRED_COVERAGE_HEADROOM above
+      required coverage, so missing the one must-have is never rescued by
+      collecting nice-to-haves.
     """
     if not matches:
         return 0.0, "No required or preferred skills declared on the job."
-    total = 0.0
-    weight_sum = 0.0
-    for m in matches:
-        w = 2.0 if m.is_required else 1.0
-        total += m.transferability * w
-        weight_sum += w
-    score = total / weight_sum if weight_sum > 0 else 0.0
-    matched_count = sum(1 for m in matches if m.kind in ("direct", "family"))
-    transferable_count = sum(1 for m in matches if m.kind == "transferable")
-    missing_count = sum(1 for m in matches if m.kind == "missing")
-    rationale = (
-        f"{matched_count} matched, {transferable_count} transferable, "
-        f"{missing_count} missing across {len(matches)} job skills "
-        "(required weighted 2x preferred)."
-    )
-    return score, rationale
+
+    required = [m for m in matches if m.is_required]
+    preferred = [m for m in matches if not m.is_required]
+    req_cov = sum(m.transferability for m in required) / len(required) if required else None
+    pref_cov = sum(m.transferability for m in preferred) / len(preferred) if preferred else None
+
+    bucket = _level_bucket(job_level)
+    pw = PREFERRED_SKILL_WEIGHT_BY_LEVEL.get(bucket, PREFERRED_SKILL_WEIGHT_BY_LEVEL["mid"])
+
+    if req_cov is None:
+        score = pref_cov or 0.0
+    elif pref_cov is None:
+        score = req_cov
+    else:
+        score = req_cov * (1.0 - pw) + pref_cov * pw
+        score = min(score, req_cov + REQUIRED_COVERAGE_HEADROOM)
+    score = max(0.0, min(1.0, score))
+
+    parts: List[str] = []
+    if required:
+        parts.append(f"Required: {_bucket_summary(required)} of {len(required)}.")
+    if preferred:
+        parts.append(
+            f"Preferred: {_bucket_summary(preferred)} of {len(preferred)} "
+            f"(weighted {int(round(pw * 100))}% for a {bucket}-level role)."
+        )
+    return score, " ".join(parts)
 
 
-_YEARS_RE = re.compile(r"(\d{1,2})\s*(?:\+|plus)?\s*(?:years?|yrs?)", re.IGNORECASE)
-_DATE_RANGE_RE = re.compile(
-    r"(\d{4})\s*[-–to]+\s*(present|current|now|\d{4})", re.IGNORECASE
+# "3+ years of professional experience", "5 Jahre Berufserfahrung"; deliberately
+# NOT a bare "N years", which also matches "10 years old codebase".
+_YEARS_RE = re.compile(
+    r"(\d{1,2})\s*(?:\+|plus)?\s*(?:years?|yrs?|jahren?)\s+(?:of\s+)?(?:\w+\s+){0,2}?"
+    r"(?:experience|exp\b|berufserfahrung|erfahrung)",
+    re.IGNORECASE,
 )
+# One end of a date range: "2024", "March 2024", "Sep. 2023", "März 2021",
+# "10/2023", "03.2021". Month names in English and German, matched on their
+# first three letters.
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "mär": 3, "apr": 4, "may": 5, "mai": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "okt": 10, "nov": 11, "dec": 12, "dez": 12,
+}
+_MONTH_NAME = (
+    r"jan(?:uary|uar)?|feb(?:ruary|ruar)?|m(?:ar|är)(?:ch|z)?|apr(?:il)?|ma[yi]|jun[ei]?|jul[iy]?"
+    r"|aug(?:ust)?|sep(?:t(?:ember)?)?|o[ck]t(?:ober)?|nov(?:ember)?|de[cz](?:ember)?"
+)
+_DATE_POINT = (
+    r"(?:(?:(?P<{p}mon>" + _MONTH_NAME.replace("{", "{{").replace("}", "}}") + r")\.?\s+)"
+    r"|(?:(?P<{p}mm>\d{{1,2}})[./]))?(?P<{p}y>(?:19|20)\d{{2}})"
+)
+_OPEN_END = r"(?P<open>present|current|now|today|ongoing|heute|aktuell|jetzt|dato)"
+# The separator accepts the LaTeX "--" that the CV extraction schema itself
+# asks for ("March 2026 -- August 2026"); the old single-dash-then-year
+# pattern read every such range as zero years.
+_DATE_RANGE_RE = re.compile(
+    _DATE_POINT.format(p="s") + r"\s*(?:-{1,2}|–|—|to|until|bis)\s*(?:"
+    + _OPEN_END + "|" + _DATE_POINT.format(p="e") + r")\b",
+    re.IGNORECASE,
+)
+# "since 2022", "seit März 2021": an ongoing role written without an end.
+_SINCE_RE = re.compile(r"\b(?:since|seit)\s+" + _DATE_POINT.format(p="s") + r"\b", re.IGNORECASE)
+
+
+def _month_of(name: Optional[str], number: Optional[str]) -> Optional[int]:
+    """Month 1-12 from a month name or number, or None when absent/invalid."""
+    if name:
+        return _MONTHS.get(name.casefold()[:3])
+    if number and 1 <= int(number) <= 12:
+        return int(number)
+    return None
+
+
+def _range_months(match: "re.Match[str]", now: datetime) -> Tuple[int, int]:
+    """
+    (start, end) of a matched range as absolute month indices (year * 12 +
+    month - 1), end exclusive. A missing month counts as January at both ends,
+    so year-only ranges keep their old meaning ("2022 - 2024" is two years);
+    a named end month is included ("Mar 2024 -- Aug 2024" is six months).
+    """
+    groups = match.groupdict()
+    start_month = _month_of(groups.get("smon"), groups.get("smm")) or 1
+    start = int(groups["sy"]) * 12 + start_month - 1
+    if groups.get("ey"):
+        end_month = _month_of(groups.get("emon"), groups.get("emm"))
+        # "March -- August" includes August; a bare end year keeps the old
+        # year-only arithmetic.
+        end = int(groups["ey"]) * 12 + (end_month if end_month else 0)
+    else:  # open end ("present") or a "since" phrase
+        end = now.year * 12 + now.month - 1
+    return start, end
+
+
+def _experience_entries(cv_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    experience = cv_data.get("experience") or cv_data.get("experiences") or []
+    return [e for e in experience if isinstance(e, dict)] if isinstance(experience, list) else []
 
 
 def _estimate_candidate_years(cv_data: Dict[str, Any]) -> float:
     """
-    Rough heuristic for candidate's years of experience from CV text.
+    Rough heuristic for candidate's years of experience.
 
-    Looks for explicit "X years" mentions first, then falls back to summing
-    YYYY-YYYY (or YYYY-Present) ranges in experience entries.
+    An explicit "N years of experience" claim wins. Otherwise sum the date
+    ranges of experience entries only (never education), merging overlaps so
+    two concurrent part-time roles do not count double.
     """
-    blobs = _flatten_cv_skill_mentions(cv_data)
-    full_text = " ".join(blobs)
-
+    full_text = " ".join(_flatten_cv_skill_mentions(cv_data))
     explicit = [int(m.group(1)) for m in _YEARS_RE.finditer(full_text)]
     if explicit:
         return float(max(explicit))
 
-    total_years = 0.0
-    current_year = datetime.now().year
-    for match in _DATE_RANGE_RE.finditer(full_text):
-        try:
-            start = int(match.group(1))
-            end_token = match.group(2).lower()
-            end = current_year if end_token in ("present", "current", "now") else int(end_token)
-            if start <= end <= current_year and end - start <= 50:
-                total_years += end - start
-        except (ValueError, AttributeError):
-            continue
-    return total_years
+    now = datetime.now()
+    latest = now.year * 12 + now.month - 1
+    intervals: List[Tuple[int, int]] = []
+    for exp in _experience_entries(cv_data):
+        text = " ".join(str(exp.get(k) or "") for k in ("duration", "dates", "start_date", "end_date"))
+        matches = list(_DATE_RANGE_RE.finditer(text)) or list(_SINCE_RE.finditer(text))
+        for match in matches:
+            start, end = _range_months(match, now)
+            # A contracted end date in the future counts only up to today.
+            end = min(end, latest)
+            if start <= end and end - start <= 50 * 12:
+                intervals.append((start, end))
+
+    total_months = 0
+    covered_until: Optional[int] = None
+    for start, end in sorted(intervals):
+        if covered_until is not None and start < covered_until:
+            start = covered_until
+        if end > start:
+            total_months += end - start
+        covered_until = end if covered_until is None else max(covered_until, end)
+    return total_months / 12.0
 
 
 def _score_experience(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tuple[float, str]:
@@ -799,33 +1613,41 @@ def _score_experience(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tupl
     return score, f"Candidate ~{candidate_years:.0f}y experience vs {required}+ required."
 
 
-_SENIORITY_SCORE = {
-    "intern": 0,
-    "entry": 1,
-    "junior": 1,
-    "associate": 2,
-    "mid": 3,
-    "intermediate": 3,
-    "senior": 4,
-    "staff": 5,
-    "principal": 6,
-    "lead": 5,
-    "manager": 5,
-    "director": 6,
-    "head": 6,
-    "vp": 7,
-    "cto": 7,
-}
+# Whole-word patterns, so 'Internal Tools Developer' is not an intern and
+# 'Leadership' is not a lead. Student rungs are explicit: a Werkstudent
+# posting or title was previously 'no seniority signal'.
+_SENIORITY_PATTERNS: List[Tuple["re.Pattern[str]", int]] = [
+    (re.compile(r"\b(?:werkstudent(?:in)?|working student|student|intern(?:ship)?|praktikant(?:in)?|trainee)\b", re.I), 0),
+    (re.compile(r"\b(?:entry|junior|graduate)\b", re.I), 1),
+    (re.compile(r"\bassociate\b", re.I), 2),
+    (re.compile(r"\b(?:mid|mid-level|intermediate)\b", re.I), 3),
+    (re.compile(r"\bsenior\b", re.I), 4),
+    (re.compile(r"\b(?:staff|lead|manager)\b", re.I), 5),
+    (re.compile(r"\b(?:principal|director|head)\b", re.I), 6),
+    (re.compile(r"\b(?:vp|cto|chief)\b", re.I), 7),
+]
 
 
 def _seniority_to_score(level_text: str) -> Optional[int]:
+    """Highest seniority rung named in the text, or None if none is."""
     if not level_text:
         return None
-    txt = level_text.lower()
-    for key, val in _SENIORITY_SCORE.items():
-        if key in txt:
-            return val
-    return None
+    hits = [score for pattern, score in _SENIORITY_PATTERNS if pattern.search(level_text)]
+    return max(hits) if hits else None
+
+
+def _level_bucket(job_level: str) -> str:
+    """Coarse role level for weighting: student / junior / mid / senior."""
+    score = _seniority_to_score(job_level or "")
+    if score is None:
+        return "mid"
+    if score == 0:
+        return "student"
+    if score <= 2:
+        return "junior"
+    if score == 3:
+        return "mid"
+    return "senior"
 
 
 def _score_seniority(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tuple[float, str]:
@@ -852,6 +1674,8 @@ def _score_seniority(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tuple
         return 0.7, "Neither job nor CV provided clear seniority signals; neutral score."
 
     if not cand_scores:
+        if job_score is not None and job_score <= 1:
+            return 0.8, f"Job level '{job_level}' expects little prior seniority; CV titles carry no level, which is normal here."
         return 0.5, f"Job level '{job_level}' provided but no seniority signals on CV."
 
     cand_max = max(cand_scores)
@@ -903,39 +1727,41 @@ def _score_domain(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tuple[fl
     try:
         cv_emb = get_embeddings([cv_domain_text])[0]
         job_emb = get_embeddings([job_domain_text])[0]
-        score = cosine_similarity(cv_emb, job_emb)
-        return score, f"Embedding cosine of CV domain vs job domain = {score:.3f}."
+        cos = cosine_similarity(cv_emb, job_emb)
+        span = DOMAIN_COSINE_CEIL - DOMAIN_COSINE_FLOOR
+        score = max(0.0, min(1.0, (cos - DOMAIN_COSINE_FLOOR) / span)) if span > 0 else cos
+        return score, f"Embedding cosine of CV domain vs job domain = {cos:.3f} (rescaled to {score:.2f})."
     except Exception as e:
         return 0.5, f"Domain embedding failed ({str(e)[:60]}); neutral score."
 
 
 def _score_ats_keywords(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tuple[float, str]:
-    """Reuse the existing BM25 average; ATS systems still do exact-keyword filtering."""
-    cv_sections = _flatten_cv_skill_mentions(cv_data)
-    if not cv_sections:
+    """
+    Share of the posting's skill terms that appear verbatim (or under a known
+    alias) somewhere on the CV. This is what a keyword filter actually checks;
+    unlike hard_skills it gives no credit for family or transferable matches.
+
+    The previous BM25 average was min-max normalized across CV sections, so
+    the best section always scored 1.0 and the worst 0.0 regardless of fit.
+    """
+    cv_text = " ".join(_flatten_cv_skill_mentions(cv_data))
+    if not cv_text.strip():
         return 0.0, "CV has no extractable section text for ATS scoring."
-    job_text_parts = []
-    job_text_parts.append(str(job_data.get("job_title") or ""))
-    for r in (job_data.get("responsibilities") or []):
-        if r:
-            job_text_parts.append(str(r))
-    for s in (job_data.get("required_skills") or []):
-        if s:
-            job_text_parts.append(str(s))
-    for q in (job_data.get("qualifications") or []):
-        if q:
-            job_text_parts.append(str(q))
-    job_text = " ".join(p for p in job_text_parts if p.strip())
-    if not job_text:
-        return 0.5, "Job has no ATS keyword text; neutral score."
-    try:
-        scores = _calculate_bm25_scores(job_text, cv_sections)
-        if not scores:
-            return 0.0, "BM25 produced no scores."
-        avg = sum(scores) / len(scores)
-        return avg, f"BM25 average across {len(cv_sections)} CV sections = {avg:.3f}."
-    except Exception as e:
-        return 0.0, f"BM25 calculation failed: {str(e)[:60]}."
+    required, preferred = _technical_skill_lists(job_data)
+    terms: List[str] = []
+    seen: set = set()
+    for t in required + preferred:
+        key = _norm_key(t)
+        if key and key not in seen:
+            seen.add(key)
+            terms.append(t)
+    if not terms:
+        return 0.5, "Job lists no skill terms to check; neutral score."
+    present = [t for t in terms if (p := _skill_mention_pattern(t)) is not None and p.search(cv_text)]
+    score = len(present) / len(terms)
+    absent = [t for t in terms if t not in present]
+    detail = f"; not found verbatim: {', '.join(absent[:6])}" if absent else ""
+    return score, f"{len(present)} of {len(terms)} job skill terms appear verbatim on the CV{detail}."
 
 
 # ============================================
@@ -945,11 +1771,11 @@ def _score_ats_keywords(cv_data: Dict[str, Any], job_data: Dict[str, Any]) -> Tu
 def _calculate_compatibility_score_v2_internal(
     cv_data: Dict[str, Any], job_data: Dict[str, Any]
 ) -> CompatibilityReport:
-    warnings: List[str] = []
-
     matches = _match_skill_pairs_internal(cv_data, job_data)
+    eligibility = _check_eligibility(cv_data, job_data)
+    job_level = str(job_data.get("job_level") or job_data.get("level") or job_data.get("job_title") or "")
 
-    hard_score, hard_rationale = _score_hard_skills(matches)
+    hard_score, hard_rationale = _score_hard_skills(matches, job_level)
     exp_score, exp_rationale = _score_experience(cv_data, job_data)
     sen_score, sen_rationale = _score_seniority(cv_data, job_data)
     dom_score, dom_rationale = _score_domain(cv_data, job_data)
@@ -967,22 +1793,74 @@ def _calculate_compatibility_score_v2_internal(
         DimensionScore(name="ats_keywords", score=ats_score,
                        weight=COMPATIBILITY_WEIGHTS["ats_keywords"], rationale=ats_rationale),
     ]
+    gap = _build_gap_analysis_internal(matches, cv_data, job_data, eligibility)
+    report = _finish_report(dimensions, eligibility, gap)
 
-    weight_total = sum(d.weight for d in dimensions) or 1.0
-    aggregate = sum(d.score * d.weight for d in dimensions) / weight_total
-    aggregate = max(0.0, min(1.0, aggregate))
+    ledger = build_fact_ledger(cv_data, index_cv_bullets(cv_data))
+    judged = any(m.scored_by == "llm_judge" for m in matches)
+    return report.model_copy(update={
+        "rubric": skill_rows(matches, [_bucket(m) for m in matches], job_data, ledger,
+                             judge_model=model_for("judge") if judged else None),
+        "knockouts": knockout_rows(eligibility, job_data),
+    })
 
+
+def _finish_report(
+    dimensions: List[DimensionScore],
+    eligibility: List[EligibilityCheck],
+    gap: GapAnalysis,
+    warnings: Optional[List[str]] = None,
+) -> CompatibilityReport:
+    """
+    Aggregate, level, eligibility cap and interpretation from the skill/
+    experience/seniority/domain/ATS dimensions plus the eligibility checks.
+
+    Shared by the full scorer and by rescore_eligibility, which swaps in new
+    eligibility checks (after the user answered questions) without re-running
+    the embedding and LLM parts of scoring.
+    """
+    warnings = list(warnings or [])
+    dims = [d for d in dimensions if d.name != "eligibility"]
+    # Show eligibility only when the posting states such requirements and the
+    # CV lets us decide at least one. Its weight is 0 (see COMPATIBILITY_WEIGHTS):
+    # knockouts are reported, and an unmet one caps the level below.
+    elig_score, elig_rationale = _score_eligibility(eligibility)
+    if elig_score is not None:
+        dims.insert(1, DimensionScore(name="eligibility", score=elig_score,
+                                      weight=COMPATIBILITY_WEIGHTS["eligibility"], rationale=elig_rationale))
+
+    weight_total = sum(d.weight for d in dims) or 1.0
+    aggregate = max(0.0, min(1.0, sum(d.score * d.weight for d in dims) / weight_total))
     level = _band_for_score(aggregate)
 
-    gap = _build_gap_analysis_internal(matches, cv_data, job_data)
+    # A stated must-have the CV positively fails (wrong field of study, missing
+    # required language) caps the band: the number can still be high because
+    # everything else fits, but 'high compatibility' would mislead the user.
+    unmet = [c for c in eligibility if c.status == "unmet"]
+    if unmet and level in ("high", "excellent"):
+        level = "medium"
+        warnings.append(
+            "Level capped at medium: the CV does not meet "
+            + ", ".join(c.requirement for c in unmet) + "."
+        )
 
-    interpretation = _interpret_report(level, hard_score, exp_score, sen_score, dom_score, ats_score, gap)
+    gap = gap.model_copy(update={"eligibility": list(eligibility)})
+    scores = {d.name: d.score for d in dims}
+    interpretation = _interpret_report(
+        level,
+        scores.get("hard_skills", 1.0),
+        scores.get("experience", 1.0),
+        scores.get("seniority", 1.0),
+        scores.get("domain", 1.0),
+        scores.get("ats_keywords", 1.0),
+        gap,
+    )
 
     return CompatibilityReport(
         aggregate_score=round(aggregate, 4),
         level=level,
         interpretation=interpretation,
-        dimensions=dimensions,
+        dimensions=dims,
         gap_analysis=gap,
         warnings=warnings,
     )
@@ -998,12 +1876,32 @@ def _interpret_report(
     gap: GapAnalysis,
 ) -> str:
     parts = [f"Overall {level} compatibility."]
-    if gap.matched_skills:
-        parts.append(f"{len(gap.matched_skills)} skills directly matched.")
+    req_missing = [m.required_skill for m in gap.missing_skills if m.is_required]
+    pref_missing = [m.required_skill for m in gap.missing_skills if not m.is_required]
+    # Covered means held, or held via an interchangeable related skill. A
+    # learnable skill is still a gap and is named as one.
+    req_covered = sum(1 for m in gap.matched_skills + gap.transferable_skills if m.is_required)
+    req_total = req_covered + sum(1 for m in gap.learnable_skills + gap.missing_skills if m.is_required)
+    if req_total:
+        parts.append(f"Required skills: {req_covered} of {req_total} covered.")
+    if req_missing:
+        parts.append(f"Genuine gaps on required skills: {', '.join(req_missing)}.")
     if gap.transferable_skills:
-        parts.append(f"{len(gap.transferable_skills)} transferable skills can be bridged.")
-    if gap.missing_skills:
-        parts.append(f"{len(gap.missing_skills)} required skills are genuine gaps.")
+        parts.append(f"{len(gap.transferable_skills)} skills are covered via a closely related skill.")
+    learnable = [
+        f"{m.required_skill} (via {m.matched_with})" if m.matched_with else m.required_skill
+        for m in gap.learnable_skills
+    ]
+    if learnable:
+        parts.append(f"Not on the CV but learnable from adjacent experience: {', '.join(learnable)}.")
+    if pref_missing:
+        parts.append(f"Nice-to-haves not on the CV: {', '.join(pref_missing)}.")
+    unmet = [c.requirement for c in gap.eligibility if c.status == "unmet"]
+    unclear = [c.requirement for c in gap.eligibility if c.status == "unclear"]
+    if unmet:
+        parts.append(f"Eligibility not met: {', '.join(unmet)}.")
+    if unclear:
+        parts.append(f"Not on the CV, so not scored until you confirm: {', '.join(unclear)}.")
     if hard < 0.5:
         parts.append("Hard-skill coverage is the main weakness.")
     if exp < 0.5:
@@ -1018,16 +1916,23 @@ def calculate_compatibility_score_v2(cv_json: str, job_json: str) -> str:
     """
     Multi-dimensional compatibility score (v2) with skill-graph transferability.
 
-    Combines five dimensions:
-    - hard_skills (40%): per-skill transferability via direct/family/embedding/LLM cascade
+    Combines five weighted dimensions (normalised by their total):
+    - hard_skills (40%): required-skill coverage via direct/family/embedding/LLM
+      cascade, plus a level-scaled nice-to-have bonus capped just above it
     - experience (15%): years-of-experience match with steep under-penalty
-    - seniority (15%): ordinal job-level vs candidate title comparison
-    - domain (15%): embedding cosine of domain context (titles/responsibilities)
-    - ats_keywords (15%): BM25 average for exact-keyword ATS filters
+    - seniority (10%): ordinal job-level vs candidate title comparison
+    - domain (10%): rescaled embedding cosine of domain context
+    - ats_keywords (10%): share of job skill terms present verbatim on the CV
+    plus eligibility (required languages, degree / field of study, enrollment,
+    checked as met / unclear / unmet), shown as a dimension with weight 0:
+    these are knockouts, and an unmet one caps the level at 'medium' with a
+    warning instead of being averaged in.
 
-    Returns a CompatibilityReport with full per-dimension breakdown and a
-    GapAnalysis bucketing skills into matched / transferable / missing /
-    over-qualified, including draft bridge bullets for transferable skills.
+    Returns a CompatibilityReport with the per-dimension breakdown, a
+    GapAnalysis bucketing skills into matched / transferable / learnable /
+    missing / over-qualified plus the eligibility checks, the requirement
+    rubric (each skill requirement with its status and CV evidence), and the
+    knockouts (eligibility plus the posting's stated conditions).
 
     Args:
         cv_json: ResumeInfo JSON from cv_agent.
@@ -1121,24 +2026,24 @@ def _detect_over_qualified_signals(
 
 
 def _build_gap_analysis_internal(
-    matches: List[SkillMatch], cv_data: Dict[str, Any], job_data: Dict[str, Any]
+    matches: List[SkillMatch],
+    cv_data: Dict[str, Any],
+    job_data: Dict[str, Any],
+    eligibility: Optional[List[EligibilityCheck]] = None,
 ) -> GapAnalysis:
-    matched: List[SkillMatch] = []
-    transferable: List[SkillMatch] = []
-    missing: List[SkillMatch] = []
+    buckets: Dict[str, List[SkillMatch]] = {"matched": [], "transferable": [], "learnable": [], "missing": []}
     for m in matches:
-        if m.transferability >= MATCHED_THRESHOLD:
-            matched.append(m)
-        elif m.transferability >= TRANSFERABLE_THRESHOLD:
-            transferable.append(m)
-        else:
-            missing.append(m)
+        buckets[_bucket(m)].append(m)
     over = _detect_over_qualified_signals(cv_data, job_data, matches)
+    if eligibility is None:
+        eligibility = _check_eligibility(cv_data, job_data)
     return GapAnalysis(
-        matched_skills=matched,
-        transferable_skills=transferable,
-        missing_skills=missing,
+        matched_skills=buckets["matched"],
+        transferable_skills=buckets["transferable"],
+        learnable_skills=buckets["learnable"],
+        missing_skills=buckets["missing"],
         over_qualified_signals=over,
+        eligibility=eligibility,
     )
 
 

@@ -12,6 +12,15 @@ import { useFileUpload } from '@/hooks/useFileUpload';
 import { useJobInput } from '@/hooks/useJobInput';
 import { useOrchestratorChat } from '@/hooks/useOrchestratorChat';
 
+/** "Studenten (m/w/d) für die Softwareentwicklung" -> "Studenten"; "Aachen, Germany" -> "Aachen". */
+const shortJobTitle = (title: string): string => {
+  const base = title
+    .replace(/\([^)]*\)/g, '')
+    .split(/\s+(?:für|for|im Bereich|in der|-|–|\|)\s+|,/i)[0]
+    .trim();
+  return base.length > 24 ? `${base.slice(0, 23).trimEnd()}…` : base;
+};
+
 export default function Home() {
   const { isDark, toggleTheme } = useTheme();
   
@@ -168,19 +177,60 @@ export default function Home() {
 
   const bothUploadsComplete = analysisStarted && chatReady && inputsReady;
   const isAnalyzing = isUploading || isJobProcessing;
+
+  // A failed CV or job extraction stops the analysis. Its error is otherwise
+  // only shown on the upload form, which is hidden once the analysis starts,
+  // so the loading screen says why and offers the way back.
+  const resumeFailed = !cvData && !isUploading && !!uploadError;
+  const jobFailed = !jobSkipped && !jobData && !isJobProcessing && !!jobError;
+  const analysisError = resumeFailed ? uploadError : jobFailed ? jobError : null;
   const hasJobInput = isValidJobInput;
 
+  // The chat screen fills the window: slim top bar, then chat and review side by side.
+  const inChat = bothUploadsComplete;
+  const bannerMargin = inChat ? 'm-3' : '';
+
   return (
-    <div className="flex min-h-screen flex-col bg-canvas">
-      <Header isDark={isDark} toggleTheme={toggleTheme} />
+    <div className={`flex flex-col bg-canvas ${inChat ? 'h-dvh overflow-hidden' : 'min-h-screen'}`}>
+      <Header
+        isDark={isDark}
+        toggleTheme={toggleTheme}
+        center={
+          inChat ? (
+            <ProgressBreadcrumb
+              compact
+              resumeUploaded={!!uploadedFile}
+              jobUploaded={!!jobData}
+              jobSkipped={jobSkipped}
+              jobInputValid={isValidJobInput}
+              analysisStarted={analysisStarted}
+              isAnalyzing={isAnalyzing}
+              chatReady={chatReady}
+            />
+          ) : undefined
+        }
+        trailing={
+          inChat && jobData?.job_title ? (
+            <span className="hidden max-w-[16rem] truncate rounded-full border border-border px-3 py-1 text-meta text-ink-muted lg:inline">
+              {[jobData.short_title?.trim() || shortJobTitle(jobData.job_title), jobData.location?.split(',')[0].trim()].filter(Boolean).join(' · ')}
+            </span>
+          ) : undefined
+        }
+      />
 
       {/* Main Content Area */}
-      <main className="container mx-auto flex flex-1 flex-col gap-6 p-6">
+      <main
+        className={
+          inChat
+            ? 'flex min-h-0 flex-1 flex-col'
+            : 'container mx-auto flex flex-1 flex-col gap-6 p-6'
+        }
+      >
         {/* Session Error Banner */}
         {sessionError && (
           <div
             role="alert"
-            className="rounded-lg border border-danger-border bg-danger-surface p-4"
+            className={`rounded-lg border border-danger-border bg-danger-surface p-4 ${bannerMargin}`}
           >
             <div className="flex items-start gap-3">
               <svg
@@ -222,7 +272,7 @@ export default function Home() {
         {isInitializing && (
           <div
             role="status"
-            className="rounded-lg border border-border-strong bg-surface-sunken p-4"
+            className={`rounded-lg border border-border-strong bg-surface-sunken p-4 ${bannerMargin}`}
           >
             <div className="flex items-center gap-3">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
@@ -234,7 +284,7 @@ export default function Home() {
         )}
 
         {/* Progress Breadcrumb — hidden on the landing, before a flow is chosen */}
-        {(analysisStarted || flowMode !== null) && (
+        {!inChat && (analysisStarted || flowMode !== null) && (
           <div className="mb-6">
             <ProgressBreadcrumb
               resumeUploaded={!!uploadedFile}
@@ -249,7 +299,7 @@ export default function Home() {
         )}
 
         {/* Conditional Content: Upload Section or Chat Interface */}
-        <div className="flex flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col">
           {!analysisStarted ? (
             <ErrorBoundary label="the upload form">
             <div className="transition-opacity duration-500 ease-in-out">
@@ -290,26 +340,30 @@ export default function Home() {
           ) : !bothUploadsComplete ? (
             <div className="flex flex-1 animate-fade-in">
               <AnalysisLoadingScreen
-                resumeState={cvData ? 'done' : 'active'}
+                resumeState={cvData ? 'done' : resumeFailed ? 'failed' : 'active'}
                 jobState={
                   jobSkipped
                     ? 'skipped'
                     : jobData
                       ? 'done'
-                      : analysisStarted && cvData && isValidJobInput
-                        ? 'active'
-                        : 'pending'
+                      : jobFailed
+                        ? 'failed'
+                        : analysisStarted && cvData && isValidJobInput
+                          ? 'active'
+                          : 'pending'
                 }
                 preparingState={
-                  cvData && inputsReady 
+                  cvData && inputsReady
                     ? (sessionId && !isInitializing ? 'done' : 'active')
                     : 'pending'
                 }
+                error={analysisError}
+                onBack={() => setAnalysisStarted(false)}
               />
             </div>
           ) : (
             <ErrorBoundary label="the conversation">
-            <div className="flex flex-1 animate-fade-in">
+            <div className="flex min-h-0 flex-1 animate-fade-in">
               <ChatContainer
                 messages={messages}
                 fadingOutMessageId={fadingOutMessageId}
@@ -322,6 +376,8 @@ export default function Home() {
                 onSendMessage={handleSendMessage}
                 onClickUpload={handleClickUpload}
                 sessionReady={!!sessionId && !isInitializing}
+                cvData={cvData}
+                jobData={jobData}
                 pendingGate={pendingGate}
                 onSubmitGateResolution={submitGateResolution}
               />

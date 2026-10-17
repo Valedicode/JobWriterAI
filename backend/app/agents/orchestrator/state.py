@@ -19,6 +19,15 @@ This state holds three classes of data:
    - rewritten_content
    - cover_letter_content
    - cover_letter_language
+   - step_error                 : set when a step's tool failed; read by the
+                                  step_failed gate (retry or stop).
+   - original_cv_data           : the CV as extracted (frozen).
+   - tailored_cv_data           : the tailored CV from step 6; cv_data
+                                  itself is never overwritten.
+   - fact_ledger                : facts the CV and the user state.
+   - chat_proposal              : a chat-requested change awaiting the
+                                  confirm_change gate.
+   - chat_history               : the last few chat turns.
 
    CV-review branch:
    - review_outputs
@@ -78,14 +87,60 @@ class OrchestratorState(TypedDict, total=False):
     company_data: dict[str, Any] | None
 
     # --- job-tailoring artifacts -------------------------------------------
+    bullet_index: dict[str, Any]
     job_summary: dict[str, Any] | None
     compatibility_report: dict[str, Any] | None
+    # Rule-based directives plus "plan" (the validated StrategistPlan, or None
+    # when it couldn't be drafted) and "plan_notes".
     tailoring_strategy: dict[str, Any] | None
+    # The user's notes from editing the plan at the score review.
+    strategy_feedback: list[str]
     selected_content: dict[str, Any] | None
     rewritten_content: dict[str, Any] | None
+    locked_rewrites: list[dict[str, Any]] | None
+    # Bullets the user chose to leave out of the tailored CV at the selection
+    # review; step 6 removes them (cv_data keeps them).
+    left_out_bullet_ids: list[str] | None
     cover_letter_content: dict[str, Any] | None
     cover_letter_language: CoverLetterLanguage | None
     cover_letter_recipient: str | None
+    # Set by a step whose tool failed ({step, label, detail}); routes the graph
+    # to the step_failed gate instead of presenting a fallback as real output.
+    step_error: dict[str, Any] | None
+    # True once the confirm_eligibility gate has been shown, so it is asked
+    # at most once per run (answered or skipped).
+    eligibility_asked: bool
+    # cv_data is the user's CV plus what they confirmed during the session
+    # (eligibility answers, chat profile updates); it is never tailored.
+    # original_cv_data is the CV as extracted, frozen at jt_entry.
+    # tailored_cv_data is written by step 6 and rendered by steps 7-9.
+    original_cv_data: dict[str, Any]
+    tailored_cv_data: dict[str, Any] | None
+    # fact_id -> FactEntry dump: what the CV and the user state
+    # (app.services.fact_ledger). Rewrites may only claim these.
+    fact_ledger: dict[str, dict[str, Any]]
+    # The fact check of the latest rewrite pass (VerifierResult dump), and
+    # which attempt the next check is (1 = first pass, reset when it passes).
+    verifier_result: dict[str, Any] | None
+    verify_attempt: int | None
+    # Step 6: the rubric's evidence searched again in the tailored CV, and
+    # {before, after, preservation, newly_shown} alignment figures.
+    requirement_rubric_after: list[dict[str, Any]] | None
+    alignment: dict[str, Any] | None
+    # The CV language the user chose ("english"/"german"), asked once after
+    # scoring; the CV is translated into it before the plan.
+    cv_language: str | None
+    # {target_language, rows: [{path, original, translated, problem}],
+    # translated_cv} for the approve_translation gate, and the user's notes.
+    translation: dict[str, Any] | None
+    translation_feedback: list[str]
+
+    # --- chat --------------------------------------------------------------
+    # A change the chat proposed (re-run, profile update), waiting at the
+    # confirm_change gate: {kind, summary, details, goto, return_to, restore}.
+    chat_proposal: dict[str, Any] | None
+    # Short-term chat memory: the last few {role, content} turns.
+    chat_history: list[dict[str, str]]
 
     # --- cv-review artifacts -----------------------------------------------
     review_outputs: dict[str, dict[str, Any]]
@@ -112,6 +167,7 @@ def empty_state(flow: FlowName, cv_data: dict[str, Any], **extras: Any) -> Orche
         "job_data": extras.get("job_data"),
         "company_data": extras.get("company_data"),
         "review_outputs": {},
+        "bullet_index": {},
         "generated_files": [],
         "messages": [],
         "last_narration": "",

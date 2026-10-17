@@ -4,8 +4,17 @@
 \usepackage{latexsym}
 \usepackage[empty]{fullpage}
 \usepackage[margin=1cm]{geometry}
-\usepackage[T1]{fontenc}
+\usepackage{iftex}
+\ifPDFTeX
+% pdfLaTeX: 8-bit T1 fonts. cmap (loaded first) and lmodern map the glyphs back
+% to Unicode, so the PDF's text layer is searchable (ATS parsers read it).
+\usepackage{cmap}
 \usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\fi
+% XeTeX / Tectonic use Unicode fonts by default; T1 there drops dashes and
+% prints the sharp s as SS, so no font encoding is set for them.
 \usepackage[ngerman]{babel}
 \usepackage{xcolor}
 \usepackage[hidelinks]{hyperref}
@@ -33,7 +42,7 @@
     \begin{minipage}[b]{0.24\textwidth}
         \raggedright
         {% if phone %}\large {{ phone | latex_escape }} \\{% endif %}
-        {% if email %}\large \href{mailto:{{ email }}}{ {{- email | latex_escape -}} }{% endif %}
+        {% if email %}\large \href{mailto:{{ email | latex_url }}}{ {{- email | latex_escape -}} }{% endif %}
     \end{minipage}%
     \begin{minipage}[b]{0.5\textwidth}
         \centering
@@ -75,6 +84,6 @@
 {{ sign_off | latex_escape }} \\
 {{ name | latex_escape }} \\
 {% if phone %}{{ phone | latex_escape }} \\{% endif %}
-{% if email %}\href{mailto:{{ email }}}{ {{- email | latex_escape -}} }{% endif %}
+{% if email %}\href{mailto:{{ email | latex_url }}}{ {{- email | latex_escape -}} }{% endif %}
 
 \end{document}

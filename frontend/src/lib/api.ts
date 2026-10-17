@@ -346,11 +346,15 @@ export async function orchestratorState(
 // ============================================
 
 /**
- * Download generated file (CV or cover letter)
+ * Download a generated file (CV or cover letter) from the `download_url` the
+ * backend returned with it (`/api/files/<session_id>/<filename>`).
  */
-export async function downloadFile(filename: string): Promise<Blob> {
+export async function downloadFile(downloadUrl: string): Promise<Blob> {
+  if (!downloadUrl.startsWith(`${API_BASE_URL}/files/`)) {
+    throw new APIError('Invalid download link', 0);
+  }
   try {
-    const response = await fetch(`${API_BASE_URL}/files/${filename}`);
+    const response = await fetch(downloadUrl);
 
     if (!response.ok) {
       throw new APIError('File download failed', response.status);

@@ -20,6 +20,8 @@ The output of ``build_harvard_sections`` feeds ``cv.tex.j2``:
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 SECTION_LABELS: dict[str, str] = {
@@ -34,6 +36,140 @@ SECTION_LABELS: dict[str, str] = {
     "languages": "Languages",
     "interests": "Interests",
 }
+
+# Section titles for a CV whose content is in German.
+SECTION_LABELS_DE: dict[str, str] = {
+    "education": "Ausbildung",
+    "work": "Berufserfahrung",
+    "volunteer": "Engagement",
+    "projects": "Projekte",
+    "skills": "Kenntnisse",
+    "awards": "Auszeichnungen",
+    "certificates": "Zertifikate",
+    "publications": "Veröffentlichungen",
+    "languages": "Sprachen",
+    "interests": "Interessen",
+}
+
+# Words the adapter itself writes into the CV, per content language.
+_PHRASES = {
+    "english": {"grade": "Grade", "technologies": "Technologies", "present": "present", "skills": "Skills",
+                "languages": "Languages"},
+    "german": {"grade": "Note", "technologies": "Technologien", "present": "heute", "skills": "Kenntnisse",
+               "languages": "Sprachen"},
+}
+
+_MONTH_NUMBERS = {
+    name: n
+    for n, names in enumerate((
+        ("jan", "january", "januar", "jän", "jänner"), ("feb", "february", "februar"),
+        ("mar", "march", "mär", "märz", "maerz"), ("apr", "april"), ("may", "mai"),
+        ("jun", "june", "juni"), ("jul", "july", "juli"), ("aug", "august"),
+        ("sep", "sept", "september"), ("oct", "october", "okt", "oktober"),
+        ("nov", "november"), ("dec", "december", "dez", "dezember"),
+    ), start=1)
+    for name in names
+}
+_MONTH_YEAR_RE = re.compile(r"\b([A-Za-zÄÖÜäöü]{3,9})\.?\s+((?:19|20)\d{2})\b")
+_PRESENT_RE = re.compile(r"\b(present|current|now|today|ongoing|heute|aktuell|jetzt|dato)\b", re.IGNORECASE)
+_RANGE_DASH_RE = re.compile(r"\s*(?:--|–|—|-|\bto\b|\bbis\b)\s*")
+
+
+def format_dates_dach(text: str, language: str = "english") -> str:
+    """'Jan 2022 -- Present' -> '01/2022 – present' ('heute' in German).
+    Text without a recognisable month and year is left as it is."""
+    if not text:
+        return text
+
+    def month_year(match: "re.Match[str]") -> str:
+        month = _MONTH_NUMBERS.get(match.group(1).casefold())
+        return f"{month:02d}/{match.group(2)}" if month else match.group(0)
+
+    converted = _MONTH_YEAR_RE.sub(month_year, text)
+    converted = _PRESENT_RE.sub(_PHRASES.get(language, _PHRASES["english"])["present"], converted)
+    if converted == text:
+        return text
+    return _RANGE_DASH_RE.sub(" – ", converted, count=1)
+
+
+# Skill-graph families by the CV skill group they belong to, for grouping a
+# flat skills list when the strategist didn't group it.
+_SKILL_CATEGORIES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("Programming languages", "Programmiersprachen",
+     ("static_typed_systems_languages", "managed_compiled_languages", "dynamic_languages")),
+    ("Web & backend", "Web & Backend",
+     ("frontend_frameworks", "frontend_meta_frameworks", "css_frameworks", "state_management_js",
+      "backend_python", "backend_node", "backend_jvm", "backend_go", "backend_ruby", "backend_dotnet",
+      "graphql_servers", "auth_protocols", "auth_services", "build_tools_js", "package_managers_js",
+      "mobile_native", "mobile_cross_platform", "sql_databases", "lite_sql", "nosql_document",
+      "nosql_keyvalue", "search_engines", "message_queues", "streaming")),
+    ("ML & data", "ML & Daten",
+     ("deep_learning_frameworks", "classical_ml", "llm_tooling", "vector_databases", "data_processing",
+      "distributed_compute", "data_orchestration", "etl_tools", "bi_tools", "analytics_warehouses",
+      "lakehouse_table_formats")),
+    ("Tools & infrastructure", "Tools & Infrastruktur",
+     ("cloud_providers", "iaas_compute", "serverless_compute", "containers", "container_orchestration",
+      "k8s_tooling", "iac", "ci_cd", "observability_metrics", "observability_tracing", "logging_stack",
+      "testing_js", "testing_e2e", "testing_python")),
+)
+_OTHER_SKILLS = {"english": "Other", "german": "Weitere"}
+
+
+# Words CV skill-category labels are made of ("Backend", "Frontend & Tools",
+# "Programming Languages"), as opposed to skill names.
+_CATEGORY_WORD_RE = re.compile(
+    r"^(?:(?:backend|frontend|tools?|programming|languages?|frameworks?|libraries|databases?|devops|cloud|"
+    r"ml|ai|data|web|mobile|testing|other|platforms?|agents?|infrastructure|technologies)"
+    r"(?:\s*(?:&|and|/|,)\s*|\s+|$))+$",
+    re.IGNORECASE,
+)
+
+
+def normalize_skill_list(skills: Any) -> list[str]:
+    """
+    Skill names only, each once. CV extraction sometimes keeps the CV's own
+    category labels inside the items ('ML / Agent Frameworks: LangChain') and
+    splits a label at its comma ('Backend', 'Frontend & Tools: FastAPI');
+    the labels would otherwise print as skills.
+    """
+    from app.services import skill_graph  # local: keeps the adapter's import light
+
+    items = [s.strip() for s in skills or [] if isinstance(s, str) and s.strip()]
+    names: list[str] = []
+    for i, item in enumerate(items):
+        if ":" in item:
+            item = item.split(":", 1)[1].strip()
+        elif (i + 1 < len(items) and ":" in items[i + 1]
+              and _CATEGORY_WORD_RE.match(item) and not skill_graph.find_family(item)):
+            continue  # the first half of a label split at its comma
+        if item and item.casefold() not in {n.casefold() for n in names}:
+            names.append(item)
+    return names
+
+
+def group_skills(skills: list[str], language: str = "english") -> list[dict[str, Any]]:
+    """
+    A flat skills list as labelled groups, by skill-graph family. Skills the
+    graph doesn't know go into a last 'Other' group. One group only (say,
+    every skill unknown) gets no label, so the section doesn't read
+    'Skills / Skills: ...'.
+    """
+    from app.services import skill_graph  # local: the adapter is imported by the renderer only
+
+    german = language == "german"
+    family_to_group = {family: (de if german else en) for en, de, families in _SKILL_CATEGORIES for family in families}
+    groups: dict[str, list[str]] = {}
+    for skill in skills:
+        if not isinstance(skill, str) or not skill.strip():
+            continue
+        label = family_to_group.get(skill_graph.find_family(skill) or "", _OTHER_SKILLS["german" if german else "english"])
+        groups.setdefault(label, []).append(skill.strip())
+    order = [de if german else en for en, de, _ in _SKILL_CATEGORIES] + list(_OTHER_SKILLS.values())
+    ordered = sorted(groups.items(), key=lambda item: order.index(item[0]))
+    if len(ordered) == 1:
+        return [{"name": "", "keywords": ordered[0][1]}]
+    return [{"name": label, "keywords": names} for label, names in ordered]
+
 
 DEFAULT_SECTION_ORDER: list[str] = [
     "education",
@@ -80,7 +216,7 @@ def _is_json_resume(doc: dict[str, Any]) -> bool:
     return isinstance(doc.get("basics"), dict)
 
 
-def _legacy_to_json_resume(cv_data: dict[str, Any]) -> dict[str, Any]:
+def _legacy_to_json_resume(cv_data: dict[str, Any], language: str = "english") -> dict[str, Any]:
     """Map ResumeInfo-shaped dict into JSON Resume document fields."""
     location = cv_data.get("location")
     basics_location: dict[str, Any] | str = {}
@@ -194,7 +330,7 @@ def _legacy_to_json_resume(cv_data: dict[str, Any]) -> dict[str, Any]:
     skills: list[dict[str, Any]] = []
     if skills_raw:
         if all(isinstance(s, str) for s in skills_raw):
-            skills = [{"name": "Skills", "keywords": [s for s in skills_raw if s.strip()]}]
+            skills = group_skills(skills_raw, language)
         elif all(isinstance(s, dict) for s in skills_raw):
             skills = skills_raw
         else:
@@ -229,11 +365,11 @@ def _legacy_to_json_resume(cv_data: dict[str, Any]) -> dict[str, Any]:
     return doc
 
 
-def to_json_resume(cv_data: dict[str, Any]) -> dict[str, Any]:
+def to_json_resume(cv_data: dict[str, Any], language: str = "english") -> dict[str, Any]:
     """Normalize any supported CV dict into JSON Resume document shape."""
     if _is_json_resume(cv_data):
         return cv_data
-    return _legacy_to_json_resume(cv_data)
+    return _legacy_to_json_resume(cv_data, language)
 
 
 def _bullets(value: Any) -> list[str]:
@@ -322,7 +458,7 @@ def _rows_for_education(items: list[Any]) -> list[dict[str, Any]]:
         score = item.get("score")
         if isinstance(score, str) and score.strip():
             grade = score.strip()
-            if "grade" not in grade.lower() and "gpa" not in grade.lower():
+            if not re.search(r"\b(grade|gpa|note|notendurchschnitt|durchschnitt)\b", grade, re.IGNORECASE):
                 grade = f"Grade: {grade}"
             detail_rows.append(_row(grade))
         for detail in _bullets(item.get("_details")):
@@ -427,7 +563,8 @@ def _rows_for_skills(items: list[Any]) -> list[dict[str, Any]]:
         keywords = ", ".join(_bullets(item.get("keywords")))
         level = item.get("level") or ""
         text = " | ".join(p for p in (keywords, level) if p)
-        rows.append(_item(label=item.get("name") or "Skills", text=text))
+        # A group without a name (the only group) prints without a label.
+        rows.append(_item(label=item.get("name") or "", text=text))
     return rows
 
 
@@ -508,26 +645,33 @@ _ROW_BUILDERS = {
 }
 
 
+def _printable(text: Any) -> str:
+    """Text without the invisible characters PDF extraction picks up: icon-font
+    glyphs (private use), control and format characters. 'Phone' and 'LinkedIn'
+    icons in a CV template otherwise come through as values that print as
+    nothing, leaving empty slots in the contact line."""
+    if not isinstance(text, str):
+        return ""
+    cleaned = "".join(ch for ch in text if unicodedata.category(ch) not in ("Co", "Cc", "Cf", "Cs", "Cn"))
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned if any(ch.isalnum() for ch in cleaned) else ""
+
+
 def _basics_contact_parts(basics: dict[str, Any]) -> list[str]:
     """Contact fragments rendered as ``\\textbullet``-separated header parts:
-    location first, then email/phone, then plain profile URLs."""
+    location first, then email/phone, then plain profile URLs. Empty or
+    invisible values are skipped and repeats dropped, so no slot is blank and
+    nothing appears twice."""
+    candidates = [_location_text(basics.get("location")), basics.get("email"), basics.get("phone"), basics.get("url")]
+    candidates += [p.get("url") for p in basics.get("profiles") or [] if isinstance(p, dict)]
     parts: list[str] = []
-    location = _location_text(basics.get("location"))
-    if location:
-        parts.append(location)
-    for key in ("email", "phone"):
-        value = basics.get(key)
-        if isinstance(value, str) and value.strip():
-            parts.append(value.strip())
-    url = basics.get("url")
-    if isinstance(url, str) and url.strip():
-        parts.append(url.strip())
-    for profile in basics.get("profiles") or []:
-        if not isinstance(profile, dict):
-            continue
-        profile_url = profile.get("url") or ""
-        if isinstance(profile_url, str) and profile_url.strip():
-            parts.append(profile_url.strip())
+    seen: set[str] = set()
+    for value in candidates:
+        part = _printable(value)
+        key = part.casefold().rstrip("/")
+        if part and key not in seen:
+            seen.add(key)
+            parts.append(part)
     return parts
 
 
@@ -551,22 +695,78 @@ def _resolve_section_order(section_order: list[str] | None) -> list[str]:
     return mapped
 
 
+def _localize_entries(entries: list[dict[str, Any]], language: str, convention: str) -> list[dict[str, Any]]:
+    """German wording for the adapter's own words, and DACH date style."""
+    if language != "german" and convention != "dach":
+        return entries
+    phrases = _PHRASES["german"] if language == "german" else _PHRASES["english"]
+    out = []
+    for entry in entries:
+        entry = dict(entry)
+        if "rows" in entry:
+            rows = []
+            for row in entry["rows"]:
+                row = dict(row)
+                if language == "german" and row["left"].startswith("Grade: "):
+                    row["left"] = f"{phrases['grade']}: " + row["left"][len("Grade: "):]
+                if convention == "dach":
+                    row["right"] = format_dates_dach(row["right"], language)
+                rows.append(row)
+            entry["rows"] = rows
+        if language == "german" and isinstance(entry.get("text"), str):
+            entry["text"] = entry["text"].replace("Technologies: ", f"{phrases['technologies']}: ")
+        out.append(entry)
+    return out
+
+
+def _merge_languages_into_skills(sections: list[dict[str, Any]], language: str) -> list[dict[str, Any]]:
+    """Fold a short Languages section into Skills as one labelled line, so it
+    can't end up alone on the last page."""
+    by_type = {s["type"]: s for s in sections}
+    languages, skills = by_type.get("languages"), by_type.get("skills")
+    if not languages or not skills:
+        return sections
+    spoken = ", ".join(
+        f"{e['label']} ({e['text']})" if e.get("text") else e.get("label", "")
+        for e in languages["entries"] if e.get("label")
+    )
+    merged = {**skills, "entries": skills["entries"] + [_item(_PHRASES[language]["languages"], spoken)]}
+    return [merged if s is skills else s for s in sections if s is not languages]
+
+
 def build_harvard_sections(
     cv_data: dict[str, Any],
     section_order: list[str] | None = None,
+    *,
+    language: str = "english",
+    convention: str = "international",
+    merge_languages: bool = True,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     Build template context: basics header fields + ordered sections.
 
     Each section is ``{"type", "title", "style", "entries"}`` where style is
     "entries" (row-based blocks) or "itemize" (compact labelled bullets).
+
+    ``language`` is the language the CV content is written in (section titles
+    follow it); ``convention`` "dach" writes dates as MM/YYYY. Spoken
+    languages become a line in Skills unless ``merge_languages`` is False
+    (or there is no Skills section).
     """
-    doc = to_json_resume(cv_data)
+    language = language if language in _PHRASES else "english"
+    labels = SECTION_LABELS_DE if language == "german" else SECTION_LABELS
+    doc = to_json_resume(cv_data, language)
     basics = doc.get("basics") or {}
+    label, summary = basics.get("label") or "", basics.get("summary") or ""
+    if summary.strip():
+        # With a summary, a headline only restates it (often as a paraphrase
+        # of its first sentence), so the intro read twice. It is printed only
+        # for a CV without a summary.
+        label = ""
     header = {
         "name": basics.get("name") or cv_data.get("name") or "Applicant",
-        "label": basics.get("label") or "",
-        "summary": basics.get("summary") or "",
+        "label": label,
+        "summary": summary,
         "contact_parts": _basics_contact_parts(basics),
     }
 
@@ -585,9 +785,11 @@ def build_harvard_sections(
         sections.append(
             {
                 "type": section_type,
-                "title": SECTION_LABELS[section_type],
+                "title": labels[section_type],
                 "style": "itemize" if section_type in _ITEMIZE_SECTIONS else "entries",
-                "entries": entries,
+                "entries": _localize_entries(entries, language, convention),
             }
         )
+    if merge_languages:
+        sections = _merge_languages_into_skills(sections, language)
     return header, sections
