@@ -105,7 +105,8 @@ def main():
         per_device_train_batch_size=2,
         gradient_accumulation_steps=1 if args.smoke else 8,
         num_train_epochs=args.epochs, max_steps=12 if args.smoke else -1,
-        learning_rate=1e-2 if args.smoke else 2e-4,  # smoke: high LR so a falling loss proves LoRA learns lr_scheduler_type="cosine", warmup_steps=0.03,  # float = ratio in transformers 5
+        learning_rate=1e-2 if args.smoke else 2e-4,  # smoke: high LR so a falling loss proves LoRA learns
+        lr_scheduler_type="cosine", warmup_steps=0.03,  # float in [0, 1) = ratio of total steps (transformers 5)
         gradient_checkpointing=quantized, bf16=bf16, fp16=quantized and not bf16,
         eval_strategy="epoch" if not args.smoke else "no", save_strategy="epoch" if not args.smoke else "no",
         logging_steps=1 if args.smoke else 10, report_to="none",
