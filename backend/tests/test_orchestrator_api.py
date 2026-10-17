@@ -407,3 +407,29 @@ def test_chat_action_outside_allowed_actions_is_refused(enabled_client, patched_
         )
     assert resp.status_code == 400
     assert _pending_step(enabled_client, session_id) == "present_score"
+
+
+def test_leave_out_decision_passes_through_the_api(enabled_client, patched_tools):
+    """The API schema must accept every choice the gates accept: 'leave_out'
+    used to be refused with 422 before it reached the selection gate."""
+    from app.services.bullet_index import index_cv_bullets
+
+    bullet_id = next(
+        b for b, ref in index_cv_bullets(CV).items() if ref["text"] == "Designed the first algorithm"
+    )
+    selected = json.loads(json.dumps(SELECTED))
+    selected["selected_bullets"][0]["bullet_id"] = bullet_id
+    with patch(
+        "app.agents.orchestrator.nodes_job_tailoring.select_prioritize_content",
+        _fake_tool(lambda _: json.dumps(selected)),
+    ):
+        session_id = _start(enabled_client)
+        assert _send(enabled_client, session_id, action="approve").json()["pending_gate"]["step"] == "approve_selection"
+        resp = _send(
+            enabled_client, session_id, action="approve", step="approve_selection",
+            decisions={bullet_id: {"choice": "leave_out"}},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert any("1 left out of the tailored CV" in n for n in body["narrations"])
+    assert body["pending_gate"]["step"] == "approve_rewrite"
