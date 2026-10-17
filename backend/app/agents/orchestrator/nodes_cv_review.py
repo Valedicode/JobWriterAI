@@ -997,7 +997,7 @@ def cr_step7_finalize(state: OrchestratorState, config: RunnableConfig) -> dict[
     """Assemble the revised CV and export a downloadable PDF via LaTeX."""
     revised_cv = _assemble_reviewed_cv(state)
     applicant_name = revised_cv.get("name", "Applicant")
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(applicant_name or "applicant")).strip("_").lower() or "applicant"
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(applicant_name or "applicant"))[:80].strip("_").lower() or "applicant"
     pdf_name = f"{slug}_cv_reviewed.pdf"
 
     generated = list(state.get("generated_files") or [])

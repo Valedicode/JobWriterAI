@@ -25,7 +25,7 @@ from app.agents.writer_agent import (
     generate_cover_letter_pdf,
     generate_cv_pdf,
 )
-from app.services.file_store import get_file_store
+from app.services.file_store import UNSAFE_FILENAME_MESSAGE, get_file_store, is_safe_filename
 from app.services.latex_renderer import extract_recipient_name
 from app.models.schemas import (
     CoverLetterContent,
@@ -137,10 +137,10 @@ def generate_cv(request: GenerateTailoredCVRequest):
                 detail=f"Invalid tailoring plan: {str(e)}"
             )
 
-        if not request.output_filename.endswith('.pdf'):
+        if not is_safe_filename(request.output_filename):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Output filename must end with .pdf"
+                detail=UNSAFE_FILENAME_MESSAGE,
             )
 
         cv_json = json.dumps(request.cv_data)
@@ -217,10 +217,10 @@ def generate_cover_letter(request: GenerateCoverLetterRequest):
                 detail=f"Invalid job data: {str(e)}"
             )
 
-        if not request.output_filename.endswith('.pdf'):
+        if not is_safe_filename(request.output_filename):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Output filename must end with .pdf"
+                detail=UNSAFE_FILENAME_MESSAGE,
             )
 
         cv_json = json.dumps(request.cv_data)

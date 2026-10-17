@@ -52,6 +52,7 @@ from app.agents.scoring_agent import (
     build_gap_analysis,
     _calculate_compatibility_score_v2_internal,
 )
+from app.services.file_store import UNSAFE_FILENAME_MESSAGE, is_safe_filename
 from app.services.latex_renderer import (
     compile_tex_to_pdf,
     render_cover_letter_tex,
@@ -311,8 +312,8 @@ def generate_cv_pdf(
         "Layout note: ..." line per page-layout problem that couldn't be fixed
     """
     try:
-        if not output_filename.lower().endswith(".pdf"):
-            return "Error: Output filename must end with .pdf"
+        if not is_safe_filename(output_filename):
+            return f"Error: {UNSAFE_FILENAME_MESSAGE}"
 
         try:
             cv_data = json.loads(cv_json)
@@ -370,8 +371,8 @@ def generate_cover_letter_pdf(
     data/); it defaults to data/ itself.
     """
     try:
-        if not output_filename.lower().endswith(".pdf"):
-            return "Error: Output filename must end with .pdf"
+        if not is_safe_filename(output_filename):
+            return f"Error: {UNSAFE_FILENAME_MESSAGE}"
 
         try:
             content = json.loads(content_json)
