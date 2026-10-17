@@ -8,7 +8,7 @@
 
 import { useState } from 'react';
 import type { CoverLetterPrint } from '@/types';
-import { Paper, PaperText, pt } from './Paper';
+import { A4, Paper, PaperText, pt } from './Paper';
 
 /** The templates' UI_blue. */
 const BLUE = 'rgb(32, 64, 151)';
@@ -48,7 +48,7 @@ export const CoverLetterSheet = ({ letter, fields, onChange, disabled }: CoverLe
   return (
     // 11pt article, 1cm margins (less at the top, where CSS adds half-leading
     // above the first line and LaTeX doesn't); LaTeX's 13.6pt baseline skip.
-    <Paper label="Cover letter" fontSize={11} lineHeight={13.6 / 11} margin={[22, 28.35, 28.35]}>
+    <Paper label="Cover letter" page={A4} fontSize={11} lineHeight={13.6 / 11} margin={[22, 28.35, 28.35]}>
       <header
         className="grid items-end"
         style={{ gridTemplateColumns: '24% 50% 24%', columnGap: '1%' }}
