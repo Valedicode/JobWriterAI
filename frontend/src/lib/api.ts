@@ -24,6 +24,11 @@ import {
   OrchestratorMessageRequest,
   OrchestratorResponse,
   OrchestratorStateResponse,
+  CoverLetterEditRequest,
+  CoverLetterView,
+  DocumentResetRequest,
+  DocumentSaveResponse,
+  DocumentsResponse,
   TranscriptionRequest,
   TranscriptionResponse,
   TranslationRequest,
@@ -338,6 +343,48 @@ export async function orchestratorState(
 ): Promise<OrchestratorStateResponse> {
   return apiFetch<OrchestratorStateResponse>(`/orchestrator/state/${sessionId}`, {
     method: 'GET',
+  });
+}
+
+// ============================================
+// Documents API (the finished CV and cover letter in the editor)
+// ============================================
+
+/** The session's finished documents as their PDFs print them (null until a PDF exists). */
+export async function getDocuments(sessionId: string): Promise<DocumentsResponse> {
+  return apiFetch<DocumentsResponse>(`/documents/${sessionId}`, { method: 'GET' });
+}
+
+/** The cover letter with unsaved edits applied (e.g. the salutation for a new recipient). */
+export async function viewCoverLetter(
+  sessionId: string,
+  request: CoverLetterEditRequest
+): Promise<CoverLetterView> {
+  return apiFetch<CoverLetterView>(`/documents/${sessionId}/cover-letter/view`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/** Save edits to the cover letter; its PDF is generated again. */
+export async function saveCoverLetter(
+  sessionId: string,
+  request: CoverLetterEditRequest
+): Promise<DocumentSaveResponse> {
+  return apiFetch<DocumentSaveResponse>(`/documents/${sessionId}/cover-letter`, {
+    method: 'PUT',
+    body: JSON.stringify(request),
+  });
+}
+
+/** Go back to the cover letter the flow generated. */
+export async function resetCoverLetter(
+  sessionId: string,
+  request: DocumentResetRequest
+): Promise<DocumentSaveResponse> {
+  return apiFetch<DocumentSaveResponse>(`/documents/${sessionId}/cover-letter/reset`, {
+    method: 'POST',
+    body: JSON.stringify(request),
   });
 }
 
