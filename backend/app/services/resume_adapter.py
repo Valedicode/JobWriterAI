@@ -16,6 +16,11 @@ The output of ``build_harvard_sections`` feeds ``cv.tex.j2``:
   ``left \\hfill right`` lines, plus an optional bullet list) or "itemize"
   (one compact bullet per entry with an optional bold label, used for skills
   and projects).
+
+Every printed string is joined from segments that know the CV-data field they
+came from. ``build_harvard_view`` returns the same sections with the segments
+kept, for the CV editor, which shows the CV as it prints and writes each edit
+back to its field. tests/golden/cv_tex.json pins the LaTeX output.
 """
 
 from __future__ import annotations
@@ -218,8 +223,32 @@ def _is_json_resume(doc: dict[str, Any]) -> bool:
     return isinstance(doc.get("basics"), dict)
 
 
+def _first(item: dict[str, Any], *keys: str) -> tuple[Any, str]:
+    """The first of ``keys`` with a truthy value (as ``item.get(a) or item.get(b)``
+    would pick it) and the key it came from; the first key when none has one,
+    so an edit to an empty field lands on the canonical key."""
+    for key in keys:
+        if item.get(key):
+            return item[key], key
+    return None, keys[0]
+
+
+def _sourced(items: Any, section: str) -> list[Any]:
+    """Copies of a list's dict entries marked with where they came from
+    (``section.i``); the caller's dicts are never modified."""
+    return [{**item, "_src": f"{section}.{i}"} if isinstance(item, dict) else item
+            for i, item in enumerate(items or [])]
+
+
 def _legacy_to_json_resume(cv_data: dict[str, Any], language: str = "english") -> dict[str, Any]:
-    """Map ResumeInfo-shaped dict into JSON Resume document fields."""
+    """
+    Map ResumeInfo-shaped dict into JSON Resume document fields.
+
+    Each converted entry carries ``_src`` (its path in ``cv_data``, e.g.
+    ``experience.0``) and ``_keys`` (which ``cv_data`` key each converted field
+    was read from), so every printed piece of text can name the field it came
+    from (see ``_path``) and the CV editor can write an edit back to it.
+    """
     location = cv_data.get("location")
     basics_location: dict[str, Any] | str = {}
     if isinstance(location, str) and location.strip():
@@ -235,15 +264,18 @@ def _legacy_to_json_resume(cv_data: dict[str, Any], language: str = "english") -
     ):
         url = cv_data.get(key)
         if isinstance(url, str) and url.strip():
-            profiles.append({"network": network, "url": url.strip()})
+            profiles.append({"network": network, "url": url.strip(), "_key": key})
 
     work: list[dict[str, Any]] = []
-    for item in cv_data.get("experience") or []:
+    for i, item in enumerate(cv_data.get("experience") or []):
         if isinstance(item, str):
-            work.append({"name": "", "position": item, "highlights": []})
+            work.append({"name": "", "position": item, "highlights": [],
+                         "_src": f"experience.{i}", "_keys": {"position": ""}})
             continue
         if not isinstance(item, dict):
             continue
+        highlights, highlights_key = _first(item, "responsibilities", "highlights")
+        duration, duration_key = _first(item, "duration", "dates")
         work.append(
             {
                 "name": item.get("company") or "",
@@ -251,65 +283,83 @@ def _legacy_to_json_resume(cv_data: dict[str, Any], language: str = "english") -
                 "startDate": item.get("startDate") or "",
                 "endDate": item.get("endDate") or "",
                 "summary": item.get("summary") or "",
-                "highlights": item.get("responsibilities")
-                or item.get("highlights")
-                or [],
-                "_duration": item.get("duration") or item.get("dates") or "",
+                "highlights": highlights or [],
+                "_duration": duration or "",
                 "_location": item.get("location") or "",
+                "_src": f"experience.{i}",
+                "_keys": {"name": "company", "highlights": highlights_key, "_duration": duration_key,
+                          "_location": "location"},
             }
         )
 
     education: list[dict[str, Any]] = []
-    for item in cv_data.get("education") or []:
+    for i, item in enumerate(cv_data.get("education") or []):
         if isinstance(item, str):
-            education.append({"institution": "", "area": "", "studyType": "", "_text": item.strip()})
+            education.append({"institution": "", "area": "", "studyType": "", "_text": item.strip(),
+                              "_src": f"education.{i}", "_keys": {"_text": ""}})
             continue
         if not isinstance(item, dict):
             continue
+        institution, institution_key = _first(item, "institution", "school")
+        area, area_key = _first(item, "area", "degree")
+        score, score_key = _first(item, "score", "grade", "gpa")
         education.append(
             {
-                "institution": item.get("institution") or item.get("school") or "",
-                "area": item.get("area") or item.get("degree") or "",
+                "institution": institution or "",
+                "area": area or "",
                 "studyType": item.get("studyType") or "",
                 "startDate": item.get("startDate") or "",
                 "endDate": item.get("endDate") or "",
-                "score": item.get("score") or item.get("grade") or item.get("gpa") or "",
+                "score": score or "",
                 "courses": item.get("courses") or [],
                 "_text": item.get("text") or "",
                 "_location": item.get("location") or "",
                 "_dates": item.get("dates") or "",
                 "_details": item.get("details") or [],
+                "_src": f"education.{i}",
+                "_keys": {"institution": institution_key, "area": area_key, "score": score_key, "_text": "text",
+                          "_location": "location", "_dates": "dates", "_details": "details"},
             }
         )
 
     volunteer: list[dict[str, Any]] = []
-    for item in cv_data.get("volunteer") or cv_data.get("leadership_activities") or []:
+    volunteer_raw, volunteer_section = _first(cv_data, "volunteer", "leadership_activities")
+    for i, item in enumerate(volunteer_raw or []):
         if isinstance(item, str):
-            volunteer.append({"organization": "", "position": item, "highlights": []})
+            volunteer.append({"organization": "", "position": item, "highlights": [],
+                              "_src": f"{volunteer_section}.{i}", "_keys": {"position": ""}})
             continue
         if not isinstance(item, dict):
             continue
+        organization, organization_key = _first(item, "organization", "company")
+        position, position_key = _first(item, "position", "role")
+        summary, summary_key = _first(item, "description", "summary")
+        duration, duration_key = _first(item, "dates", "duration")
         volunteer.append(
             {
-                "organization": item.get("organization") or item.get("company") or "",
-                "position": item.get("position") or item.get("role") or "",
+                "organization": organization or "",
+                "position": position or "",
                 "startDate": item.get("startDate") or "",
                 "endDate": item.get("endDate") or "",
-                "summary": item.get("description") or item.get("summary") or "",
+                "summary": summary or "",
                 "highlights": item.get("highlights") or [],
-                "_duration": item.get("dates") or item.get("duration") or "",
+                "_duration": duration or "",
                 "_location": item.get("location") or "",
+                "_src": f"{volunteer_section}.{i}",
+                "_keys": {"organization": organization_key, "position": position_key, "summary": summary_key,
+                          "_duration": duration_key, "_location": "location"},
             }
         )
 
     projects: list[dict[str, Any]] = []
-    for item in cv_data.get("projects") or []:
+    for i, item in enumerate(cv_data.get("projects") or []):
         if isinstance(item, str):
-            projects.append({"name": item, "description": "", "highlights": []})
+            projects.append({"name": item, "description": "", "highlights": [],
+                             "_src": f"projects.{i}", "_keys": {"name": ""}})
             continue
         if not isinstance(item, dict):
             continue
-        highlights = list(item.get("highlights") or item.get("outcomes") or [])
+        highlights, highlights_key = _first(item, "highlights", "outcomes")
         technologies = item.get("technologies") or []
         tech_text = ""
         if isinstance(technologies, list) and technologies:
@@ -323,8 +373,11 @@ def _legacy_to_json_resume(cv_data: dict[str, Any], language: str = "english") -
                 "startDate": item.get("startDate") or "",
                 "endDate": item.get("endDate") or "",
                 "url": item.get("url") or "",
-                "highlights": highlights,
+                "highlights": list(highlights or []),
                 "_technologies": tech_text,
+                "_src": f"projects.{i}",
+                "_keys": {"highlights": highlights_key, "_technologies": "technologies"},
+                "_list_fields": ("_technologies",) if isinstance(technologies, list) else (),
             }
         )
 
@@ -332,37 +385,40 @@ def _legacy_to_json_resume(cv_data: dict[str, Any], language: str = "english") -
     skills: list[dict[str, Any]] = []
     if skills_raw:
         if all(isinstance(s, str) for s in skills_raw):
+            # Grouped here, so the groups have no field of their own to edit.
             skills = group_skills(skills_raw, language)
         elif all(isinstance(s, dict) for s in skills_raw):
-            skills = skills_raw
+            skills = _sourced(skills_raw, "skills")
         else:
             # Mixed content: keep strings under a generic group, dicts as-is.
             flat = [s for s in skills_raw if isinstance(s, str) and s.strip()]
-            skills = [s for s in skills_raw if isinstance(s, dict)]
+            skills = [s for s in _sourced(skills_raw, "skills") if isinstance(s, dict)]
             if flat:
                 skills.append({"name": "Skills", "keywords": flat})
 
+    url, url_key = _first(cv_data, "portfolio_url", "url")
     doc: dict[str, Any] = {
         "basics": {
             "name": cv_data.get("name") or "Applicant",
             "label": cv_data.get("label") or "",
             "email": cv_data.get("email") or "",
             "phone": cv_data.get("phone") or "",
-            "url": cv_data.get("portfolio_url") or cv_data.get("url") or "",
+            "url": url or "",
             "summary": cv_data.get("summary") or "",
             "location": basics_location,
             "profiles": profiles,
+            "_keys": {"url": url_key},
         },
         "work": work,
         "education": education,
         "volunteer": volunteer,
         "projects": projects,
         "skills": skills,
-        "awards": cv_data.get("awards") or [],
-        "certificates": cv_data.get("certificates") or [],
-        "publications": cv_data.get("publications") or [],
-        "languages": cv_data.get("languages") or [],
-        "interests": cv_data.get("interests") or [],
+        "awards": _sourced(cv_data.get("awards"), "awards"),
+        "certificates": _sourced(cv_data.get("certificates"), "certificates"),
+        "publications": _sourced(cv_data.get("publications"), "publications"),
+        "languages": _sourced(cv_data.get("languages"), "languages"),
+        "interests": _sourced(cv_data.get("interests"), "interests"),
     }
     return doc
 
@@ -381,21 +437,112 @@ def _bullets(value: Any) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# Segments: printed text that knows where it came from
+#
+# Every row, bullet and itemize entry is built as a list of segments
+# {"text", "src", "value"?, "kind"?}. ``text`` is what prints; ``src`` the
+# paths in the CV data it came from (empty for the adapter's own words, e.g.
+# "Technologies: " or a separator); ``value`` the field's raw value where the
+# printed text is formatted (DACH dates); ``kind`` "list" for a comma-joined
+# list field. The strings the template prints are joined from the segments as
+# the last step (_finalize), so the editor's view and the PDF can't disagree.
+# --------------------------------------------------------------------------- #
+
+def _seg(text: str, src: list[str] | None = None, kind: str | None = None) -> dict[str, Any]:
+    seg: dict[str, Any] = {"text": text, "src": list(src or [])}
+    if kind:
+        seg["kind"] = kind
+    return seg
+
+
+def _static(text: str) -> dict[str, Any]:
+    """The adapter's own words or punctuation: printed, not editable."""
+    return _seg(text)
+
+
+def _text(segs: list[dict[str, Any]]) -> str:
+    return "".join(s["text"] for s in segs)
+
+
+def _retext(seg: dict[str, Any], text: str) -> None:
+    """Change what a segment prints (formatting), keeping its raw value for editing."""
+    if text != seg["text"]:
+        if seg["src"] and "value" not in seg:
+            seg["value"] = seg["text"]
+        seg["text"] = text
+
+
+def _path(item: dict[str, Any], field: str, *index: int) -> list[str]:
+    """The CV-data path a converted entry's field was read from (``experience.0.company``),
+    or none for data without a source (JSON Resume input, derived groups)."""
+    base = item.get("_src")
+    if base is None:
+        return []
+    key = (item.get("_keys") or {}).get(field, field)
+    return [".".join([base, *([key] if key else []), *(str(i) for i in index)])]
+
+
+def _field_seg(item: dict[str, Any], field: str, text: str) -> list[dict[str, Any]]:
+    """One editable segment for a field, or nothing when it prints nothing."""
+    if not text:
+        return []
+    kind = "list" if field in (item.get("_list_fields") or ()) else None
+    return [_seg(text, _path(item, field), kind)]
+
+
+def _bullet_segs(item: dict[str, Any], field: str) -> list[list[dict[str, Any]]]:
+    """A list field's non-empty items, each as a segment pointing at its own index."""
+    value = item.get(field)
+    if not isinstance(value, list):
+        return []
+    return [[_seg(v.strip(), _path(item, field, j))] for j, v in enumerate(value)
+            if isinstance(v, str) and v.strip()]
+
+
+def _joined(parts: list[list[dict[str, Any]]], separator: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for part in parts:
+        if out:
+            out.append(_static(separator))
+        out.extend(part)
+    return out
+
+
+# --------------------------------------------------------------------------- #
 # Entry shapes for the template
 # --------------------------------------------------------------------------- #
 
-def _row(left: str, right: str = "", bold: bool = False) -> dict[str, Any]:
+def _row(left: list[dict[str, Any]], right: list[dict[str, Any]] | None = None, bold: bool = False) -> dict[str, Any]:
     """One rendered line: ``left \\hfill right`` (left bolded when bold)."""
-    return {"left": left, "right": right, "bold": bold}
+    return {"left": left, "right": right or [], "bold": bold}
 
 
-def _entry(rows: list[dict[str, Any]] | None = None, bullets: list[str] | None = None) -> dict[str, Any]:
-    return {"rows": rows or [], "bullets": bullets or []}
+def _entry(rows: list[dict[str, Any]] | None = None, bullets: list[list[dict[str, Any]]] | None = None,
+           bullets_src: list[str] | None = None) -> dict[str, Any]:
+    """Rows plus a bullet list; ``bullets_src`` is the list's own path, for
+    adding, removing and moving bullets in the editor."""
+    return {"rows": rows or [], "bullets": bullets or [], "bullets_src": list(bullets_src or [])}
 
 
-def _item(label: str, text: str) -> dict[str, Any]:
+def _item(label: list[dict[str, Any]], text: list[dict[str, Any]]) -> dict[str, Any]:
     """One compact itemize entry: optional bold label + text."""
     return {"label": label, "text": text}
+
+
+def _dates_segs(item: dict[str, Any], start_field: str = "startDate", end_field: str = "endDate",
+                fallback_field: str = "_duration") -> list[dict[str, Any]]:
+    """The entry's date range as printed (_date_range), editable as the
+    fallback field (``duration`` / ``dates``), which the range prefers."""
+    fallback = item.get(fallback_field)
+    text = _date_range(item.get(start_field), item.get(end_field), fallback)
+    return [_seg(text, _path(item, fallback_field))] if text else []
+
+
+def _location_segs(item: dict[str, Any]) -> list[dict[str, Any]]:
+    if item.get("_location"):
+        return _field_seg(item, "_location", item["_location"])
+    text = _location_text(item.get("location"))
+    return [_seg(text, _path(item, "location"))] if text else []
 
 
 def _rows_for_work(items: list[Any]) -> list[dict[str, Any]]:
@@ -403,17 +550,13 @@ def _rows_for_work(items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        dates = _date_range(
-            item.get("startDate"),
-            item.get("endDate"),
-            item.get("_duration"),
-        )
-        location = item.get("_location") or _location_text(item.get("location"))
-        company = item.get("name") or ""
-        position = item.get("position") or ""
-        if same_text(company, position):
+        dates = _dates_segs(item)
+        location = _location_segs(item)
+        company = _field_seg(item, "name", item.get("name") or "")
+        position = _field_seg(item, "position", item.get("position") or "")
+        if same_text(_text(company), _text(position)):
             # The title read twice (no employer named), not a company: print it once.
-            company = ""
+            company = []
 
         rows: list[dict[str, Any]] = []
         if company:
@@ -425,9 +568,10 @@ def _rows_for_work(items: list[Any]) -> list[dict[str, Any]]:
 
         summary = item.get("summary") or ""
         if isinstance(summary, str) and summary.strip():
-            rows.append(_row(summary.strip()))
+            rows.append(_row(_field_seg(item, "summary", summary.strip())))
 
-        entries.append(_entry(rows=rows, bullets=_bullets(item.get("highlights"))))
+        entries.append(_entry(rows=rows, bullets=_bullet_segs(item, "highlights"),
+                              bullets_src=_path(item, "highlights")))
     return entries
 
 
@@ -448,39 +592,42 @@ def _rows_for_education(items: list[Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         if item.get("_text"):
-            entries.append(_entry(rows=[_row(str(item["_text"]))]))
+            entries.append(_entry(rows=[_row(_field_seg(item, "_text", str(item["_text"])))]))
             current_institution, current_entry = None, None
             continue
 
         institution = (item.get("institution") or "").strip()
-        location = item.get("_location") or _location_text(item.get("location"))
-        dates = item.get("_dates") or _date_range(item.get("startDate"), item.get("endDate"))
-        study = " ".join(
-            p for p in (item.get("studyType"), item.get("area")) if isinstance(p, str) and p.strip()
-        )
+        location = _location_segs(item)
+        # The written dates as they are; else a start/end range, editable as ``dates``.
+        dates = (_field_seg(item, "_dates", item["_dates"]) if item.get("_dates")
+                 else _dates_segs(item, fallback_field="_dates"))
+        study = _joined([_field_seg(item, field, p) for field in ("studyType", "area")
+                         if isinstance(p := item.get(field), str) and p.strip()], " ")
 
         detail_rows: list[dict[str, Any]] = []
         score = item.get("score")
         if isinstance(score, str) and score.strip():
             grade = score.strip()
+            grade_segs = _field_seg(item, "score", grade)
             if not re.search(r"\b(grade|gpa|note|notendurchschnitt|durchschnitt)\b", grade, re.IGNORECASE):
-                grade = f"Grade: {grade}"
-            detail_rows.append(_row(grade))
-        for detail in _bullets(item.get("_details")):
-            if not repeats_grade(detail, str(score or "")):
-                detail_rows.append(_row(detail))
-        for course in _bullets(item.get("courses")):
-            detail_rows.append(_row(course))
+                grade_segs = [_static("Grade: "), *grade_segs]
+            detail_rows.append(_row(grade_segs))
+        for field in ("_details", "courses"):
+            for segs in _bullet_segs(item, field):
+                if field == "courses" or not repeats_grade(_text(segs), str(score or "")):
+                    detail_rows.append(_row(segs))
 
         if institution and current_entry is not None and institution == current_institution:
-            # Same school: append the degree lines to the open entry.
+            # Same school: append the degree lines to the open entry; the shared
+            # header row now edits both entries' institution.
+            current_entry["rows"][0]["left"][0]["src"].extend(_path(item, "institution"))
             current_entry["rows"].append(_row(study, dates))
             current_entry["rows"].extend(detail_rows)
             continue
 
         rows: list[dict[str, Any]] = []
         if institution:
-            rows.append(_row(institution, location, bold=True))
+            rows.append(_row(_field_seg(item, "institution", institution), location, bold=True))
         if study or dates:
             rows.append(_row(study, dates))
         rows.extend(detail_rows)
@@ -497,18 +644,14 @@ def _rows_for_volunteer(items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        dates = _date_range(
-            item.get("startDate"),
-            item.get("endDate"),
-            item.get("_duration"),
-        )
-        organization = item.get("organization") or ""
-        position = item.get("position") or ""
-        if same_text(organization, position):
-            organization = ""
-        location = item.get("_location") or _location_text(item.get("location"))
+        dates = _dates_segs(item)
+        organization = _field_seg(item, "organization", item.get("organization") or "")
+        position = _field_seg(item, "position", item.get("position") or "")
+        if same_text(_text(organization), _text(position)):
+            organization = []
+        location = _location_segs(item)
         summary = item.get("summary") or ""
-        bullets = _bullets(item.get("highlights"))
+        bullets = _bullet_segs(item, "highlights")
 
         # Legacy flat-string activities: a bare position with no structure.
         if position and not organization and not dates and not bullets and not summary:
@@ -524,31 +667,32 @@ def _rows_for_volunteer(items: list[Any]) -> list[dict[str, Any]]:
             rows.append(_row(position, dates or location, bold=True))
 
         if isinstance(summary, str) and summary.strip():
-            rows.append(_row(summary.strip()))
+            rows.append(_row(_field_seg(item, "summary", summary.strip())))
 
-        entries.append(_entry(rows=rows, bullets=bullets))
+        entries.append(_entry(rows=rows, bullets=bullets, bullets_src=_path(item, "highlights")))
     return entries
 
 
-def _project_text(item: dict[str, Any]) -> str:
+def _project_text(item: dict[str, Any]) -> list[dict[str, Any]]:
     """Fold a project's description, technologies, and highlights into one
     compact paragraph for the itemize entry."""
-    parts: list[str] = []
+    parts: list[list[dict[str, Any]]] = []
     description = item.get("description")
     if isinstance(description, str) and description.strip():
-        parts.append(description.strip())
+        parts.append(_field_seg(item, "description", description.strip()))
     tech = item.get("_technologies") or ""
     if isinstance(tech, str) and tech.strip():
-        parts.append(f"Technologies: {tech.strip()}.")
-    for highlight in _bullets(item.get("highlights")):
+        parts.append([_static("Technologies: "), *_field_seg(item, "_technologies", tech.strip()), _static(".")])
+    for segs in _bullet_segs(item, "highlights"):
+        highlight = _text(segs)
         # Skip a redundant "Technologies: ..." highlight from older data.
         if highlight.lower().startswith("technologies:") and tech:
             continue
-        parts.append(highlight if highlight.endswith((".", "!", "?")) else highlight + ".")
+        parts.append(segs if highlight.endswith((".", "!", "?")) else [*segs, _static(".")])
     url = item.get("url")
     if isinstance(url, str) and url.strip():
-        parts.append(url.strip())
-    return " ".join(parts)
+        parts.append(_field_seg(item, "url", url.strip()))
+    return _joined(parts, " ")
 
 
 def _rows_for_projects(items: list[Any]) -> list[dict[str, Any]]:
@@ -556,7 +700,7 @@ def _rows_for_projects(items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        rows.append(_item(label=item.get("name") or "", text=_project_text(item)))
+        rows.append(_item(label=_field_seg(item, "name", item.get("name") or ""), text=_project_text(item)))
     return rows
 
 
@@ -564,15 +708,17 @@ def _rows_for_skills(items: list[Any]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in items:
         if isinstance(item, str) and item.strip():
-            rows.append(_item(label="", text=item.strip()))
+            rows.append(_item(label=[], text=[_static(item.strip())]))
             continue
         if not isinstance(item, dict):
             continue
         keywords = ", ".join(_bullets(item.get("keywords")))
-        level = item.get("level") or ""
-        text = " | ".join(p for p in (keywords, level) if p)
+        parts = [part for part in (
+            [_seg(keywords, _path(item, "keywords"), "list")] if keywords else [],
+            _field_seg(item, "level", item.get("level") or ""),
+        ) if part]
         # A group without a name (the only group) prints without a label.
-        rows.append(_item(label=item.get("name") or "", text=text))
+        rows.append(_item(label=_field_seg(item, "name", item.get("name") or ""), text=_joined(parts, " | ")))
     return rows
 
 
@@ -581,12 +727,13 @@ def _rows_for_awards(items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        rows = [_row(item.get("title") or "", item.get("date") or "", bold=True)]
+        rows = [_row(_field_seg(item, "title", item.get("title") or ""),
+                     _field_seg(item, "date", item.get("date") or ""), bold=True)]
         if item.get("awarder"):
-            rows.append(_row(item["awarder"]))
+            rows.append(_row(_field_seg(item, "awarder", item["awarder"])))
         summary = item.get("summary") or ""
         if isinstance(summary, str) and summary.strip():
-            rows.append(_row(summary.strip()))
+            rows.append(_row(_field_seg(item, "summary", summary.strip())))
         entries.append(_entry(rows=rows))
     return entries
 
@@ -596,12 +743,13 @@ def _rows_for_certificates(items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        rows = [_row(item.get("name") or "", item.get("date") or "", bold=True)]
+        rows = [_row(_field_seg(item, "name", item.get("name") or ""),
+                     _field_seg(item, "date", item.get("date") or ""), bold=True)]
         if item.get("issuer"):
-            rows.append(_row(item["issuer"]))
+            rows.append(_row(_field_seg(item, "issuer", item["issuer"])))
         url = item.get("url") or ""
         if isinstance(url, str) and url.strip():
-            rows.append(_row(url.strip()))
+            rows.append(_row(_field_seg(item, "url", url.strip())))
         entries.append(_entry(rows=rows))
     return entries
 
@@ -611,12 +759,13 @@ def _rows_for_publications(items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        rows = [_row(item.get("name") or "", item.get("releaseDate") or "", bold=True)]
+        rows = [_row(_field_seg(item, "name", item.get("name") or ""),
+                     _field_seg(item, "releaseDate", item.get("releaseDate") or ""), bold=True)]
         if item.get("publisher"):
-            rows.append(_row(item["publisher"]))
-        summary = item.get("summary") or item.get("url") or ""
+            rows.append(_row(_field_seg(item, "publisher", item["publisher"])))
+        summary, summary_key = _first(item, "summary", "url")
         if isinstance(summary, str) and summary.strip():
-            rows.append(_row(summary.strip()))
+            rows.append(_row(_field_seg(item, summary_key, summary.strip())))
         entries.append(_entry(rows=rows))
     return entries
 
@@ -626,7 +775,8 @@ def _rows_for_languages(items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        rows.append(_item(label=item.get("language") or "", text=item.get("fluency") or ""))
+        rows.append(_item(label=_field_seg(item, "language", item.get("language") or ""),
+                          text=_field_seg(item, "fluency", item.get("fluency") or "")))
     return rows
 
 
@@ -635,7 +785,9 @@ def _rows_for_interests(items: list[Any]) -> list[dict[str, Any]]:
     for item in items:
         if not isinstance(item, dict):
             continue
-        rows.append(_item(label=item.get("name") or "", text=", ".join(_bullets(item.get("keywords")))))
+        keywords = ", ".join(_bullets(item.get("keywords")))
+        rows.append(_item(label=_field_seg(item, "name", item.get("name") or ""),
+                          text=[_seg(keywords, _path(item, "keywords"), "list")] if keywords else []))
     return rows
 
 
@@ -665,21 +817,27 @@ def _printable(text: Any) -> str:
     return cleaned if any(ch.isalnum() for ch in cleaned) else ""
 
 
-def _basics_contact_parts(basics: dict[str, Any]) -> list[str]:
+def _basics_contact_parts(basics: dict[str, Any]) -> list[list[dict[str, Any]]]:
     """Contact fragments rendered as ``\\textbullet``-separated header parts:
     location first, then email/phone, then plain profile URLs. Empty or
     invisible values are skipped and repeats dropped, so no slot is blank and
     nothing appears twice."""
-    candidates = [_location_text(basics.get("location")), basics.get("email"), basics.get("phone"), basics.get("url")]
-    candidates += [p.get("url") for p in basics.get("profiles") or [] if isinstance(p, dict)]
-    parts: list[str] = []
+    sourced = "_keys" in basics  # converted from CV data, so each part has a field
+    candidates = [
+        (_location_text(basics.get("location")), "location"),
+        (basics.get("email"), "email"),
+        (basics.get("phone"), "phone"),
+        (basics.get("url"), (basics.get("_keys") or {}).get("url", "url")),
+    ]
+    candidates += [(p.get("url"), p.get("_key", "")) for p in basics.get("profiles") or [] if isinstance(p, dict)]
+    parts: list[list[dict[str, Any]]] = []
     seen: set[str] = set()
-    for value in candidates:
+    for value, field in candidates:
         part = _printable(value)
         key = part.casefold().rstrip("/")
         if part and key not in seen:
             seen.add(key)
-            parts.append(part)
+            parts.append([_seg(part, [field] if sourced and field else [])])
     return parts
 
 
@@ -704,7 +862,8 @@ def _resolve_section_order(section_order: list[str] | None) -> list[str]:
 
 
 def _localize_entries(entries: list[dict[str, Any]], language: str, convention: str) -> list[dict[str, Any]]:
-    """German wording for the adapter's own words, and DACH date style."""
+    """German wording for the adapter's own words, and DACH date style. Works
+    on the segments, so a formatted date keeps its raw value for editing."""
     if language != "german" and convention != "dach":
         return entries
     phrases = _PHRASES["german"] if language == "german" else _PHRASES["english"]
@@ -714,15 +873,19 @@ def _localize_entries(entries: list[dict[str, Any]], language: str, convention: 
         if "rows" in entry:
             rows = []
             for row in entry["rows"]:
-                row = dict(row)
-                if language == "german" and row["left"].startswith("Grade: "):
-                    row["left"] = f"{phrases['grade']}: " + row["left"][len("Grade: "):]
+                row = {**row, "left": [dict(s) for s in row["left"]], "right": [dict(s) for s in row["right"]]}
+                if language == "german" and row["left"] and row["left"][0]["text"].startswith("Grade: "):
+                    first = row["left"][0]
+                    _retext(first, f"{phrases['grade']}: " + first["text"][len("Grade: "):])
                 if convention == "dach":
-                    row["right"] = format_dates_dach(row["right"], language)
+                    for seg in row["right"]:
+                        _retext(seg, format_dates_dach(seg["text"], language))
                 rows.append(row)
             entry["rows"] = rows
-        if language == "german" and isinstance(entry.get("text"), str):
-            entry["text"] = entry["text"].replace("Technologies: ", f"{phrases['technologies']}: ")
+        if language == "german" and "text" in entry:
+            entry["text"] = [dict(s) for s in entry["text"]]
+            for seg in entry["text"]:
+                _retext(seg, seg["text"].replace("Technologies: ", f"{phrases['technologies']}: "))
         out.append(entry)
     return out
 
@@ -734,12 +897,36 @@ def _merge_languages_into_skills(sections: list[dict[str, Any]], language: str) 
     languages, skills = by_type.get("languages"), by_type.get("skills")
     if not languages or not skills:
         return sections
-    spoken = ", ".join(
-        f"{e['label']} ({e['text']})" if e.get("text") else e.get("label", "")
-        for e in languages["entries"] if e.get("label")
-    )
-    merged = {**skills, "entries": skills["entries"] + [_item(_PHRASES[language]["languages"], spoken)]}
+    spoken = _joined([
+        [*e["label"], _static(" ("), *e["text"], _static(")")] if _text(e["text"]) else e["label"]
+        for e in languages["entries"] if _text(e["label"])
+    ], ", ")
+    merged = {**skills, "entries": skills["entries"] + [_item([_static(_PHRASES[language]["languages"])], spoken)]}
     return [merged if s is skills else s for s in sections if s is not languages]
+
+
+def _finalize(entries: list[dict[str, Any]], keep_segments: bool) -> None:
+    """Join each entry's segments into the strings the template prints; with
+    ``keep_segments`` the segments stay next to them (``left_segs``,
+    ``bullet_segs``, ``text_segs`` ...) for the editor's view."""
+    for entry in entries:
+        if "rows" in entry:
+            for row in entry["rows"]:
+                left, right = row["left"], row["right"]
+                row["left"], row["right"] = _text(left), _text(right)
+                if keep_segments:
+                    row["left_segs"], row["right_segs"] = left, right
+            bullets = entry["bullets"]
+            entry["bullets"] = [_text(segs) for segs in bullets]
+            if keep_segments:
+                entry["bullet_segs"] = bullets
+            else:
+                del entry["bullets_src"]
+        else:
+            label, text = entry["label"], entry["text"]
+            entry["label"], entry["text"] = _text(label), _text(text)
+            if keep_segments:
+                entry["label_segs"], entry["text_segs"] = label, text
 
 
 def build_harvard_sections(
@@ -760,10 +947,46 @@ def build_harvard_sections(
     follow it); ``convention`` "dach" writes dates as MM/YYYY. Spoken
     languages become a line in Skills unless ``merge_languages`` is False
     (or there is no Skills section).
+
+    The strings are joined from segments that know their source field; see
+    ``build_harvard_view`` for the same sections with the segments kept.
     """
+    return _build(cv_data, section_order, language=language, convention=convention,
+                  merge_languages=merge_languages, keep_segments=False)
+
+
+def build_harvard_view(
+    cv_data: dict[str, Any],
+    section_order: list[str] | None = None,
+    *,
+    language: str = "english",
+    convention: str = "international",
+    merge_languages: bool = True,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    The CV editor's view: ``build_harvard_sections`` with every printed string's
+    segments kept (``name_segs``, ``contact_segs``, rows' ``left_segs`` /
+    ``right_segs``, ``bullet_segs`` with the list's ``bullets_src``, itemize
+    ``label_segs`` / ``text_segs``). The editor shows these as the PDF prints
+    them and writes each edit back to the segment's ``src``.
+    """
+    return _build(cv_data, section_order, language=language, convention=convention,
+                  merge_languages=merge_languages, keep_segments=True)
+
+
+def _build(
+    cv_data: dict[str, Any],
+    section_order: list[str] | None,
+    *,
+    language: str,
+    convention: str,
+    merge_languages: bool,
+    keep_segments: bool,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     language = language if language in _PHRASES else "english"
     labels = SECTION_LABELS_DE if language == "german" else SECTION_LABELS
     doc = to_json_resume(cv_data, language)
+    sourced = not _is_json_resume(cv_data)
     basics = doc.get("basics") or {}
     label, summary = basics.get("label") or "", basics.get("summary") or ""
     if summary.strip():
@@ -771,12 +994,21 @@ def build_harvard_sections(
         # of its first sentence), so the intro read twice. It is printed only
         # for a CV without a summary.
         label = ""
+    name = basics.get("name") or cv_data.get("name") or "Applicant"
+    contact_segs = _basics_contact_parts(basics)
     header = {
-        "name": basics.get("name") or cv_data.get("name") or "Applicant",
+        "name": name,
         "label": label,
         "summary": summary,
-        "contact_parts": _basics_contact_parts(basics),
+        "contact_parts": [_text(segs) for segs in contact_segs],
     }
+    if keep_segments:
+        header.update({
+            "name_segs": [_seg(name, ["name"] if sourced else [])],
+            "label_segs": [_seg(label, ["label"] if sourced else [])] if label else [],
+            "summary_segs": [_seg(summary, ["summary"] if sourced else [])] if summary else [],
+            "contact_segs": contact_segs,
+        })
 
     order = _resolve_section_order(section_order)
     sections: list[dict[str, Any]] = []
@@ -800,4 +1032,6 @@ def build_harvard_sections(
         )
     if merge_languages:
         sections = _merge_languages_into_skills(sections, language)
+    for section in sections:
+        _finalize(section["entries"], keep_segments)
     return header, sections
