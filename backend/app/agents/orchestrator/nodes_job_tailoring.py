@@ -1005,6 +1005,7 @@ def jt_step5_rewrite_enhance(state: OrchestratorState) -> dict[str, Any]:
         "tailoring_strategy_json": strategy_json,
         "locked_bullets_json": json.dumps(locked),
         "facts_block": _facts_prompt_block(state.get("fact_ledger")),
+        "cv_language": state.get("cv_language") or "",
     })
     rewritten = _safe_json_loads(rewritten_json, None)
     error = _tool_error(rewritten, "rewrite")
@@ -1110,6 +1111,7 @@ def jt_step5b_verify(state: OrchestratorState) -> Command:
         cv_summary=(state.get("cv_data") or {}).get("summary"),
         attempt=attempt,
         user_written_ids=rewritten.get("user_written_bullet_ids") or [],
+        cv_language=state.get("cv_language"),
     )
     warnings = sum(1 for i in result.issues if i.severity == "warn")
 

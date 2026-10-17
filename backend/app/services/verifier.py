@@ -15,7 +15,14 @@ Weaker problems only **warn**, for the user to judge at the review gate:
   skills list) but that this bullet doesn't cite - true for the candidate,
   maybe not for this piece of work;
 - banned_phrase: a CV cliché the original didn't use;
-- length_blowup, language_mismatch, structure_changed (no matching bullet).
+- length_blowup, structure_changed (no matching bullet);
+- language_mismatch, when the language of a rewrite differs from its original's
+  and the user hasn't chosen a CV language.
+
+A rewrite in another language than the one the user chose for the CV **blocks**
+(language_mismatch): a German posting must not turn an English CV German, so the
+rewrite is run again in the chosen language, and the original wording is kept
+if it still isn't.
 
 The updated summary is a synthesis of the whole CV, so it is checked against
 the whole ledger. Bullets the user wrote themselves are not checked.
@@ -43,6 +50,9 @@ BANNED_PHRASES = (
     "teamfähig", "belastbar", "zielorientiert", "hochmotiviert", "kommunikationsstark",
     "synergien", "lösungsorientiert",
 )
+
+_LANGUAGE_CODES = {"english": "en", "german": "de"}
+_LANGUAGE_NAMES = {"en": "English", "de": "German"}
 
 # Words that are the same in both languages ("in") would tip the balance, so
 # each list has only words that belong to one of them.
@@ -132,9 +142,11 @@ def _check_text(
     support: list[dict[str, Any]],
     ledger: _Ledger,
     whole_ledger_supports: bool,
+    cv_language: str | None = None,
 ) -> list[VerifierIssue]:
     """Claim checks shared by bullets and the summary. With
-    ``whole_ledger_supports`` (the summary), any fact counts as support."""
+    ``whole_ledger_supports`` (the summary), any fact counts as support.
+    ``cv_language`` ("english" / "german") is the language the user chose."""
     issues: list[VerifierIssue] = []
     support_texts = [original, *_fact_texts(support)]
 
@@ -180,7 +192,12 @@ def _check_text(
         issue("length_blowup", "warn", f"Grew from {len(original)} to {len(rewritten)} characters.")
 
     before, after = _language(original), _language(rewritten)
-    if before and after and before != after:
+    chosen = _LANGUAGE_CODES.get(cv_language or "")
+    if chosen:
+        if after and after != chosen:
+            issue("language_mismatch", "block",
+                  f"Is written in {_LANGUAGE_NAMES[after]}, but your CV is in {_LANGUAGE_NAMES[chosen]}.")
+    elif before and after and before != after:
         issue("language_mismatch", "warn", f"Switches the language from {before} to {after}.")
     return issues
 
@@ -205,6 +222,7 @@ def verify_rewrites(
     cv_summary: str | None = None,
     attempt: int = 1,
     user_written_ids: Iterable[str] = (),
+    cv_language: str | None = None,
 ) -> VerifierResult:
     ledger = _Ledger(fact_ledger)
     skip = set(user_written_ids)
@@ -236,7 +254,7 @@ def verify_rewrites(
         support = ledger.own_facts(bullet_id) + [ledger.facts[c] for c in cited if c in ledger.facts]
         issues.extend(_check_text(
             bullet_id=bullet_id, original=original, rewritten=rewritten,
-            support=support, ledger=ledger, whole_ledger_supports=False,
+            support=support, ledger=ledger, whole_ledger_supports=False, cv_language=cv_language,
         ))
         score = _preservation(original, rewritten)
         if score is not None:
@@ -246,7 +264,7 @@ def verify_rewrites(
     if summary and summary != (cv_summary or "").strip() and "summary" not in skip:
         issues.extend(_check_text(
             bullet_id="summary", original=cv_summary or "", rewritten=summary,
-            support=[], ledger=ledger, whole_ledger_supports=True,
+            support=[], ledger=ledger, whole_ledger_supports=True, cv_language=cv_language,
         ))
 
     return VerifierResult(
@@ -260,7 +278,9 @@ def verify_rewrites(
 def retry_feedback(result: VerifierResult) -> str:
     """The blocking problems, phrased as instructions for the next rewrite."""
     lines = [
-        f"Bullet {issue.bullet_id}: {issue.detail} Remove it or reword without it."
+        f"Bullet {issue.bullet_id}: {issue.detail} "
+        + ("Write it again in the CV's language." if issue.check == "language_mismatch"
+           else "Remove it or reword without it.")
         for issue in result.issues if issue.severity == "block"
     ]
     return "The fact check rejected these rewrites. " + " ".join(lines) if lines else ""
