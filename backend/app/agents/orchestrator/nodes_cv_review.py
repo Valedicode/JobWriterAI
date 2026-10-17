@@ -1000,12 +1000,16 @@ def cr_step7_finalize(state: OrchestratorState, config: RunnableConfig) -> dict[
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(applicant_name or "applicant"))[:80].strip("_").lower() or "applicant"
     pdf_name = f"{slug}_cv_reviewed.pdf"
 
+    # The length the overall assessment recommended; the renderer keeps to it
+    # where the content allows and says so where it doesn't.
+    recommended = ((state.get("review_outputs") or {}).get("assessment") or {}).get("recommended_pages")
     generated = list(state.get("generated_files") or [])
     pdf_msg = generate_cv_pdf.invoke({
         "cv_json": json.dumps(revised_cv, default=str),
         "output_filename": pdf_name,
         "applicant_name": applicant_name,
         "output_dir": session_output_dir(config),
+        "max_pages": recommended if recommended in (1, 2) else 0,
     })
     if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
         filename = _extract_filename(pdf_msg) or pdf_name
@@ -1014,6 +1018,9 @@ def cr_step7_finalize(state: OrchestratorState, config: RunnableConfig) -> dict[
             "CV review complete. I've applied the approved suggestions and generated "
             f"a revised CV PDF: {filename}."
         )
+        layout_notes = [line for line in pdf_msg.splitlines() if line.startswith("Layout note:")]
+        if layout_notes:
+            narration += "\n" + "\n".join(layout_notes)
     else:
         narration = (
             "CV review complete, but I ran into a problem generating the revised PDF: "
