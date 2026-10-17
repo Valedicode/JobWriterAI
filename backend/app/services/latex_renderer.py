@@ -23,6 +23,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.services.resume_adapter import build_harvard_sections
 
+logger = logging.getLogger(__name__)
+
 TEMPLATES_DIR = Path(__file__).parent.parent / "templates" / "latex"
 
 _GERMAN_MONTHS = {
@@ -564,6 +566,11 @@ def _compiler_binary() -> str:
     return shutil.which("tectonic") or "tectonic"
 
 
+# The compiler's output stays in the server log: it quotes the document's
+# text and server paths, and the error message is shown to the user.
+_SEE_SERVER_LOG = "The details are in the server log."
+
+
 def _run_tectonic(tex_path: Path, output_dir: Path) -> None:
     binary = _compiler_binary()
     result = subprocess.run(
@@ -575,9 +582,8 @@ def _run_tectonic(tex_path: Path, output_dir: Path) -> None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
-        raise RuntimeError(
-            f"Tectonic compilation failed (exit {result.returncode}).\n{detail}"
-        )
+        logger.error("Tectonic failed on %s (exit %s):\n%s", tex_path.name, result.returncode, detail)
+        raise RuntimeError(f"Tectonic compilation failed (exit {result.returncode}). {_SEE_SERVER_LOG}")
 
 
 def _run_pdflatex(tex_path: Path, output_dir: Path) -> None:
@@ -604,7 +610,8 @@ def _run_pdflatex(tex_path: Path, output_dir: Path) -> None:
     log_path = output_dir / f"{tex_path.stem}.log"
     if log_path.exists():
         last_error = log_path.read_text(encoding="utf-8", errors="replace")[-4000:]
-    raise RuntimeError(f"pdflatex compilation failed.\n{last_error}")
+    logger.error("pdflatex failed on %s:\n%s", tex_path.name, last_error)
+    raise RuntimeError(f"pdflatex compilation failed. {_SEE_SERVER_LOG}")
 
 
 def compile_tex_to_pdf(tex_content: str, output_dir: Path, job_name: str) -> Path:

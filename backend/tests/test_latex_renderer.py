@@ -196,3 +196,24 @@ def test_cover_letter_email_and_links_cannot_inject_latex(language):
     )
     assert "\input" not in tex
     assert "^^5c" not in tex
+
+
+@pytest.mark.parametrize("compiler", ["tectonic", "pdflatex"])
+def test_compile_errors_keep_the_compiler_output_in_the_server_log(compiler, tmp_path, monkeypatch, caplog):
+    """The error text reaches the user; the compiler's output (which quotes the
+    document and server paths) must only go to the log."""
+    import subprocess
+    from app.services import latex_renderer
+
+    monkeypatch.setenv("LATEX_COMPILER", compiler)
+    (tmp_path / "doc.log").write_text("! Undefined control sequence. l.1 SECRET_LINE", encoding="utf-8")
+    monkeypatch.setattr(
+        latex_renderer.subprocess, "run",
+        lambda *a, **k: subprocess.CompletedProcess(a, 1, stdout="", stderr="SECRET_LINE from the compiler"),
+    )
+    with caplog.at_level("ERROR", logger="app.services.latex_renderer"):
+        with pytest.raises(RuntimeError) as raised:
+            latex_renderer.compile_tex_to_pdf("\documentclass{article}", tmp_path, "doc")
+    assert "SECRET_LINE" not in str(raised.value)
+    assert "server log" in str(raised.value)
+    assert "SECRET_LINE" in caplog.text
