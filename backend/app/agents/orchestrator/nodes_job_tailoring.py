@@ -59,6 +59,7 @@ from app.services.bullet_index import index_cv_bullets as _index_cv_bullets
 from app.services.fact_ledger import build_fact_ledger, eligibility_answer_facts, with_facts
 from app.services.requirement_rubric import evidence_prompt_block, refresh_evidence, rubric_alignment
 from app.services.verifier import issue_notes, retry_feedback, text_language, verify_rewrites
+from app.agents.orchestrator.outputs import RenderedCv, with_file
 
 
 # --------------------------------------------------------------------------- #
@@ -1728,8 +1729,8 @@ def _with_project_order(cv_data: dict[str, Any], order: list[int]) -> dict[str, 
     return {**cv_data, "projects": ranked + rest}
 
 
-def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
-    """Emit a tailored CV PDF from merged structured JSON."""
+def render_tailored_cv(state: OrchestratorState, config: RunnableConfig) -> RenderedCv:
+    """Generate the tailored CV's PDF (step 7, and again after a chat edit)."""
     cv_data = _tailored_cv(state)
     applicant_name = cv_data.get("name", "Applicant")
     base = _filename_base(cv_data)
@@ -1738,9 +1739,7 @@ def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig)
     # Selection follows the plan's order and the user reviewed it there; the
     # plan's own order is the fallback.
     section_order = selected.get("section_order") or plan.get("section_order") or []
-
-    generated: list[dict[str, str]] = list(state.get("generated_files") or [])
-    messages: list[str] = []
+    files = list(state.get("generated_files") or [])
 
     pdf_name = f"{base}_cv_tailored.pdf"
     pdf_msg = generate_cv_pdf.invoke({
@@ -1755,14 +1754,17 @@ def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig)
     })
     if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
         filename = _extract_filename(pdf_msg) or pdf_name
-        generated.append(file_record(filename, "cv", config))
-        messages.append(f"PDF: {filename}")
-        messages.extend(line for line in pdf_msg.splitlines() if line.startswith("Layout note:"))
-    else:
-        messages.append(f"PDF generation failed: {pdf_msg}")
+        notes = [line for line in pdf_msg.splitlines() if line.startswith("Layout note:")]
+        return RenderedCv(with_file(files, file_record(filename, "cv", config)), filename, notes, None)
+    return RenderedCv(files, None, [], str(pdf_msg))
 
-    narration = "Generated CV files:\n" + "\n".join(messages) if messages else "No CV files were generated."
-    return _narrate({"generated_files": generated}, narration)
+
+def jt_step7_generate_cv_files(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
+    """Emit a tailored CV PDF from merged structured JSON."""
+    rendered = render_tailored_cv(state, config)
+    messages = ([f"PDF: {rendered.filename}", *rendered.notes] if rendered.filename
+                else [f"PDF generation failed: {rendered.error}"])
+    return _narrate({"generated_files": rendered.files}, "Generated CV files:\n" + "\n".join(messages))
 
 
 # --------------------------------------------------------------------------- #

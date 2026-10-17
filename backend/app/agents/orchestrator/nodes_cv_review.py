@@ -44,7 +44,7 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.agents.orchestrator.gates import GatePayload, GateResolution
-from app.agents.orchestrator.outputs import file_record, session_output_dir
+from app.agents.orchestrator.outputs import RenderedCv, file_record, session_output_dir, with_file
 from app.agents.orchestrator.state import OrchestratorState
 from app.agents.writer_agent import generate_cv_pdf
 from app.openai_llm import chat_model
@@ -1061,19 +1061,18 @@ def _assemble_reviewed_cv(state: OrchestratorState) -> dict[str, Any]:
     return cv_data
 
 
-def cr_step7_finalize(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
-    """Assemble the revised CV and export a downloadable PDF via LaTeX."""
-    revised_cv = _assemble_reviewed_cv(state)
-    applicant_name = revised_cv.get("name", "Applicant")
+def render_reviewed_cv(cv: dict[str, Any], state: OrchestratorState, config: RunnableConfig) -> RenderedCv:
+    """Generate the reviewed CV's PDF (step 7, and again after a chat edit)."""
+    applicant_name = cv.get("name", "Applicant")
     slug = re.sub(r"[^a-zA-Z0-9]+", "_", str(applicant_name or "applicant"))[:80].strip("_").lower() or "applicant"
     pdf_name = f"{slug}_cv_reviewed.pdf"
 
     # The length the overall assessment recommended; the renderer keeps to it
     # where the content allows and says so where it doesn't.
     recommended = ((state.get("review_outputs") or {}).get("assessment") or {}).get("recommended_pages")
-    generated = list(state.get("generated_files") or [])
+    files = list(state.get("generated_files") or [])
     pdf_msg = generate_cv_pdf.invoke({
-        "cv_json": json.dumps(revised_cv, default=str),
+        "cv_json": json.dumps(cv, default=str),
         "output_filename": pdf_name,
         "applicant_name": applicant_name,
         "output_dir": session_output_dir(config),
@@ -1081,22 +1080,26 @@ def cr_step7_finalize(state: OrchestratorState, config: RunnableConfig) -> dict[
     })
     if isinstance(pdf_msg, str) and "Error" not in pdf_msg:
         filename = _extract_filename(pdf_msg) or pdf_name
-        generated.append(file_record(filename, "cv", config))
-        narration = (
+        notes = [line for line in pdf_msg.splitlines() if line.startswith("Layout note:")]
+        return RenderedCv(with_file(files, file_record(filename, "cv", config)), filename, notes, None)
+    return RenderedCv(files, None, [], str(pdf_msg))
+
+
+def cr_step7_finalize(state: OrchestratorState, config: RunnableConfig) -> dict[str, Any]:
+    """Assemble the revised CV and export a downloadable PDF via LaTeX."""
+    revised_cv = _assemble_reviewed_cv(state)
+    rendered = render_reviewed_cv(revised_cv, state, config)
+    if rendered.filename:
+        narration = "\n".join([
             "CV review complete. I've applied the approved suggestions and generated "
-            f"a revised CV PDF: {filename}."
-        )
-        layout_notes = [line for line in pdf_msg.splitlines() if line.startswith("Layout note:")]
-        if layout_notes:
-            narration += "\n" + "\n".join(layout_notes)
+            f"a revised CV PDF: {rendered.filename}.",
+            *rendered.notes,
+        ])
     else:
-        narration = (
-            "CV review complete, but I ran into a problem generating the revised PDF: "
-            f"{pdf_msg}"
-        )
+        narration = f"CV review complete, but I ran into a problem generating the revised PDF: {rendered.error}"
 
     return _narrate(
-        {"cv_data": revised_cv, "generated_files": generated},
+        {"cv_data": revised_cv, "generated_files": rendered.files},
         narration,
     )
 

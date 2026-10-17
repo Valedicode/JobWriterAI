@@ -31,7 +31,9 @@ from typing import Any
 from langgraph.graph import END
 from langgraph.types import Command
 
+from app.agents.orchestrator.final_cv import final_cv
 from app.agents.orchestrator.gates import BulletDecision, GateResolution
+from app.agents.orchestrator.nodes_cv_edit import CV_RERENDER
 from app.agents.orchestrator.nodes_job_tailoring import (
     JT_GATE_CONFIRM_CHANGE,
     JT_GATE_COVER_LETTER,
@@ -39,8 +41,10 @@ from app.agents.orchestrator.nodes_job_tailoring import (
     JT_STEP3_STRATEGY,
     JT_STEP4_SELECT,
     JT_STEP5_REWRITE,
+    _write_bullet_by_id,
 )
 from app.agents.orchestrator.state import OrchestratorState
+from app.services.bullet_index import index_cv_bullets
 from app.services.fact_ledger import user_added_fact, with_facts
 
 # Messages (user + assistant) kept as short-term chat memory.
@@ -233,6 +237,50 @@ def propose_profile_update(
     }
 
 
+def propose_cv_edit(
+    current: dict[str, Any],
+    *,
+    pending_node: str | None,
+    pending_step: str | None,
+    line_id: str,
+    new_text: str,
+) -> dict[str, Any]:
+    """Change one line of the finished CV: a proposal for the confirm_change
+    gate that, once approved, writes the line and generates the PDF again."""
+    _require_no_open_proposal(pending_step)
+    found = final_cv(current)
+    if found is None:
+        raise ChatActionRefused(
+            "There's no finished CV to change yet. While a step is open, tell me what to change "
+            "there and I'll pass it on as your notes for that step."
+        )
+    key, cv = found
+    index = index_cv_bullets(cv)
+    ref = index.get(line_id)
+    if ref is None:
+        raise ChatActionRefused("I couldn't find that line in your CV.")
+    new_text = (new_text or "").strip()
+    if not new_text:
+        raise ChatActionRefused("What should the line say instead?")
+    if new_text == ref["text"].strip():
+        raise ChatActionRefused("That's already what the line says.")
+
+    updated = copy.deepcopy(cv)
+    _write_bullet_by_id(updated, line_id, new_text, index)
+    details = [f"Before: {ref['text']}", f"After: {new_text}", "Your CV PDF is generated again with this change."]
+    if any(isinstance(f, dict) and f.get("file_type") == "cover_letter" for f in current.get("generated_files") or []):
+        details.append("Your cover letter stays as it is.")
+    return {
+        "kind": "edit_cv",
+        "summary": "Change one line of your CV",
+        "details": details,
+        "goto": CV_RERENDER,
+        "return_to": pending_node,
+        "restore": {key: updated, "after_edit_goto": pending_node},
+        "on_approve": "Changing that line and generating your CV again.",
+    }
+
+
 def edit_bullet_resolution(gate: Any, bullet_id: str, instruction: str) -> GateResolution:
     """The approve_rewrite 'edit' that regenerates one bullet and keeps every
     other rewrite as it is."""
@@ -277,10 +325,11 @@ def remember_chat_turn(graph: Any, config: dict[str, Any], user_text: str, reply
     ``Command(goto=<the pending gate>)`` and the gate is then run again, which
     re-raises the same gate (gate nodes build their payload from state only).
     A session stopped on a step rather than a gate (a crash mid-run) is left
-    alone, so a chat turn never re-runs a step.
+    alone, so a chat turn never re-runs a step. Both flows keep memory: the
+    cv_review gates also build their payload from state only.
     """
     snapshot = graph.get_state(config)
-    if snapshot is None or not snapshot.values or snapshot.values.get("flow") != "job_tailoring":
+    if snapshot is None or not snapshot.values:
         return
     paused_on_gate = any(task.interrupts for task in snapshot.tasks or [])
     if snapshot.next and not paused_on_gate:

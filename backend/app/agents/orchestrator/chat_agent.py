@@ -35,6 +35,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.openai_llm import chat_model
 from pydantic import BaseModel, Field, model_validator
 
+from app.agents.orchestrator.final_cv import final_cv_lines
 from app.agents.orchestrator.gates import GatePayload, GateResolution
 
 logger = logging.getLogger(__name__)
@@ -77,7 +78,15 @@ class UpdateProfile(BaseModel):
     fluency: Optional[str] = Field(default=None, description="Language level as the user stated it, e.g. 'C1'.")
 
 
-ChatCall = Union[ResolveGate, EditBullet, RerunFrom, UpdateProfile]
+class EditCvLine(BaseModel):
+    """Change one line of the finished CV (the user confirms first; the PDF is generated again)."""
+
+    tool: Literal["edit_cv_line"]
+    line_id: str = Field(description="The line's id, copied exactly from 'Final CV lines'.")
+    new_text: str = Field(description="The complete new wording of that line.")
+
+
+ChatCall = Union[ResolveGate, EditBullet, RerunFrom, UpdateProfile, EditCvLine]
 
 
 class ChatDecision(BaseModel):
@@ -108,7 +117,7 @@ class ChatTurn(BaseModel):
 
     reply: str
     action: Optional[GateResolution] = None
-    call: Optional[Union[EditBullet, RerunFrom, UpdateProfile]] = None
+    call: Optional[Union[EditBullet, RerunFrom, UpdateProfile, EditCvLine]] = None
 
     @model_validator(mode="after")
     def _one_kind_of_action(self) -> "ChatTurn":
@@ -142,7 +151,13 @@ _SYSTEM_PROMPT = (
     "that is missing from their CV ('I used Docker in a university course', "
     "'I speak German at C1'). Only what they explicitly claim; never infer a "
     "skill from a question like 'should I learn Docker?'. The user confirms "
-    "before it is added and the score is recalculated.\n\n"
+    "before it is added and the score is recalculated.\n"
+    "- edit_cv_line: once the CV PDF exists (the context lists 'Final CV lines'), "
+    "the user wants one line of the finished CV changed ('shorten the YAMS bullet', "
+    "'replace the theatre bullet with ...'). Copy the line's id exactly as `line_id` "
+    "and write the complete new line in `new_text`, keeping every technology, number "
+    "and date it states unless the user changes them. The user confirms before the "
+    "CV is generated again. While step is 'approve_rewrite', use edit_bullet instead.\n\n"
     "Hard rules:\n"
     "- Never invent facts about the CV, job, or score that are not in the "
     "context provided. If you don't know, say so.\n"
@@ -277,6 +292,13 @@ def _state_context_block(state: dict[str, Any] | None) -> str:
     files = state.get("generated_files") or []
     if files:
         parts.append("Generated files: " + ", ".join(f.get("filename", "") for f in files))
+
+    lines = final_cv_lines(state)
+    if lines:
+        parts.append(
+            "Final CV lines (the generated CV; edit_cv_line changes one of them):\n"
+            + "\n".join(f"[{line_id}] {text}" for line_id, text in lines)[:6000]
+        )
     return "\n".join(parts)
 
 
