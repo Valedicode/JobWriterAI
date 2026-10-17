@@ -488,6 +488,28 @@ def test_gate_answers_outside_the_allowed_actions_become_plain_replies():
     assert turn.action == GateResolution(action="approve")
 
 
+def test_an_unapplied_gate_answer_does_not_claim_it_was_done():
+    """The model's reply announces the action; when it can't be applied the
+    user is told why instead, so the chat never says it did something it didn't."""
+    turn = _interpret(ChatDecision(reply="Sure, editing that.", call=ResolveGate(tool="resolve_gate", action="edit", feedback="x")))
+    assert "editing" not in turn.reply.lower()
+    assert "nothing was changed" in turn.reply and "approve, reject" in turn.reply
+
+    choice_gate = GatePayload(step="cv_language", kind="choice", narration="", allowed_actions=["choose"],
+                              choices=["english", "german"])
+    with patch("app.agents.orchestrator.chat_agent.chat_model", _StubChatModel(
+        ChatDecision(reply="Using French.", call=ResolveGate(tool="resolve_gate", action="choose", choice="french"))
+    )):
+        turn = interpret_chat(text="french", gate=choice_gate, state={})
+    assert turn.action is None and "'french' isn't one of the options" in turn.reply
+
+    with patch("app.agents.orchestrator.chat_agent.chat_model", _StubChatModel(
+        ChatDecision(reply="Approved!", call=ResolveGate(tool="resolve_gate", action="approve"))
+    )):
+        turn = interpret_chat(text="approve", gate=None, state={})
+    assert turn.action is None and turn.reply.startswith("There's no step waiting")
+
+
 def test_other_tools_pass_through_to_the_api():
     call = RerunFrom(tool="rerun_from", step="score")
     assert _interpret(ChatDecision(reply="Sure.", call=call)).call == call
@@ -501,3 +523,21 @@ def test_a_turn_cannot_carry_both_kinds_of_action():
 def test_reruns_are_job_tailoring_only():
     with pytest.raises(ChatActionRefused):
         propose_rerun(None, {}, {"flow": "cv_review"}, pending_node=None, pending_step=None, step="score")
+
+
+def test_a_failed_chat_call_keeps_the_error_out_of_the_reply(caplog):
+    class _Failing(_StubChatModel):
+        def with_structured_output(self, schema):
+            from langchain_core.runnables import RunnableLambda
+
+            def _boom(_):
+                raise RuntimeError("401 invalid api key sk-or-SECRET for https://openrouter.ai/api/v1")
+
+            return RunnableLambda(_boom)
+
+    with caplog.at_level("ERROR", logger="app.agents.orchestrator.chat_agent"):
+        with patch("app.agents.orchestrator.chat_agent.chat_model", _Failing(None)):
+            turn = interpret_chat(text="hi", gate=_GATE, state={})
+    assert turn.action is None and "couldn't process that message" in turn.reply
+    assert "SECRET" not in turn.reply and "openrouter" not in turn.reply
+    assert "SECRET" in caplog.text

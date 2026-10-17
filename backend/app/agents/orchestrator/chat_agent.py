@@ -28,6 +28,7 @@ and leave the gate pending rather than guess at an action.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Literal, Optional, Union
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -35,6 +36,8 @@ from app.openai_llm import chat_model
 from pydantic import BaseModel, Field, model_validator
 
 from app.agents.orchestrator.gates import GatePayload, GateResolution
+
+logger = logging.getLogger(__name__)
 
 
 class ResolveGate(BaseModel):
@@ -325,11 +328,14 @@ def interpret_chat(
             "history": _history_block(state),
             "text": text,
         })
-    except Exception as exc:  # noqa: BLE001 - defensive fallback for any LLM/parse failure
+    except Exception:  # noqa: BLE001 - defensive fallback for any LLM/parse failure
+        # The exception (provider errors, request details) goes to the log,
+        # not into a chat bubble.
+        logger.exception("Chat interpretation failed")
         return ChatTurn(
             reply=(
-                "Sorry, I couldn't process that message just now "
-                f"({exc}). You can use the buttons below, or try again."
+                "Sorry, I couldn't process that message just now. "
+                "You can use the buttons below, or try again."
             ),
             action=None,
         )
@@ -338,10 +344,36 @@ def interpret_chat(
     if call is None:
         return ChatTurn(reply=decision.reply)
     if isinstance(call, ResolveGate):
-        return ChatTurn(reply=decision.reply, action=_gate_resolution(call, gate))
+        resolution = _gate_resolution(call, gate)
+        if resolution is None:
+            # The model's reply already announces the action ('Sure, approving
+            # that.'); nothing will happen, so it is replaced by the reason.
+            return ChatTurn(reply=_unmatched_reason(call, gate))
+        return ChatTurn(reply=decision.reply, action=resolution)
     # The other tools are checked against the session by the API
     # (chat_actions), which knows the checkpoint history.
     return ChatTurn(reply=decision.reply, call=call)
+
+
+_ACTION_WORDS = {"approve": "approve", "reject": "reject", "edit": "give notes", "choose": "pick an option"}
+
+
+def _unmatched_reason(call: ResolveGate, gate: "GatePayload | Any | None") -> str:
+    """Why a gate answer the model picked can't be applied, for the user."""
+    if gate is None:
+        return "There's no step waiting for an answer right now, so nothing was changed."
+    if call.action not in gate.allowed_actions:
+        options = ", ".join(_ACTION_WORDS.get(a, a) for a in gate.allowed_actions)
+        return (
+            f"I can't {_ACTION_WORDS.get(call.action, call.action)} at this step, so nothing was changed. "
+            f"Here you can: {options}."
+        )
+    if call.action == "choose":
+        return (
+            f"'{call.choice or ''}' isn't one of the options here ({', '.join(gate.choices or [])}), "
+            "so nothing was changed."
+        )
+    return "Tell me what should change, and I'll pass it on as your notes for this step. Nothing was changed yet."
 
 
 def _gate_resolution(call: ResolveGate, gate: "GatePayload | Any | None") -> GateResolution | None:
