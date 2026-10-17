@@ -26,6 +26,8 @@ import {
   OrchestratorStateResponse,
   CoverLetterEditRequest,
   CoverLetterView,
+  CvDocumentView,
+  CvEditRequest,
   DocumentResetRequest,
   DocumentSaveResponse,
   DocumentsResponse,
@@ -353,6 +355,30 @@ export async function orchestratorState(
 /** The session's finished documents as their PDFs print them (null until a PDF exists). */
 export async function getDocuments(sessionId: string): Promise<DocumentsResponse> {
   return apiFetch<DocumentsResponse>(`/documents/${sessionId}`, { method: 'GET' });
+}
+
+/** The CV with unsaved edits applied (after a bullet was added or removed, every later path moves). */
+export async function viewCv(sessionId: string, request: CvEditRequest): Promise<CvDocumentView> {
+  return apiFetch<CvDocumentView>(`/documents/${sessionId}/cv/view`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+/** Save edits to the CV; its PDF is generated again. */
+export async function saveCv(sessionId: string, request: CvEditRequest): Promise<DocumentSaveResponse> {
+  return apiFetch<DocumentSaveResponse>(`/documents/${sessionId}/cv`, {
+    method: 'PUT',
+    body: JSON.stringify(request),
+  });
+}
+
+/** Go back to the CV the flow generated. */
+export async function resetCv(sessionId: string, request: DocumentResetRequest): Promise<DocumentSaveResponse> {
+  return apiFetch<DocumentSaveResponse>(`/documents/${sessionId}/cv/reset`, {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
 }
 
 /** The cover letter with unsaved edits applied (e.g. the salutation for a new recipient). */
