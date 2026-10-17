@@ -17,6 +17,7 @@ import { EligibilityGate } from './EligibilityGate';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { ReviewPanel } from './ReviewPanel';
 import { humanizeStep } from './gateFormat';
+import type { RunDocumentSave } from '@/components/Editor/DocumentEditor';
 
 interface ChatContainerProps {
   messages: Message[];
@@ -33,6 +34,9 @@ interface ChatContainerProps {
   /** Shown read-only in the review pane's CV preview / Job summary tabs. */
   cvData?: ResumeInfo | null;
   jobData?: JobRequirements | null;
+  /** Orchestrator session and its editor saves, for the review pane's editor. */
+  sessionId?: string | null;
+  runDocumentSave?: RunDocumentSave;
   // Orchestrator-only: when set, render the structured gate in the review pane
   // next to the chat. Legacy writer chat leaves these unset and the UI behaves
   // exactly as before.
@@ -62,6 +66,8 @@ export const ChatContainer = ({
   sessionReady = true,
   cvData,
   jobData,
+  sessionId,
+  runDocumentSave,
   pendingGate,
   onSubmitGateResolution,
 }: ChatContainerProps) => {
@@ -174,6 +180,9 @@ export const ChatContainer = ({
           isLoading={isLoading}
           cvData={cvData}
           jobData={jobData}
+          sessionId={sessionId}
+          runDocumentSave={runDocumentSave}
+          refreshKey={messages.length}
           gate={
             gate && onSubmitGateResolution ? (
               gate.step === 'confirm_eligibility' ? (

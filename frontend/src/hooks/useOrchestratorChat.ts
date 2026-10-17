@@ -10,6 +10,9 @@
  *    which answers, answers the pending gate, changes one rewritten bullet,
  *    or proposes a re-run / profile update. A proposal comes back as a
  *    `confirm_change` gate; nothing changes until the user confirms it.
+ *  - `runDocumentSave(echo, save)` runs a save from the document editor the
+ *    same way: the user's action shows in the transcript, the chat waits while
+ *    the PDF is generated again, and the session's reply lands in the chat.
  */
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -20,6 +23,7 @@ import {
 } from '@/lib/api';
 import type {
   BulletDecision,
+  DocumentSaveResponse,
   DownloadableFile,
   JobRequirements,
   Message,
@@ -73,6 +77,11 @@ interface UseOrchestratorChatReturn {
       answers?: Record<string, string>;
     }
   ) => Promise<void>;
+  /** Run an editor save; resolves with its result, or rethrows its error after reporting it in the chat. */
+  runDocumentSave: (
+    echo: string,
+    save: (sessionId: string) => Promise<DocumentSaveResponse>
+  ) => Promise<DocumentSaveResponse | null>;
   clearError: () => void;
   resetSession: () => void;
 }
@@ -319,6 +328,39 @@ export const useOrchestratorChat = ({
     }
   }, [inputText, isLoading, sessionId, applyResponse]);
 
+  const runDocumentSave = useCallback(
+    async (echo: string, save: (sessionId: string) => Promise<DocumentSaveResponse>) => {
+      if (!sessionId || isLoading) return null;
+      setMessages((prev) => [
+        ...prev,
+        { id: `user-${Date.now()}`, role: 'user', content: echo, timestamp: new Date() },
+      ]);
+      setIsLoading(true);
+      setChatError(null);
+      try {
+        const result = await save(sessionId);
+        applyResponse(result.session);
+        return result;
+      } catch (err) {
+        const errorMessage = getErrorMessage(err);
+        setChatError(errorMessage);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `error-${Date.now()}`,
+            role: 'assistant',
+            content: `Sorry, that didn't work: ${errorMessage}`,
+            timestamp: new Date(),
+          },
+        ]);
+        throw err;
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [sessionId, isLoading, applyResponse]
+  );
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -365,6 +407,7 @@ export const useOrchestratorChat = ({
     handleSendMessage,
     handleKeyDown,
     submitGateResolution,
+    runDocumentSave,
     clearError,
     resetSession,
   };
