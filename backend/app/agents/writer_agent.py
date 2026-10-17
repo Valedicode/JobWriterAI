@@ -58,6 +58,7 @@ from app.services.latex_renderer import (
     render_cover_letter_tex,
     render_cv_pdf,
     render_cv_tex,
+    strip_letter_framing,
 )
 
 dotenv.load_dotenv()
@@ -145,7 +146,9 @@ def analyze_cv_job_alignment(cv_json: str, job_json: str) -> str:
     return result.model_dump_json(indent=2)
 
 @tool
-def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str = "", language: str = "english") -> str:
+def generate_cover_letter_content(
+    cv_json: str, job_json: str, company_json: str = "", language: str = "english", recipient: str = "",
+) -> str:
     """
     Generate tailored cover letter content for the job application.
 
@@ -161,6 +164,9 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
             "german"            → formal German Anschreiben in Sie-form with
                                   Betreff, Einleitung, Hauptteil, Schlussteil,
                                   and Grußformel
+        recipient: Who the letter is addressed to, as the user named them. The
+            paragraphs carry no salutation or sign-off of their own: the PDF
+            template prints both around them (see latex_renderer.cover_letter_framing).
 
     Returns:
         JSON string with CoverLetterContent structure, or {"error": ...}
@@ -224,6 +230,14 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
            - MEHRWERT: Erklären, welchen Beitrag die Kandidatin/der Kandidat leistet
            - AUTHENTISCH: Den Stil der Bewerberin/des Bewerbers wahren
 
+        ANREDE UND GRUSSFORMEL:
+        - Schreibe keine Anrede („Sehr geehrte …", „Guten Tag …") und keine Grußformel
+          („Mit freundlichen Grüßen") in die Absätze und nenne dort nicht den eigenen
+          Namen: Die Anrede steht bereits über dem Text, die Grußformel darunter.
+        - opening_paragraph beginnt direkt mit dem ersten Satz. Da er auf die Anrede
+          mit Komma folgt, beginnt er klein (z. B. „mit großem Interesse …"), außer
+          das erste Wort ist ein Nomen oder die Höflichkeitsform „Sie"/„Ihr".
+
         VERMEIDEN:
         - Generische Floskeln wie „Hiermit bewerbe ich mich ..."
         - Reine Wiederholung des Lebenslaufs
@@ -237,6 +251,7 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
         Stellenanforderungen:
         {job}
         {company}
+        {recipient}
 
         Schreibe ein überzeugendes, maßgeschneidertes Anschreiben auf Deutsch (Sie-Form).
         Setze language=\"german\" und befülle betreff sowie grussformel entsprechend.""")
@@ -264,6 +279,12 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
         - Mention relevant company news or initiatives
         - Show you've done research
 
+        SALUTATION AND SIGN-OFF:
+        - Do not write a salutation ("Dear ..."), a closing formula ("Sincerely",
+          "Best regards") or the candidate's name in any paragraph: the letter
+          prints the salutation above the text and the sign-off below it.
+        - Start opening_paragraph directly with its first sentence.
+
         AVOID:
         - Generic statements that could apply to any job
         - Simply repeating CV content
@@ -276,17 +297,27 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
         Job Requirements:
         {job}
         {company}
+        {recipient}
 
         Write a compelling, tailored cover letter.""")
         ])
 
+    recipient_context = ""
+    if recipient and recipient.strip():
+        recipient_context = (
+            f"\n\nDer Brief ist adressiert an: {recipient.strip()}" if language.lower() == "german"
+            else f"\n\nThe letter is addressed to: {recipient.strip()}"
+        )
+
     try:
         chain = prompt | structured_llm
-        result = chain.invoke({"cv": cv_json, "job": job_json, "company": company_context})
+        result = chain.invoke({"cv": cv_json, "job": job_json, "company": company_context,
+                               "recipient": recipient_context})
     except Exception as e:  # noqa: BLE001 - reported to the node as a step failure
         return json.dumps({"error": str(e)})
 
-    return result.model_dump_json(indent=2)
+    # A model that writes a salutation anyway would put two on the page.
+    return json.dumps(strip_letter_framing(result.model_dump()), indent=2, ensure_ascii=False)
 
 @tool
 def generate_cv_pdf(

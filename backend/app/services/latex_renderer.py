@@ -459,6 +459,59 @@ def _english_sign_off(recipient_info: str) -> str:
     return "Yours faithfully" if is_generic_recipient(recipient_info) else "Yours sincerely"
 
 
+def cover_letter_framing(content: dict[str, Any], recipient_info: str) -> dict[str, str]:
+    """The salutation and sign-off the PDF prints around the paragraphs, so the
+    review shows the letter exactly as it will be exported."""
+    if (content.get("language") or "english").lower() == "german":
+        return {
+            "salutation": _cover_letter_salutation(recipient_info, is_german=True),
+            "sign_off": content.get("grussformel") or "Mit freundlichen Grüßen",
+        }
+    return {
+        "salutation": _cover_letter_salutation(recipient_info, is_german=False),
+        "sign_off": _english_sign_off(recipient_info),
+    }
+
+
+# A salutation the model wrote into the first paragraph, e.g. "Sehr geehrte
+# Damen und Herren," or "Dear Hiring Manager,": a formal opener, up to the
+# comma, colon, "!" or line break that ends it. Informal openers ("Liebe",
+# "Hi") are left alone: they also start ordinary sentences.
+_LEADING_SALUTATION_RE = re.compile(
+    r"^\s*(?:sehr\s+geehrte[rs]?|guten\s+tag|dear|hello|to\s+whom\s+it\s+may\s+concern)\b"
+    r"[^,\n!:]{0,80}(?:[,!:]|\n)\s*",
+    re.IGNORECASE,
+)
+# A closing formula on its own line or after a sentence, plus an optional name
+# line after it, at the very end of the last paragraph.
+_TRAILING_SIGN_OFF_RE = re.compile(
+    r"(?:(?<=[.!?])|\n|^)\s*(?:mit\s+(?:freundlichen|besten|herzlichen)\s+gr(?:ü|ue)(?:ß|ss)en"
+    r"|freundliche\s+gr(?:ü|ue)(?:ß|ss)e|viele\s+gr(?:ü|ue)(?:ß|ss)e"
+    r"|(?:best|kind|warm|warmest)\s+regards|yours\s+(?:sincerely|faithfully|truly)|sincerely|best\s+wishes)"
+    r"[,.!]?(?:\s*\n[^\n]{0,60})?\s*$",
+    re.IGNORECASE,
+)
+
+
+def strip_letter_framing(content: dict[str, Any]) -> dict[str, Any]:
+    """
+    The letter's paragraphs without a salutation or sign-off of their own.
+
+    The templates print the salutation (from the recipient the user named)
+    above the paragraphs and the sign-off below them. A model that also writes
+    "Sehr geehrte Damen und Herren," into the first paragraph produces a letter
+    with two salutations, the named one and the generic one.
+    """
+    out = dict(content)
+    opening = out.get("opening_paragraph")
+    if isinstance(opening, str):
+        out["opening_paragraph"] = _LEADING_SALUTATION_RE.sub("", opening, count=1).lstrip()
+    closing = out.get("closing_paragraph")
+    if isinstance(closing, str):
+        out["closing_paragraph"] = _TRAILING_SIGN_OFF_RE.sub("", closing, count=1).rstrip()
+    return out
+
+
 def _cover_letter_context(
     cv_data: dict[str, Any] | None,
     job_data: dict[str, Any] | None,
@@ -513,6 +566,8 @@ def render_cover_letter_tex(
     """Render a cover letter LaTeX document from CoverLetterContent JSON."""
     language = (content.get("language") or "english").lower()
     is_german = language == "german"
+    # The template adds the salutation and sign-off; drop any the content brought along.
+    content = strip_letter_framing(content)
 
     paragraphs = [
         content.get("opening_paragraph", ""),
