@@ -25,6 +25,9 @@ from app.openai_llm import OPENAI_MAX_RETRIES, OPENAI_REQUEST_TIMEOUT_S, chat_mo
 from app.services.cv_extraction_checks import clean_extracted_cv
 
 PROMPT_PREFIX = "Extract all information from the resume text."
+# "direct:openai/<model>" calls OpenAI's own API (OPENAI_API_KEY) instead of
+# OpenRouter, for comparing a vendor key against the OpenRouter route.
+DIRECT_PREFIX = "direct:"
 
 
 @dataclass
@@ -48,11 +51,23 @@ def app_resume_prompt() -> str:
     return found[0]
 
 
+def catalog_id(model: str) -> str:
+    """The OpenRouter id of a model, also for a direct call (for its price)."""
+    return model.removeprefix(DIRECT_PREFIX)
+
+
 def _model(model: str | None) -> ChatOpenAI:
     """The app's extraction model (``chat_model("extract")``, as routed by the settings), or
     ``model`` with exactly the same client settings, for comparing candidate teacher models."""
     if model is None:
         return chat_model("extract", temperature=0)
+    if model.startswith(DIRECT_PREFIX):
+        vendor, _, name = catalog_id(model).partition("/")
+        api_key = get_settings().openai_api_key
+        if vendor != "openai" or not name or not api_key:
+            raise ValueError(f"{model}: a direct call needs an openai/<model> id and OPENAI_API_KEY in backend/.env")
+        return ChatOpenAI(model=name, temperature=0, timeout=OPENAI_REQUEST_TIMEOUT_S,
+                          max_retries=OPENAI_MAX_RETRIES, api_key=api_key)
     extra = {} if get_settings().llm_reasoning else {"extra_body": {"reasoning": {"enabled": False}}}
     return ChatOpenAI(model=model, temperature=0, timeout=OPENAI_REQUEST_TIMEOUT_S,
                       max_retries=OPENAI_MAX_RETRIES, **client_kwargs(), **extra)

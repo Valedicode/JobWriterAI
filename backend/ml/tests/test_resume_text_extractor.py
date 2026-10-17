@@ -45,3 +45,18 @@ def test_the_teacher_extraction_runs_the_apps_checks_and_reports_usage():
     assert out.cv["experience"][0]["responsibilities"] == [bullet]
     assert len(out.notes) == 1
     assert (out.input_tokens, out.output_tokens) == (1200, 300)
+
+
+def test_a_direct_model_calls_openai_with_its_own_key(monkeypatch):
+    from app.config import get_settings
+    from ml.labeling.resume_text_extractor import _model, catalog_id
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    get_settings.cache_clear()
+    try:
+        client = _model("direct:openai/gpt-test")
+    finally:
+        get_settings.cache_clear()
+    assert client.model_name == "gpt-test"
+    assert client.openai_api_base is None  # OpenAI itself, not OpenRouter
+    assert catalog_id("direct:openai/gpt-test") == "openai/gpt-test"

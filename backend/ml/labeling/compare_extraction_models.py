@@ -14,6 +14,8 @@ teacher's own extraction (app prompt, structured output, the app's extraction ch
 
 Run from backend/ (needs OPENROUTER_API_KEY; about runs x resumes x models calls):
   python -m ml.labeling.compare_extraction_models --models deepseek/deepseek-v4.1-flash,qwen/qwen3.8-flash
+A model written as direct:openai/<model> is called on OpenAI's own API (needs OPENAI_API_KEY),
+priced as its OpenRouter twin.
 Results: data/ml/model_comparison/<timestamp>/ (results.jsonl, summary.json, summary.md)
 """
 import argparse
@@ -31,7 +33,7 @@ import requests
 from datasets import load_dataset
 
 from ml.config import ARTIFACTS, HF_CACHE, HF_DATASET, SEED
-from ml.labeling.resume_text_extractor import extract_resume
+from ml.labeling.resume_text_extractor import catalog_id, extract_resume
 
 CATALOG_URL = "https://openrouter.ai/api/v1/models"
 _KEY_CHARS = 40
@@ -137,7 +139,7 @@ def run_one(model: str, resume_id: str, text: str, run: int, prices: dict) -> di
     t0 = time.perf_counter()
     try:
         out = extract_resume(text, model=model)
-        price_in, price_out = prices.get(model, (0.0, 0.0))
+        price_in, price_out = prices.get(catalog_id(model), (0.0, 0.0))
         rec.update(status="ok", cv=out.cv, slips=len(out.notes), notes=out.notes,
                    input_tokens=out.input_tokens, output_tokens=out.output_tokens,
                    cost_usd=out.input_tokens * price_in + out.output_tokens * price_out, **quality(out.cv, text))
@@ -201,7 +203,7 @@ def main():
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     prices = load_prices(args.catalog)
-    unknown = [m for m in models if m not in prices]
+    unknown = [m for m in models if catalog_id(m) not in prices]
     if unknown:
         raise SystemExit(f"not in the OpenRouter catalogue: {unknown}")
     resumes = pick_resumes(args.resumes, args.pdf)
