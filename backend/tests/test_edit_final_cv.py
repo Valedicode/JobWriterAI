@@ -198,3 +198,23 @@ def test_edits_that_cant_apply_are_refused_with_a_reason(line_id, new_text, pend
 def test_the_chat_sees_the_final_cv_lines_only_once_the_cv_exists():
     assert "[experience.0.responsibilities.0] Old line" in _state_context_block(FINISHED)
     assert "Final CV lines" not in _state_context_block({**FINISHED, "generated_files": []})
+
+
+def test_the_cv_review_keeps_chat_memory_and_its_gate(enabled_client):
+    """Follow-ups like "change that one instead" need the earlier turns; the
+    cv_review flow didn't store them, so each message started from nothing."""
+    client = enabled_client
+    with patch("app.agents.orchestrator.nodes_cv_review._run_step_review",
+               side_effect=lambda schema_cls, *a, **k: dict(CANNED_REVIEWS.get(schema_cls.__name__, {}))):
+        start = client.post("/api/orchestrator/start", json={"flow": "cv_review", "cv_data": CV_WITH_LEADERSHIP}).json()
+        session_id = start["session_id"]
+        turn = ChatTurn(reply="The header looks fine.")
+        with patch("app.api.orchestrator.interpret_chat", return_value=turn):
+            body = client.post("/api/orchestrator/message",
+                               json={"session_id": session_id, "kind": "chat", "text": "Is my header ok?"}).json()
+
+    assert body["pending_gate"]["step"] == "cv_review_header"
+    assert _state(session_id)["chat_history"] == [
+        {"role": "user", "content": "Is my header ok?"},
+        {"role": "assistant", "content": "The header looks fine."},
+    ]

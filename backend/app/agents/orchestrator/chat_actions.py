@@ -325,10 +325,11 @@ def remember_chat_turn(graph: Any, config: dict[str, Any], user_text: str, reply
     ``Command(goto=<the pending gate>)`` and the gate is then run again, which
     re-raises the same gate (gate nodes build their payload from state only).
     A session stopped on a step rather than a gate (a crash mid-run) is left
-    alone, so a chat turn never re-runs a step.
+    alone, so a chat turn never re-runs a step. Both flows keep memory: the
+    cv_review gates also build their payload from state only.
     """
     snapshot = graph.get_state(config)
-    if snapshot is None or not snapshot.values or snapshot.values.get("flow") != "job_tailoring":
+    if snapshot is None or not snapshot.values:
         return
     paused_on_gate = any(task.interrupts for task in snapshot.tasks or [])
     if snapshot.next and not paused_on_gate:
