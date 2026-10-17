@@ -177,6 +177,13 @@ export default function Home() {
 
   const bothUploadsComplete = analysisStarted && chatReady && inputsReady;
   const isAnalyzing = isUploading || isJobProcessing;
+
+  // A failed CV or job extraction stops the analysis. Its error is otherwise
+  // only shown on the upload form, which is hidden once the analysis starts,
+  // so the loading screen says why and offers the way back.
+  const resumeFailed = !cvData && !isUploading && !!uploadError;
+  const jobFailed = !jobSkipped && !jobData && !isJobProcessing && !!jobError;
+  const analysisError = resumeFailed ? uploadError : jobFailed ? jobError : null;
   const hasJobInput = isValidJobInput;
 
   // The chat screen fills the window: slim top bar, then chat and review side by side.
@@ -333,21 +340,25 @@ export default function Home() {
           ) : !bothUploadsComplete ? (
             <div className="flex flex-1 animate-fade-in">
               <AnalysisLoadingScreen
-                resumeState={cvData ? 'done' : 'active'}
+                resumeState={cvData ? 'done' : resumeFailed ? 'failed' : 'active'}
                 jobState={
                   jobSkipped
                     ? 'skipped'
                     : jobData
                       ? 'done'
-                      : analysisStarted && cvData && isValidJobInput
-                        ? 'active'
-                        : 'pending'
+                      : jobFailed
+                        ? 'failed'
+                        : analysisStarted && cvData && isValidJobInput
+                          ? 'active'
+                          : 'pending'
                 }
                 preparingState={
-                  cvData && inputsReady 
+                  cvData && inputsReady
                     ? (sessionId && !isInitializing ? 'done' : 'active')
                     : 'pending'
                 }
+                error={analysisError}
+                onBack={() => setAnalysisStarted(false)}
               />
             </div>
           ) : (
