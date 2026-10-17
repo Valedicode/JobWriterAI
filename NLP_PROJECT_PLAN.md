@@ -513,7 +513,24 @@ Any analysis not in the file is reported as exploratory.
 
 ## 13. Plan and status
 
-Estimates are working days for one person, part-time. Dates are set once the deadline is known.
+Estimates are working days for one person, part-time. **Deadline: 2026-12-10.**
+
+### Schedule (dated 2026-10-17)
+
+| Week | Distillation | Milestone | App work in the gaps |
+|---|---|---|---|
+| Oct 19–25 | Phase 0 (Oct 19–20); Phase 1: re-pilot and test-retest (Oct 21), full labelling (Oct 22–24, unattended) | **Oct 20:** `teacher-v1` tagged. **Oct 25:** labels done | Editor: document API |
+| Oct 26–Nov 1 | Phase 2: audit set, pre-registration (Oct 26–27); Phase 3: harness and CPU baselines (Oct 28–31) | **Oct 27:** `PREREGISTRATION.md` committed. **Oct 31:** `val` table for the teacher and CPU baselines | Editor: cover-letter twin |
+| Nov 2–8 | Phase 4: Kaggle smoke test, 0.5B runs (Student-T and Student-D, 3 seeds), first 1.5B runs (Kaggle week 1) | | Editor: CV twin |
+| Nov 9–15 | Phase 4: remaining 1.5B runs (Kaggle week 2); Phase 5: zero-shot baselines and efficiency | **Nov 15:** every `val` table complete; checkpoints, prompts and thresholds frozen | |
+| Nov 16–22 | Phase 6: test labels opened once (Nov 18), final tables with CIs, failure analysis | **Nov 22:** results frozen with the commit hash | |
+| Nov 23–29 | Phase 7: report and slides draft; README checked from a clean clone | **Nov 29:** full draft | |
+| Nov 30–Dec 6 | Buffer: reruns if something broke, polish, presentation rehearsal | **Dec 3:** early-submission target | |
+| Dec 7–10 | Only if the buffer was needed | **Dec 10:** deadline | |
+
+The two GPU weeks hold the ~15–20 GPU-h of core runs within Kaggle's ~30 GPU-h per week, with
+room for one repeat. If labelling or a GPU week slips, the buffer week absorbs it before the
+early-submission target moves.
 
 **Critical path:** Phase 0 → Phase 1 labelling → Phase 4 training → Phase 6. Phases 2, 3 and 5
 run in parallel while labelling and training run on their own. Start the report skeleton in
@@ -637,8 +654,8 @@ training. An early submission is realistic once the deadline is known.
 
 ### Decisions needed
 
-1. The deadline, to put dates on the phases and decide whether to aim for the early-submission
-   bonus.
+1. ~~The deadline.~~ Decided: 2026-12-10, aiming for an early submission on 2026-12-03 (see the
+   schedule). Still open: the presentation date, and how the early-submission bonus is counted.
 2. A second annotator for 30 audit pairs. Optional, but it makes the label-noise estimate much
    stronger.
 3. Whether the approved proposal words the RQs or the metric split differently from Section 3. If
