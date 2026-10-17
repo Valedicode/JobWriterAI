@@ -311,14 +311,25 @@ def render_cv_pdf(
     *,
     section_order: list[str] | None = None,
     convention: str = "international",
+    max_pages: int | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """
     Compile the CV, check the page rules on the PDF, and re-render until they
     hold: first compact spacing, then whole blocks moved to page 2. Returns the
     PDF and a report ({pages, layout, page_break_before_block, problems});
     problems left after the last attempt are reported, not hidden.
+
+    ``max_pages`` is the length a review recommended (1 or 2). Without one the
+    CV takes the fewest pages a readable layout allows: a CV that fits on one
+    page with compact spacing gets one page, not a second page for its last
+    few lines. Content is never dropped to reach the length; when it doesn't
+    fit, the report says so.
     """
+    target = max_pages if max_pages in (1, 2) else 1
     results: list[tuple[tuple[str, bool, int | None], dict[str, Any], str]] = []
+
+    def fits(analysis: dict[str, Any]) -> bool:
+        return analysis["pages"] <= target and not layout_problems(analysis)
 
     def attempt(layout: str, merge: bool, break_before_block: int | None) -> bool:
         """Render and measure one variant; True when it keeps every rule."""
@@ -331,12 +342,16 @@ def render_cv_pdf(
 
     # Spoken languages are a line in Skills (when there is a Skills section),
     # so a short Languages section can't be stranded on the last page.
-    # 1. As designed; 2. compact, to fit on one page.
-    done = attempt("normal", True, None) or attempt("compact", True, None)
-    # 4. Balance two pages: move whole blocks (a section, or entries of a long
+    # 1. As designed; 2. compact, when the designed layout runs longer than the
+    # target or breaks a rule.
+    attempt("normal", True, None)
+    if not fits(results[0][1]):
+        attempt("compact", True, None)
+    done = any(fits(analysis) for _, analysis, _ in results)
+    # 3. Balance two pages: move whole blocks (a section, or entries of a long
     # one) from the end of page 1 to page 2 by breaking one to three blocks
     # earlier than LaTeX did.
-    if not done and results[0][1]["pages"] == 2:
+    if not done and results[0][1]["pages"] == 2 and layout_problems(results[0][1]):
         _, _, anchors = _cv_context(cv_data, section_order, convention=convention,
                                     merge_languages=True, break_before_block=None)
         first_on_two = _first_block_on_page_two(results[0][1]["page_two_first_line"], anchors)
@@ -345,12 +360,17 @@ def render_cv_pdf(
                 if first_on_two - back <= 0 or attempt("normal", True, first_on_two - back):
                     break
 
-    # The first attempt that keeps every rule, else the least bad one.
+    # The first attempt within the target that keeps every rule, else the first
+    # that keeps every rule, else the least bad one.
     def badness(result: tuple[Any, dict[str, Any], str]) -> tuple[int, int, float]:
         _, analysis, _ = result
         return len(layout_problems(analysis)), analysis["pages"], -analysis["last_page_fill"]
 
-    best = next((r for r in results if not layout_problems(r[1])), None) or min(results, key=badness)
+    best = (
+        next((r for r in results if fits(r[1])), None)
+        or next((r for r in results if not layout_problems(r[1])), None)
+        or min(results, key=badness)
+    )
     (layout, merge, break_before), analysis, name = best
     analysis = {k: v for k, v in analysis.items() if k != "page_two_first_line"}
     final_pdf = output_dir / f"{job_name}.pdf"
@@ -366,7 +386,12 @@ def render_cv_pdf(
         "merged_languages": merge,
         "page_break_before_block": break_before,
         "attempts": len(results),
-        "problems": layout_problems(analysis),
+        "target_pages": max_pages,
+        "problems": layout_problems(analysis) + (
+            [f"the CV needs {analysis['pages']} pages, more than the recommended {max_pages}, "
+             "even with compact spacing"]
+            if max_pages and analysis["pages"] > max_pages else []
+        ),
     }
 
 

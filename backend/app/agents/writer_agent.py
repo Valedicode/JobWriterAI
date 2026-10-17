@@ -327,6 +327,7 @@ def generate_cv_pdf(
     section_order_json: str = "",
     output_dir: str = "",
     convention: str = "international",
+    max_pages: int = 0,
 ) -> str:
     """
     Generate a tailored CV PDF via LaTeX (Harvard-style, JSON Resume taxonomy).
@@ -341,6 +342,8 @@ def generate_cv_pdf(
         output_dir: Directory to write into (a session folder inside data/);
             defaults to data/ itself
         convention: "dach" for DACH date style, else "international"
+        max_pages: the recommended length (1 or 2); 0 means the fewest pages a
+            readable layout allows
 
     Returns:
         Success message with the filename for download, then one
@@ -371,6 +374,7 @@ def generate_cv_pdf(
         pdf_path, layout = render_cv_pdf(
             cv_data, target_dir, stem, section_order=section_order,
             convention="dach" if convention == "dach" else "international",
+            max_pages=max_pages or None,
         )
         final_path = target_dir / output_filename
         if pdf_path != final_path:
