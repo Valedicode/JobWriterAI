@@ -898,3 +898,103 @@ def test_unreadable_text_answer_asks_again(graph, silent_on_german):
     result = graph.invoke(Command(resume={"action": "edit", "feedback": "not sure"}), config=config)
     assert _interrupt_payload(result)["step"] == "confirm_eligibility"
     assert "couldn't match" in result["messages"][-1].content
+
+
+# --------------------------------------------------------------------------- #
+# Scoring and cover-letter failures go to step_failed too, instead of showing a
+# 0.0 score or crashing the run with no gate left to answer.
+# --------------------------------------------------------------------------- #
+
+FAILED_REPORT = {
+    "aggregate_score": 0.0, "level": "unknown", "interpretation": "Unexpected error during scoring: boom",
+    "dimensions": [], "gap_analysis": {}, "warnings": ["boom"],
+}
+
+
+def test_scoring_failure_routes_to_step_failed_and_retry_rescores(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-scoring-error-retry"}}
+    calls = {"n": 0}
+
+    def _score(_: Any) -> str:
+        calls["n"] += 1
+        return json.dumps(FAILED_REPORT if calls["n"] == 1 else COMPATIBILITY_REPORT)
+
+    with _patch("app.agents.orchestrator.nodes_job_tailoring.calculate_compatibility_score_v2", _fake_tool(_score)):
+        result = graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
+        payload = _interrupt_payload(result)
+        assert payload["step"] == "step_failed"
+        assert payload["preview"]["failed_step"] == "Compatibility scoring"
+        assert "boom" in payload["preview"]["error"]
+        assert not graph.get_state(config).values.get("compatibility_report")
+
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # retry
+
+    assert _interrupt_payload(result)["step"] == "present_score"
+    assert not graph.get_state(config).values.get("step_error")
+
+
+def _to_cover_letter_language(graph, config):
+    graph.invoke({"flow": "job_tailoring", "cv_language": "english", "cv_data": CV, "job_data": JOB}, config=config)
+    for _ in range(3):  # present_score, approve_selection, approve_rewrite
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)
+    assert _interrupt_payload(result)["step"] == "cover_letter_language"
+
+
+def test_cover_letter_failure_routes_to_step_failed_and_retry_drafts_again(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-cover-letter-error-retry"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.generate_cover_letter_content",
+        _fails_then(COVER_LETTER_CONTENT, {}),
+    ):
+        _to_cover_letter_language(graph, config)
+        result = graph.invoke(Command(resume={"action": "choose", "choice": "english"}), config=config)
+        payload = _interrupt_payload(result)
+        assert payload["step"] == "step_failed"
+        assert payload["preview"]["failed_step"] == "Cover letter drafting"
+
+        result = graph.invoke(Command(resume={"action": "approve"}), config=config)  # retry
+
+    assert _interrupt_payload(result)["step"] == "approve_cover_letter"
+
+
+def test_stopping_after_a_failed_cover_letter_keeps_the_cv_files(graph, patched_tools):
+    from unittest.mock import patch as _patch
+
+    config = {"configurable": {"thread_id": "test-cover-letter-error-stop"}}
+    with _patch(
+        "app.agents.orchestrator.nodes_job_tailoring.generate_cover_letter_content",
+        _fails_then(COVER_LETTER_CONTENT, {}),
+    ):
+        _to_cover_letter_language(graph, config)
+        graph.invoke(Command(resume={"action": "choose", "choice": "english"}), config=config)
+        result = graph.invoke(Command(resume={"action": "reject"}), config=config)  # step_failed
+
+    assert "__interrupt__" not in result
+    assert [f["file_type"] for f in result["generated_files"]] == ["cv"]
+    assert "Your CV files are still available" in result["last_narration"]
+
+
+def test_cover_letter_tool_reports_a_failed_call_instead_of_raising():
+    from unittest.mock import patch as _patch
+
+    from app.agents import writer_agent
+
+    class _Failing:
+        def __call__(self, role, *, temperature=None):
+            return self
+
+        def with_structured_output(self, schema):
+            from langchain_core.runnables import RunnableLambda
+
+            def _boom(_):
+                raise TimeoutError("timed out")
+
+            return RunnableLambda(_boom)
+
+    with _patch.object(writer_agent, "chat_model", _Failing()):
+        out = json.loads(writer_agent.generate_cover_letter_content.invoke({"cv_json": "{}", "job_json": "{}"}))
+    assert out == {"error": "timed out"}

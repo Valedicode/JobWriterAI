@@ -413,14 +413,10 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
         "cv_json": cv_json,
         "job_json": job_json,
     })
-    report = _safe_json_loads(report_json, {
-        "aggregate_score": 0.0,
-        "level": "unknown",
-        "interpretation": "Compatibility scoring failed.",
-        "dimensions": [],
-        "gap_analysis": {"matched_skills": [], "transferable_skills": [], "missing_skills": [], "over_qualified_signals": []},
-        "warnings": ["scoring v2 returned non-JSON output"],
-    })
+    report = _safe_json_loads(report_json, None)
+    error = _tool_error(report, "scoring") or _scoring_failure(report)
+    if error:
+        return _fail_step(JT_STEP2_COMPATIBILITY, "Compatibility scoring", error)
 
     score = report.get("aggregate_score", 0.0)
     level = (report.get("level") or "unknown").upper()
@@ -506,7 +502,15 @@ def jt_step2_compute_compatibility(state: OrchestratorState) -> dict[str, Any]:
             f"confirmed. {follow_up}"
         )
 
-    return _narrate({"compatibility_report": report}, "\n".join(lines))
+    return _narrate({"compatibility_report": report, "step_error": None}, "\n".join(lines))
+
+
+def _scoring_failure(report: dict[str, Any]) -> str | None:
+    """The scoring tool catches its own errors and returns an empty report
+    (level 'unknown', no dimensions); that is a failed step, not a 0.0 score."""
+    if report.get("level") == "unknown" and not report.get("dimensions"):
+        return str(report.get("interpretation") or "the scoring returned no result")
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -522,6 +526,8 @@ def _eligibility_questions_for(report: dict[str, Any] | None) -> list[dict[str, 
 
 
 def route_after_score(state: OrchestratorState) -> str:
+    if state.get("step_error"):
+        return JT_GATE_STEP_FAILED
     if not state.get("eligibility_asked") and _eligibility_questions_for(state.get("compatibility_report")):
         return JT_GATE_CONFIRM_ELIGIBILITY
     return _after_scoring(state)
@@ -1332,7 +1338,9 @@ def jt_gate_approve_rewrite(state: OrchestratorState) -> Command:
 # reported an error, so a failure is never shown as an empty-but-valid result.
 # --------------------------------------------------------------------------- #
 
-_RETRYABLE_STEPS = (JT_STEP4_SELECT, JT_STEP5_REWRITE, JT_STEP_TRANSLATE_CV)
+_RETRYABLE_STEPS = (
+    JT_STEP2_COMPATIBILITY, JT_STEP4_SELECT, JT_STEP5_REWRITE, JT_STEP_TRANSLATE_CV, JT_STEP8_COVER_LETTER_CONTENT,
+)
 
 
 def route_after_select(state: OrchestratorState) -> str:
@@ -1364,8 +1372,11 @@ def jt_gate_step_failed(state: OrchestratorState) -> Command:
             update=_narrate({"step_error": None}, f"Retrying {label.lower()}."),
             goto=failed_step,
         )
+    files_note = (
+        "Your CV files are still available." if state.get("generated_files") else "No documents were generated."
+    )
     return Command(
-        update=_narrate({"step_error": None}, f"Stopped after {label.lower()} failed. No documents were generated."),
+        update=_narrate({"step_error": None}, f"Stopped after {label.lower()} failed. {files_note}"),
         goto=END,
     )
 
@@ -1839,7 +1850,10 @@ def jt_step8_cover_letter_content(state: OrchestratorState) -> dict[str, Any]:
         "company_json": company_json,
         "language": language,
     })
-    content = _safe_json_loads(content_json, {})
+    content = _safe_json_loads(content_json, None)
+    error = _tool_error(content, "cover letter")
+    if error:
+        return _fail_step(JT_STEP8_COVER_LETTER_CONTENT, "Cover letter drafting", error)
 
     narration_lines = [
         f"Cover letter drafted ({language}). Review the paragraphs and approve to export."
@@ -1847,7 +1861,11 @@ def jt_step8_cover_letter_content(state: OrchestratorState) -> dict[str, Any]:
     if content.get("betreff"):
         narration_lines.append(f"Betreff: {content['betreff']}")
 
-    return _narrate({"cover_letter_content": content}, "\n".join(narration_lines))
+    return _narrate({"cover_letter_content": content, "step_error": None}, "\n".join(narration_lines))
+
+
+def route_after_cover_letter(state: OrchestratorState) -> str:
+    return JT_GATE_STEP_FAILED if state.get("step_error") else JT_GATE_APPROVE_COVER_LETTER
 
 
 # --------------------------------------------------------------------------- #

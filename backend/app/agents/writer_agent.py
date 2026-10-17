@@ -162,7 +162,8 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
                                   and Grußformel
 
     Returns:
-        JSON string with CoverLetterContent structure.
+        JSON string with CoverLetterContent structure, or {"error": ...}
+        when the call fails.
         For English: opening/body/closing paragraphs populated; betreff and
         grussformel are empty strings.
         For German: betreff and grussformel populated; opening_paragraph →
@@ -278,8 +279,11 @@ def generate_cover_letter_content(cv_json: str, job_json: str, company_json: str
         Write a compelling, tailored cover letter.""")
         ])
 
-    chain = prompt | structured_llm
-    result = chain.invoke({"cv": cv_json, "job": job_json, "company": company_context})
+    try:
+        chain = prompt | structured_llm
+        result = chain.invoke({"cv": cv_json, "job": job_json, "company": company_context})
+    except Exception as e:  # noqa: BLE001 - reported to the node as a step failure
+        return json.dumps({"error": str(e)})
 
     return result.model_dump_json(indent=2)
 
