@@ -852,7 +852,7 @@ function renderObjectArray(key: string, items: Record<string, unknown>[]) {
   return (
     <Section key={key} title={humanizeKey(key)}>
       <ul className="space-y-2">
-        {items.slice(0, 10).map((item, i) => {
+        {items.map((item, i) => {
           if (hasKeys(item, 'original', 'rewritten')) {
             return (
               <MiniCard key={i}>
@@ -877,6 +877,20 @@ function renderObjectArray(key: string, items: Record<string, unknown>[]) {
                     <Pill key={j}>{s}</Pill>
                   ))}
                 </div>
+              </MiniCard>
+            );
+          }
+          if (hasKeys(item, 'institution') || hasKeys(item, 'degree')) {
+            // An education entry (the CV review's improved entries): shown as it
+            // reads on the CV, never as its raw fields.
+            const meta = [item.location, item.dates, item.grade].filter(isNonEmptyString).join(' · ');
+            return (
+              <MiniCard key={i}>
+                <div className="text-sm font-medium text-ink [overflow-wrap:anywhere]">
+                  {[item.degree, item.institution].filter(isNonEmptyString).join(' — ')}
+                </div>
+                {meta && <div className="mt-0.5 text-meta text-ink-faint [overflow-wrap:anywhere]">{meta}</div>}
+                {isStringArray(item.details) && <Bullets items={item.details} />}
               </MiniCard>
             );
           }
@@ -944,7 +958,7 @@ function StructuredBody({ preview, dense }: { preview: PreviewMap; dense?: boole
         if (isStringArray(value)) {
           return (
             <Section key={key} title={humanizeKey(key)}>
-              <Bullets items={value.slice(0, 12)} />
+              <Bullets items={value} />
             </Section>
           );
         }

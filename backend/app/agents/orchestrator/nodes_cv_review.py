@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from typing import Any, Literal
 
 from langchain_core.messages import AIMessage
@@ -100,14 +101,28 @@ class HeaderReview(BaseModel):
     )
 
 
+class ImprovedEducationEntry(BaseModel):
+    """One education entry as rewritten: the same fields the CV's entries have,
+    so the review shows a readable entry (not a JSON string) and step 7 can
+    apply it field by field."""
+    model_config = ConfigDict(extra="forbid")
+
+    institution: str | None = None
+    degree: str | None = None
+    location: str | None = None
+    dates: str | None = None
+    grade: str | None = None
+    details: list[str] = Field(default_factory=list)
+
+
 class EducationReview(BaseModel):
     critique: list[str] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
-    improved_entries: list[str] = Field(
+    improved_entries: list[ImprovedEducationEntry] = Field(
         default_factory=list,
         description=(
-            "Rewritten education entries in the same order as the input. "
-            "Empty list when no rewrite is needed."
+            "The education entries rewritten, in the same order and with the same "
+            "fields as the input. Empty list when no rewrite is needed."
         ),
     )
     future_degree_recommendation: str | None = Field(
@@ -225,7 +240,15 @@ _GLOBAL_PREAMBLE = (
     "Prefer impact-driven wording with concrete metrics over task descriptions. "
     "Preserve a professional, neutral tone - do not inflate seniority or fabricate "
     "experience, metrics, or technologies. Use a European/German academic and "
-    "industry frame of reference unless the resume says otherwise."
+    "industry frame of reference unless the resume says otherwise.\n\n"
+    "Write to the candidate about their CV as it reads on the page. Never mention "
+    "JSON, field names (such as grade, details, highlights, responsibilities, "
+    "role_index), arrays or indexes, or how the data is stored. The CV was read "
+    "automatically from their PDF and can contain reading slips: a value repeated "
+    "in two places, bullets attached to the wrong entry, a job title repeated as "
+    "the company. Don't present those as mistakes in their CV; if something looks "
+    "inconsistent, say the entry may have been read incorrectly from the PDF and "
+    "ask them to check it."
 )
 
 
@@ -342,11 +365,14 @@ Evaluate:
 - Whether academic strengths are underutilised.
 
 Refine by:
-- Clarifying timelines.
-- Adding relevant coursework only when it strengthens the profile.
-- Removing speculative or confusing entries.
+- Clarifying timelines and wording.
+- Removing lines that repeat something the entry already says.
+- Suggesting (in suggestions, not in the entries) coursework or awards worth adding.
 
-Return improved_entries in the same order as the input list. Empty list = no rewrite needed.
+Return improved_entries in the same order as the input entries, each with the same fields
+(institution, degree, location, dates, grade, details). Rephrase only: keep every institution,
+date, grade and number as it is, and never add a detail the entry doesn't have.
+Empty list = no rewrite needed.
 Add a short future_degree_recommendation if relevant.
 """.strip()
 
@@ -820,18 +846,60 @@ def _extract_filename(tool_message: str) -> str | None:
     return match.group(1) if match else None
 
 
+_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
+_DETAIL_MATCH = 0.6
+
+
+def _numbers(text: str) -> set[str]:
+    return {n.replace(",", ".") for n in _NUMBER_RE.findall(text or "")}
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[^0-9a-zäöüß]+", " ", str(text or "").casefold()).strip()
+
+
+def _adds_no_numbers(original: Any, value: str) -> bool:
+    """A rewrite may rephrase but not bring in a year, grade or count the entry doesn't have."""
+    return _numbers(value) <= _numbers(json.dumps(original, ensure_ascii=False, default=str))
+
+
+def _merge_education_entry(original: dict[str, Any], new: dict[str, Any]) -> dict[str, Any]:
+    """The original entry with the approved rewording: same institution, each
+    field replaced only when the new text adds no number, and details kept only
+    when they reword an existing line (a dropped repeat is fine, a new claim isn't)."""
+    merged = dict(original)
+    for field in ("degree", "location", "dates", "grade"):
+        value = new.get(field)
+        if isinstance(value, str) and value.strip() and _adds_no_numbers(original, value):
+            merged[field] = value.strip()
+    if isinstance(new.get("details"), list):
+        old_details = [_norm(d) for d in original.get("details") or []]
+        merged["details"] = [
+            d for d in new["details"]
+            if isinstance(d, str) and d.strip() and _adds_no_numbers(original, d)
+            and any(SequenceMatcher(None, _norm(d), old).ratio() >= _DETAIL_MATCH for old in old_details)
+        ]
+    return merged
+
+
 def _apply_education_review(education: list[Any], review: dict[str, Any]) -> list[Any]:
-    improved = [e for e in (review.get("improved_entries") or []) if isinstance(e, str) and e.strip()]
-    # Rewritten entries are flat strings; only swap them in when the original
-    # entries are also strings, otherwise we'd destroy the structured
-    # institution/degree/dates fields the LaTeX template relies on.
-    if (
-        improved
-        and len(improved) == len(education)
-        and all(isinstance(e, str) for e in education)
-    ):
-        return improved
-    return list(education)
+    """Apply the approved rewrites entry by entry. Nothing changes when the
+    review returned a different number of entries or renamed an institution:
+    the rewrite can't be matched to an entry safely."""
+    improved = review.get("improved_entries") or []
+    if not improved or len(improved) != len(education):
+        return list(education)
+    out: list[Any] = []
+    for original, new in zip(education, improved):
+        if isinstance(original, dict) and isinstance(new, dict):
+            if _norm(new.get("institution") or original.get("institution") or "") != _norm(original.get("institution") or ""):
+                return list(education)
+            out.append(_merge_education_entry(original, new))
+        elif isinstance(original, str) and isinstance(new, str) and new.strip() and _adds_no_numbers(original, new):
+            out.append(new.strip())  # legacy CVs with flat-string education
+        else:
+            out.append(original)
+    return out
 
 
 def _apply_experience_review(experience: list[Any], review: dict[str, Any]) -> list[Any]:

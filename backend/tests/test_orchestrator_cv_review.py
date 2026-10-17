@@ -105,7 +105,7 @@ CANNED_REVIEWS: dict[str, dict[str, Any]] = {
         "critique": [],
         "suggestions": [],
         "improved_entries": [
-            "B.Sc. Computer Science, University of London (2017-2020)",
+            "B.Sc. in Computer Science, University of London (2020)",
             "M.Sc. Applied Math, University of London (in progress)",
         ],
         "future_degree_recommendation": "PhD not necessary for current target roles.",
@@ -246,7 +246,7 @@ def test_full_happy_path_visits_all_six_gates(patched_llm, patched_cv_pdf, graph
 
     revised_cv = final["cv_data"]
     assert revised_cv["education"] == [
-        "B.Sc. Computer Science, University of London (2017-2020)",
+        "B.Sc. in Computer Science, University of London (2020)",
         "M.Sc. Applied Math, University of London (in progress)",
     ]
     assert revised_cv["experience"][0]["responsibilities"][0] == (
@@ -321,3 +321,66 @@ def test_reject_at_education_terminates_without_later_steps(patched_llm, graph):
     assert "experience" not in review
     assert "skills_projects" not in review
     assert "assessment" not in review
+
+
+# --------------------------------------------------------------------------- #
+# Education rewrites are structured entries: shown readably, applied safely
+# --------------------------------------------------------------------------- #
+
+from app.agents.orchestrator.nodes_cv_review import (  # noqa: E402
+    _GLOBAL_PREAMBLE,
+    EducationReview,
+    _apply_education_review,
+)
+
+STRUCTURED_EDUCATION = [
+    {"institution": "RWTH Aachen University", "degree": "M.Sc. Computer Science", "location": "Aachen, Germany",
+     "dates": "October 2025 - Expected 2028", "grade": "1.6 (German System)", "details": ["Current Grade: 1.6"]},
+    {"institution": "Gymnasium an der Gartenstraße", "degree": "Abitur", "location": "Mönchengladbach, Germany",
+     "dates": "Graduated: July 2022", "grade": "1.0", "details": ["Award for excellence in mathematics"]},
+]
+IMPROVED_EDUCATION = [
+    # Rewords the degree and drops the detail that repeated the grade.
+    {"institution": "RWTH Aachen University", "degree": "M.Sc. in Computer Science", "location": "Aachen, Germany",
+     "dates": "October 2025 – Expected 2028", "grade": "1.6 (German System)", "details": []},
+    # Changes a year and adds a claim the CV doesn't make: neither is applied.
+    {"institution": "Gymnasium an der Gartenstraße", "degree": "Abitur", "location": "Mönchengladbach, Germany",
+     "dates": "Graduated: July 2021", "grade": "1.0",
+     "details": ["Award for excellence in mathematics", "Relevant coursework: Machine Learning"]},
+]
+
+
+def test_the_review_returns_education_as_entries_not_json_strings():
+    review = EducationReview.model_validate({"improved_entries": IMPROVED_EDUCATION})
+    assert review.improved_entries[0].degree == "M.Sc. in Computer Science"
+    with pytest.raises(Exception):
+        EducationReview.model_validate({"improved_entries": ['{"institution": "RWTH"}']})
+
+
+def test_approved_education_rewrites_are_applied_without_new_facts():
+    out = _apply_education_review(STRUCTURED_EDUCATION, {"improved_entries": IMPROVED_EDUCATION})
+    assert out[0]["degree"] == "M.Sc. in Computer Science"
+    assert out[0]["dates"] == "October 2025 – Expected 2028"
+    assert out[0]["details"] == []
+    assert out[1]["dates"] == "Graduated: July 2022"
+    assert out[1]["details"] == ["Award for excellence in mathematics"]
+    assert STRUCTURED_EDUCATION[0]["details"] == ["Current Grade: 1.6"]  # the input is untouched
+
+
+@pytest.mark.parametrize("improved", [
+    IMPROVED_EDUCATION[:1],  # a different number of entries
+    [{**IMPROVED_EDUCATION[0], "institution": "TU Munich"}, IMPROVED_EDUCATION[1]],  # a renamed institution
+])
+def test_education_rewrites_that_cant_be_matched_change_nothing(improved):
+    assert _apply_education_review(STRUCTURED_EDUCATION, {"improved_entries": improved}) == STRUCTURED_EDUCATION
+
+
+def test_a_legacy_string_entry_with_an_invented_year_is_not_applied():
+    out = _apply_education_review(["B.Sc. Computer Science, 2020"],
+                                  {"improved_entries": ["B.Sc. Computer Science (2017-2020)"]})
+    assert out == ["B.Sc. Computer Science, 2020"]
+
+
+def test_reviewers_write_about_the_cv_not_its_data():
+    assert "Never mention" in _GLOBAL_PREAMBLE and "field names" in _GLOBAL_PREAMBLE
+    assert "read incorrectly from the PDF" in _GLOBAL_PREAMBLE
