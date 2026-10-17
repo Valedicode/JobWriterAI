@@ -31,7 +31,12 @@ from typing import Any
 from langgraph.graph import END
 from langgraph.types import Command
 
-from app.agents.orchestrator.final_cv import final_cv
+from app.agents.orchestrator.final_documents import (
+    CV_DOCUMENT,
+    GENERATED_CV_DOCUMENT,
+    final_cv_document,
+    saved,
+)
 from app.agents.orchestrator.gates import BulletDecision, GateResolution
 from app.agents.orchestrator.nodes_cv_edit import CV_RERENDER
 from app.agents.orchestrator.nodes_job_tailoring import (
@@ -144,6 +149,10 @@ def propose_rerun(
         raise ChatActionRefused(f"{label.capitalize()} hasn't run yet in this session, so there's nothing to re-run.")
 
     restore = _restore_update(before)
+    if target == JT_GATE_COVER_LETTER:
+        # The CV was finished before the cover letter; changes made to it
+        # since then stay.
+        restore.update({key: copy.deepcopy(current.get(key)) for key in (CV_DOCUMENT, GENERATED_CV_DOCUMENT)})
     note = (note or "").strip()
     if note and target in (JT_STEP4_SELECT, JT_STEP5_REWRITE):
         strategy = dict(restore.get("tailoring_strategy") or {})
@@ -248,13 +257,13 @@ def propose_cv_edit(
     """Change one line of the finished CV: a proposal for the confirm_change
     gate that, once approved, writes the line and generates the PDF again."""
     _require_no_open_proposal(pending_step)
-    found = final_cv(current)
-    if found is None:
+    document = final_cv_document(current)
+    if document is None:
         raise ChatActionRefused(
             "There's no finished CV to change yet. While a step is open, tell me what to change "
             "there and I'll pass it on as your notes for that step."
         )
-    key, cv = found
+    cv = document["cv"]
     index = index_cv_bullets(cv)
     ref = index.get(line_id)
     if ref is None:
@@ -276,7 +285,7 @@ def propose_cv_edit(
         "details": details,
         "goto": CV_RERENDER,
         "return_to": pending_node,
-        "restore": {key: updated, "after_edit_goto": pending_node},
+        "restore": {CV_DOCUMENT: saved(document, cv=updated), "after_edit_goto": pending_node},
         "on_approve": "Changing that line and generating your CV again.",
     }
 

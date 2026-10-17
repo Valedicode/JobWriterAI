@@ -35,7 +35,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from app.openai_llm import chat_model
 from pydantic import BaseModel, Field, model_validator
 
-from app.agents.orchestrator.final_cv import final_cv_lines
+from app.agents.orchestrator.final_documents import final_cv_lines
 from app.agents.orchestrator.gates import GatePayload, GateResolution
 
 logger = logging.getLogger(__name__)
