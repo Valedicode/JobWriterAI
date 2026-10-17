@@ -488,6 +488,28 @@ def test_gate_answers_outside_the_allowed_actions_become_plain_replies():
     assert turn.action == GateResolution(action="approve")
 
 
+def test_an_unapplied_gate_answer_does_not_claim_it_was_done():
+    """The model's reply announces the action; when it can't be applied the
+    user is told why instead, so the chat never says it did something it didn't."""
+    turn = _interpret(ChatDecision(reply="Sure, editing that.", call=ResolveGate(tool="resolve_gate", action="edit", feedback="x")))
+    assert "editing" not in turn.reply.lower()
+    assert "nothing was changed" in turn.reply and "approve, reject" in turn.reply
+
+    choice_gate = GatePayload(step="cv_language", kind="choice", narration="", allowed_actions=["choose"],
+                              choices=["english", "german"])
+    with patch("app.agents.orchestrator.chat_agent.chat_model", _StubChatModel(
+        ChatDecision(reply="Using French.", call=ResolveGate(tool="resolve_gate", action="choose", choice="french"))
+    )):
+        turn = interpret_chat(text="french", gate=choice_gate, state={})
+    assert turn.action is None and "'french' isn't one of the options" in turn.reply
+
+    with patch("app.agents.orchestrator.chat_agent.chat_model", _StubChatModel(
+        ChatDecision(reply="Approved!", call=ResolveGate(tool="resolve_gate", action="approve"))
+    )):
+        turn = interpret_chat(text="approve", gate=None, state={})
+    assert turn.action is None and turn.reply.startswith("There's no step waiting")
+
+
 def test_other_tools_pass_through_to_the_api():
     call = RerunFrom(tool="rerun_from", step="score")
     assert _interpret(ChatDecision(reply="Sure.", call=call)).call == call
