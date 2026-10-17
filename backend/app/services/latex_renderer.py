@@ -7,14 +7,17 @@ taxonomy (see ``app.services.resume_adapter``).
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
+import string
 import subprocess
 import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -60,18 +63,25 @@ def latex_escape(text: str | None) -> str:
     return "".join(replacements.get(ch, ch) for ch in text)
 
 
+# Characters a URL may contain as they are (RFC 3986 reserved and unreserved).
+_URL_CHARS = frozenset(string.ascii_letters + string.digits + "-._~:/?#[]@!$&'()*+,;=%")
+
+
 def latex_url(text: str | None) -> str:
-    """Escape a URL for use inside ``\\href{...}{...}``."""
+    """
+    Escape a URL (or a ``mailto:`` address) for use inside ``\\href{...}{...}``.
+
+    Every character outside the URL set is percent-encoded, so a backslash,
+    a brace or TeX's ``^^5c`` (a backslash spelled with carets) can't end the
+    argument or start a command: the URL comes from the CV, which the client
+    sends. The URL characters TeX treats specially are then escaped.
+    """
     if text is None:
         return ""
     if not isinstance(text, str):
         text = str(text)
-    return (
-        text.replace("\\", r"\textbackslash{}")
-        .replace("%", r"\%")
-        .replace("#", r"\#")
-        .replace("_", r"\_")
-    )
+    encoded = "".join(ch if ch in _URL_CHARS else quote(ch, safe="") for ch in text.strip())
+    return encoded.replace("%", r"\%").replace("#", r"\#").replace("_", r"\_")
 
 
 def _jinja_env() -> Environment:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.latex_renderer import latex_escape, render_cover_letter_tex, render_cv_tex
+from app.services.latex_renderer import latex_escape, latex_url, render_cover_letter_tex, render_cv_tex
 from app.services.resume_adapter import build_harvard_sections, to_json_resume
 
 
@@ -153,3 +153,46 @@ def test_render_cover_letter_tex_german_includes_betreff():
     assert "Betreff:" in tex
     assert "Bewerbung als Softwareentwickler" in tex
     assert "Mit freundlichen Grüßen" in tex
+
+
+_LETTER = {
+    "language": "english",
+    "opening_paragraph": "I am excited to apply.",
+    "body_paragraph_1": "My experience aligns well.",
+    "body_paragraph_2": "I bring strong ML skills.",
+    "closing_paragraph": "Thank you for your consideration.",
+}
+
+
+def test_latex_url_keeps_ordinary_urls_working():
+    assert latex_url("https://github.com/Valedicode") == "https://github.com/Valedicode"
+    assert latex_url("https://x.com/a_b?x=1&y=2#top") == r"https://x.com/a\_b?x=1&y=2\#top"
+    assert latex_url("https://linkedin.com/in/jürgen") == r"https://linkedin.com/in/j\%C3\%BCrgen"
+
+
+@pytest.mark.parametrize("value", [
+    "a}{x}\input{/etc/passwd}\textbf{",
+    "https://a.com/}{x}^^5cinput{/etc/passwd}^^5ctextbf{",
+])
+def test_latex_url_cannot_end_the_argument_or_start_a_command(value):
+    escaped = latex_url(value)
+    assert not any(ch in escaped for ch in "{}^ ")
+    assert "\input" not in escaped and "\textbf" not in escaped
+
+
+@pytest.mark.parametrize("language", ["english", "german"])
+def test_cover_letter_email_and_links_cannot_inject_latex(language):
+    """cv_data comes from the client: its email and profile URLs must not be
+    able to run TeX (\input would read server files into the letter)."""
+    tex = render_cover_letter_tex(
+        {**_LETTER, "language": language},
+        applicant_name="Eve",
+        recipient_info="Hiring Team",
+        cv_data={
+            "name": "Eve",
+            "email": "a}{\input{/etc/passwd}}\textbf{",
+            "github_url": "https://a.com/}{x}^^5cinput{/etc/passwd}^^5ctextbf{",
+        },
+    )
+    assert "\input" not in tex
+    assert "^^5c" not in tex
