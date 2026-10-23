@@ -54,19 +54,29 @@ def model_for(role: LLMRole) -> str:
     return getattr(settings, f"llm_model_{role}") or settings.llm_model or model_id(DEFAULT_CHAT_MODEL)
 
 
+def provider_slugs() -> list[str]:
+    """The OpenRouter providers LLM_PROVIDER pins the chat models to (empty: any host)."""
+    pinned = get_settings().llm_provider or ""
+    return [slug.strip() for slug in pinned.split(",") if slug.strip()]
+
+
 def chat_model(role: LLMRole, *, temperature: float | None = 0) -> ChatOpenAI:
     settings = get_settings()
-    extra: dict = {}
+    body: dict = {}
     if settings.openrouter_api_key and not settings.llm_reasoning:
         # Reasoning-capable models (e.g. DeepSeek) think by default: ~4x slower and mostly
         # hidden tokens. Extraction and rewriting here don't need it. Set LLM_REASONING=true
         # for models that make reasoning mandatory.
-        extra["extra_body"] = {"reasoning": {"enabled": False}}
+        body["reasoning"] = {"enabled": False}
+    if settings.openrouter_api_key and provider_slugs():
+        # Open-weight models have dozens of hosts on OpenRouter, with different quantisations
+        # and data terms. A pinned request fails rather than silently moving to another host.
+        body["provider"] = {"order": provider_slugs(), "allow_fallbacks": False}
     return ChatOpenAI(
         model=model_for(role),
         temperature=temperature,
         timeout=OPENAI_REQUEST_TIMEOUT_S,
         max_retries=OPENAI_MAX_RETRIES,
         **client_kwargs(),
-        **extra,
+        **({"extra_body": body} if body else {}),
     )
