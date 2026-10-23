@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pydantic import Field, BaseModel
 from langchain_core.tools import tool
-from app.openai_llm import chat_model, model_for, model_id, openai_client
+from app.openai_llm import chat_model, embedding_model_id, embeddings_client, model_for
 from langchain_core.prompts import ChatPromptTemplate
 from functools import lru_cache
 import copy
@@ -55,8 +55,8 @@ from app.services.requirement_rubric import knockout_rows, skill_rows
 # ============================================
 
 def _get_openai_client() -> OpenAI:
-    """Get the OpenAI-compatible client for embeddings (OpenRouter or OpenAI)."""
-    return openai_client()
+    """Get the OpenAI-compatible client for embeddings (OpenAI itself when its key is set)."""
+    return embeddings_client()
 
 
 # ============================================
@@ -89,7 +89,7 @@ def get_embeddings(texts: List[str], model: str = "text-embedding-3-small") -> L
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
         response = client.embeddings.create(
-            model=model_id(model),
+            model=embedding_model_id(model),
             input=batch
         )
         batch_embeddings = [item.embedding for item in response.data]

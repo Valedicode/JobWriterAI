@@ -41,6 +41,21 @@ def openai_client() -> OpenAI:
     return OpenAI(**client_kwargs())
 
 
+def embeddings_direct() -> bool:
+    """Embeddings call OpenAI itself when OPENAI_API_KEY is set: the embedding model is OpenAI's,
+    and OpenRouter refuses OpenAI's models from some regions (403, provider terms of service)."""
+    return bool(get_settings().openai_api_key)
+
+
+def embeddings_client() -> OpenAI:
+    settings = get_settings()
+    return OpenAI(api_key=settings.openai_api_key) if embeddings_direct() else openai_client()
+
+
+def embedding_model_id(name: str) -> str:
+    return name if embeddings_direct() else model_id(name)
+
+
 LLMRole = Literal["extract", "writer", "judge", "chat"]
 LLM_ROLES: tuple[LLMRole, ...] = get_args(LLMRole)
 

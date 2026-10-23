@@ -12,7 +12,8 @@ class Settings(BaseSettings):
 
     # API Keys
     # LLM + embeddings go through OpenRouter when its key is set, otherwise OpenAI.
-    # OPENAI_API_KEY is still used directly for speech-to-text (OpenRouter has no audio API).
+    # OPENAI_API_KEY is still used directly for speech-to-text (OpenRouter has no audio API) and,
+    # when set, for embeddings (OpenRouter refuses OpenAI's models from some regions).
     openrouter_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     llm_model: Optional[str] = None  # chat model override, e.g. "anthropic/claude-sonnet-4.5"
