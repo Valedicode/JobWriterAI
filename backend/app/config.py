@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     llm_model_judge: Optional[str] = None  # skill-transferability verdicts
     llm_model_chat: Optional[str] = None  # conversational replies
     llm_reasoning: bool = False  # OpenRouter only: allow hidden reasoning tokens (slower, costlier)
+    # OpenRouter only: comma-separated provider slugs (e.g. "deepseek") that may serve the chat
+    # models, with no fallback to other hosts. Unset lets OpenRouter pick any host of the model.
+    llm_provider: Optional[str] = None
     tavily_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
