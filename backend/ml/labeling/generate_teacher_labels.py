@@ -23,20 +23,19 @@ from functools import partial
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 from datasets import load_dataset
 from langchain_community.callbacks import get_openai_callback
 
 from ml.config import HF_CACHE, HF_DATASET, HF_REVISION, SEED, TEACHER_CACHE, TEACHER_LABELS
 from ml.labeling import teacher, teacher_meta
 from ml.labeling.caches import EmbeddingCache, ExtractionCache, Store, sha256
+from ml.labeling.label_files import LEVELS, latest, read_jsonl, spearman
 
 ATTEMPTS = 4
 BACKOFF_S = 5.0
 MAX_ERRORS_IN_A_ROW = 25
 DONE = {"ok", "degenerate_cv"}
 LABEL_ORDER = {"No Fit": 0, "Potential Fit": 1, "Good Fit": 2}
-LEVELS = ("low", "medium", "high", "excellent")
 
 
 class StopRun(RuntimeError):
@@ -51,17 +50,6 @@ def select_rows(resumes: list[str], jobs: list[str], limit: int, seed: int = SEE
         first.setdefault(pair, i)
     ids = np.random.default_rng(seed).permutation(len(resumes))[:limit] if limit else range(len(resumes))
     return [int(i) for i in ids if first[(resumes[i], jobs[i])] == i]
-
-
-def read_jsonl(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    return [json.loads(line) for line in path.open(encoding="utf-8") if line.strip()]
-
-
-def latest(records: list[dict]) -> dict[int, dict]:
-    """The last record of each row (a row that failed and was retried has several)."""
-    return {r["row_id"]: r for r in records}
 
 
 def spend(tokens: dict, price: dict | None) -> float | None:
@@ -176,11 +164,6 @@ def _appender(path: Path):
         f.write(json.dumps(rec) + "\n")
         f.flush()
     return f, write
-
-
-def spearman(x, y) -> float:
-    """Spearman's rho: Pearson's r of the ranks, ties sharing their mean rank."""
-    return float(np.corrcoef(pd.Series(x).rank(), pd.Series(y).rank())[0, 1])
 
 
 def agreement_with_labels(clean: list[dict], labels: list[str]) -> dict:

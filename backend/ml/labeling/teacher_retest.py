@@ -18,7 +18,7 @@ import numpy as np
 
 from ml.config import TEACHER_LABELS
 from ml.labeling import teacher_meta
-from ml.labeling.generate_teacher_labels import LEVELS, latest, read_jsonl, spearman
+from ml.labeling.label_files import LEVELS, latest, read_jsonl, spearman
 
 
 def clean_scores(path: Path) -> dict[int, dict[str, float | str]]:
