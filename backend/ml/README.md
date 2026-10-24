@@ -92,3 +92,14 @@ are kept.
 
 **Caches.** Extractions and embeddings are kept in `teacher_cache/` across runs. Each distinct text
 is extracted once per teacher version; `--no-cache` uses fresh ones for the run.
+
+## Split and audit set
+
+```
+python -m ml.dataprep.splits         # job-grouped train/val -> splits/splits.json (34 val jobs, 721 rows)
+python -m ml.dataprep.audit_sample   # 80 blind val pairs -> audit/audit_sheet.csv and audit_pairs.md
+```
+
+Label the audit pairs in `audit_sheet.csv` following `ml/AUDIT_RUBRIC.md`, reading the texts in
+`audit_pairs.md`. Both files contain resume text, so they stay in the git-ignored `data/ml/audit/`.
+`ml/PREREGISTRATION.md` fixes the hypotheses, metrics and comparisons before any model is trained.
