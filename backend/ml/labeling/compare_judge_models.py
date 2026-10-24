@@ -37,7 +37,7 @@ from app.models.schemas import JobRequirements
 from app.openai_llm import model_for
 from ml.config import ARTIFACTS, HF_CACHE, HF_DATASET, SEED
 from ml.labeling.compare_extraction_models import load_prices
-from ml.labeling.generate_teacher_labels import UNJUDGED
+from ml.labeling.teacher import UNJUDGED
 from ml.labeling.resume_text_extractor import extract_resume_info_from_text
 
 OUT = ARTIFACTS / "judge_comparison"
