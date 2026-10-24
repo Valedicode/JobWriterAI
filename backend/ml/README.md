@@ -59,6 +59,7 @@ python -m ml.labeling.generate_teacher_labels --limit 200 --workers 16 --out rep
 # Test-retest: 100 rows twice, with fresh extractions and embeddings each time
 python -m ml.labeling.generate_teacher_labels --limit 100 --no-cache --out retest-a.jsonl
 python -m ml.labeling.generate_teacher_labels --limit 100 --no-cache --out retest-b.jsonl
+python -m ml.labeling.teacher_retest   # agreement of the two runs -> teacher_labels/retest.summary.json
 
 # Full runs: every train row (repeated pairs dropped) and every test row
 python -m ml.labeling.generate_teacher_labels --limit 0 --workers 16 --out train.jsonl
@@ -73,6 +74,11 @@ Each run writes, under `teacher_labels/`:
 | `<out>.extractions.jsonl` | each text extracted in the run, with its result |
 | `<out>.teacher_meta.json` | tag, commit, models, host, prices, packages, dataset revision, dates |
 | `<out>.summary.json` | statuses, flags, spend, latency, levels, scores; for train also the agreement with the dataset labels |
+
+The retest summary gives, per score (aggregate and each dimension), Spearman's ρ, ICC(A,1) and the
+absolute differences between the two runs, plus how often the level and the extractions came out the
+same. It is the students' noise ceiling: agreeing with the teacher beyond it only fits the teacher's
+noise.
 
 The test split's labels are never read. Train labels are read only for the summary.
 
