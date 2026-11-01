@@ -1,6 +1,6 @@
 # NLP Course Project: Distilling JobWriterAI's Compatibility Scorer into a Small Fine-Tuned Model
 
-Plan v2.1, 2026-10-17. Supersedes the 2026-09-17 draft (v1). The proposal was approved on 2026-10-17.
+Plan v2.2, 2026-10-24 (v2: 2026-10-17). Supersedes the 2026-09-17 draft (v1). The proposal was approved on 2026-10-17.
 
 v2 keeps v1's scope and adds three things: what the data already in hand says (Section 2), a sturdier
 evaluation protocol (Sections 3, 8-11) and a phased plan with the current status (Section 13).
@@ -8,24 +8,26 @@ evaluation protocol (Sections 3, 8-11) and a phased plan with the current status
 v2.1 updates the status after the 2026-10-17 app fixes were merged, records what they mean for the
 teacher, and sets the order of distillation work versus app features (Section 13.0).
 
+v2.2 (2026-10-24) records Phases 0 and 1 as done: the teacher's models and host, the `teacher-v1`
+tag, the re-pilot, the test-retest and the full labels (Appendix A.4), and two findings from the
+live runs (Section 2, items 5 and 6).
+
 ---
 
-## 0. Status (2026-10-17)
+## 0. Status (2026-10-24)
 
 | Area | State |
 |---|---|
 | Proposal | Approved 2026-10-17 |
-| App fixes | Merged into `develop` on 2026-10-17: the code-review fixes (#62–#68) and the base-app fixes (#69–#74). See "What the merged app fixes mean for the teacher" below |
-| Scaffolding: `backend/ml/` config, requirements, labelling, training script with a CPU smoke test | Committed on `feature/distillation` (`8f91d91`, 2026-09-18). `develop` was merged in locally (`05900e3`, up to #68, not pushed); #69–#74 still need merging in |
-| Phase 0 work in progress | Parked in `git stash` on `feature/distillation` ("phase0-wip"): dataset script moved to `backend/ml/dataprep/`, scheduler fix, extractor reads the app's prompt and uses the routed model, pinned requirements. The CPU smoke test hasn't run on it yet |
-| HF dataset prep and due-diligence report | Done (Appendix A). The script is committed only once the parked Phase 0 work lands (it lived in the ignored `backend/ml/data/`) |
-| Teacher pilot | 200 train rows, run on the 2026-09-17 scorer. Outdated: the scorer has changed 13 times since (rubric, knockouts, eligibility, experience date ranges, model routing), and the CV extraction changed with #71 |
-| Teacher frozen (tagged) | No. Nothing in `develop` blocks the tag now; it waits only for the teacher-model decision (Decisions needed, 4) |
+| App fixes | Merged into `develop`: the 2026-10-17 fixes (#62–#74), and for labelling the OpenRouter provider pin (#82) and direct OpenAI embeddings (#83). All are pre-existing-app maintenance (Section 1) |
+| Phase 0: repo hygiene, teacher models | Done. `feature/distillation` merged into `develop` (#77, #80); teacher = `deepseek/deepseek-v4.1-flash-1017` for extraction and judge, served by the OpenRouter host `relace` (Decisions needed, 4) |
+| Teacher frozen (tagged) | `teacher-v1` on `ad3a3e5` (2026-10-24), pushed |
+| Phase 1: labelling harness and labels | Done 2026-10-24 (#84–#86). Re-pilot, test-retest and the full train (6,234) and test (1,759) labels, all rows clean; about $6.40 in all (Appendix A.4) |
 | Evaluation harness, baselines, inference wrapper, latency/cost harness, failure analysis | Not started |
 | Report, presentation | Not started |
 
-Problems found in the 2026-10-17 review, all scheduled in Phase 0/1 (the first three are fixed in
-the parked Phase 0 work):
+Problems found in the 2026-10-17 review. All are fixed: the first three in Phase 0, the rest by the
+Phase 1 labelling harness (#84):
 
 - `training/train_lora.py`: `lr_scheduler_type="cosine", warmup_steps=0.03` are inside a comment
   on the `learning_rate` line, so training runs at a constant learning rate with no warmup.
@@ -128,6 +130,26 @@ test labels were not read.
    0 excellent (bands: low < 0.45 ≤ medium < 0.65 ≤ high < 0.80 ≤ excellent). A 4-class level
    metric is effectively binary.
 
+Items 1 and 4 came from the old scorer. On `teacher-v1` (Appendix A.4, all 6,234 train rows):
+
+- **Agreement with the train labels is ρ = 0.295.** Mean aggregate by label: No Fit 0.40,
+  Potential Fit 0.475, Good Fit 0.478. The teacher separates "no fit" from "some fit" but not
+  "potential" from "good". Per dimension: domain 0.28, hard_skills 0.26, ats_keywords 0.14,
+  eligibility 0.13, experience 0.10, seniority 0.00.
+- **Levels are less compressed but still mostly two:** 3,455 low / 2,532 medium / 240 high /
+  7 excellent.
+
+Two findings from the live runs (2026-10-24):
+
+5. **The teacher agrees with itself far better than with the labels.** Two cache-free runs of the
+   same 100 rows agree at ρ = 0.945 (ICC 0.937) on the aggregate. So the weak agreement with the
+   labels is not teacher noise: the teacher and the dataset measure different things.
+6. **The app's scores had been silently degraded.** OpenRouter refuses OpenAI's models from the
+   author's region (403), and the scorer swallowed the error: skill embeddings counted as "no
+   match" and the domain score fell back to a neutral 0.5. The fix (#83, app maintenance) calls
+   OpenAI directly for embeddings. The v0 pilot and the 2026-10-17 model comparisons may have run
+   with broken embeddings; no later result depends on them.
+
 What v2 does about it:
 
 - **The dataset labels are "reference labels of unknown provenance"**, never "human ground
@@ -138,8 +160,7 @@ What v2 does about it:
 - **A resume-prior baseline sits next to every supervised result**, and the generalisation claim
   is limited to unseen jobs.
 - **The teacher's own test-retest agreement is measured** and used as the ceiling for fidelity.
-- **The teacher is frozen and re-piloted before full labelling.** The numbers above come from an
-  older scorer and may change.
+- **The teacher is frozen and re-piloted before full labelling.** Done: `teacher-v1`, Appendix A.4.
 
 The project stays meaningful whatever the re-pilot shows. Fidelity and cost are distillation
 questions that don't depend on the teacher's validity. The shared-subset ablation (RQ3) measures
@@ -161,22 +182,23 @@ onto it.
 - **RQ2, do we need to tune?** Does the tuned student beat cheaper alternatives, on fidelity and
   on agreement with the reference labels, and at what cost per pair? The alternatives are:
   - zero-shot prompting of the same base model
-  - zero-shot prompting of an API model
+  - zero-shot prompting of an API model (OpenAI, Section 8)
   - embedding cosine
   - TF-IDF models
 - **RQ3, label source (shared-subset ablation).** Train one student on teacher labels and one on
   the dataset's labels, using identical training pairs, recipe and budget. How do they differ in
   agreement with the reference labels and with the teacher?
 
-Directional hypotheses. They are pre-registered in Phase 2, after the `teacher-v1` re-pilot.
+Directional hypotheses. They are pre-registered in Phase 2 (`backend/ml/PREREGISTRATION.md`),
+after the `teacher-v1` re-pilot.
 
 - **H1:**
   - Tuned students reach much higher fidelity than zero-shot models.
   - 1.5B ≥ 0.5B.
-  - The gap to the teacher's test-retest ceiling is reported, not assumed.
+  - The gap to the teacher's test-retest ceiling (ρ = 0.945) is reported, not assumed.
 - **H2:**
   - Against the reference labels, the teacher and the teacher-trained students are weak
-    (v0 pilot ρ ≈ 0.16).
+    (`teacher-v1` ρ = 0.295 on train).
   - Students trained on dataset labels score higher, partly through resume memorisation
     (resume prior ≈ 0.28).
 - **H3:**
@@ -197,15 +219,18 @@ backend/ml/
   PREREGISTRATION.md               # committed before the test labels are opened (Phase 2)
   config.py                        # paths, seed, model ids, price table, label maps
   requirements-ml.txt              # pinned versions
-  datasets/                        # renamed from data/: backend/.gitignore ignores every data/ folder
+  dataprep/                        # not data/ (git-ignored) nor datasets/ (shadows the HF library)
     prepare_hf_eval_dataset.py     # download, dedupe, sha256 of the CSVs, length report
     splits.py                      # job-grouped train/val split, stable row ids
     audit_sample.py                # draws the manual audit sample from val
   labeling/
     resume_text_extractor.py       # imports the app's CV-extraction prompt; uses chat_model("extract")
+    teacher.py                     # the frozen app as a black box; catches the errors the scorer swallows
     generate_teacher_labels.py     # resumable, cached, retried; flags; cost from tokens
     caches.py                      # sqlite: extraction by text sha256, embeddings by (text, model)
-    teacher_meta.py                # writes teacher_meta.json (tag, commit, models, versions, dates)
+    teacher_meta.py                # writes teacher_meta.json (tag, commit, models, host, versions, dates)
+    teacher_retest.py              # test-retest agreement of two cache-free runs
+    label_files.py                 # reading label files, free of the app
   training/
     train_lora.py                  # Student-T and Student-D (--target teacher|dataset)
   evaluation/
@@ -234,11 +259,14 @@ The teacher has two stages:
   the `cv_agent` extraction, which **imports** the app's prompt instead of copying it.
 - **Scoring:** `_calculate_compatibility_score_v2_internal`.
 
-It is pinned to the git tag `teacher-v1` on `develop`, set after the 2026-10-17 fixes are merged.
+It is pinned to the git tag `teacher-v1` on `develop` (`ad3a3e5`, 2026-10-24), with
+`deepseek/deepseek-v4.1-flash-1017` for extraction and judge. Every chat call goes through
+OpenRouter to one host, `relace`, with no fallback (`LLM_PROVIDER`), so the labels can't mix hosts
+or quantisations. Embeddings (`text-embedding-3-small`) go to OpenAI directly.
 
 `teacher_meta.json` sits next to the labels and records:
 - tag and commit
-- provider (OpenRouter or OpenAI)
+- route (OpenRouter or OpenAI) and the pinned host
 - model per role (`LLM_MODEL_EXTRACT`, `LLM_MODEL_JUDGE`, or the shared `LLM_MODEL`)
 - embedding model and temperature
 - package versions
@@ -279,10 +307,10 @@ must be fixed, everything is relabelled under `teacher-v2`.
    teacher sees only the texts; the labels stay sealed. Running the full test split rather than a
    sample costs little because its 1,759 pairs have only ~548 distinct texts, and it means every
    system is scored on the same rows.
-   - **Cost:** ≈ $14 for ~8k pairs at v0's per-row cost, less with extraction caching. The
-     re-pilot gives the real figure under `teacher-v1`'s models.
-   - **Wall-clock:** ~20 h at v0's rate (200 rows in ~30 min with 8 workers). Caching and 16
-     workers should bring it under a day; run it overnight.
+
+All three ran on 2026-10-24; the results are in Appendix A.4. The full run took about 1.7 hours
+with 16 workers and cost $5.70 (train $4.60, test $1.10). The token-based spend matched the
+OpenRouter dashboard to within about 7%.
 
 ---
 
@@ -309,10 +337,15 @@ must be fixed, everything is relabelled under `teacher-v2`.
   - Report κ(author, dataset labels), κ(author, teacher band at fitted thresholds) and ρ of every
     system against the author labels.
   - This puts a noise estimate on the reference labels and gives a second, small reference set.
-- **Licensing.** The dataset has no licence, so use it for research only:
+- **Licensing.** The dataset has no licence, which means no permission is granted (not "research
+  only"). It is used under the statutory text-and-data-mining exceptions for research (e.g.
+  Germany §60d UrhG, EU DSM Directive Art. 3) and not redistributed:
   - Publish code, row ids and numeric outputs, never resume or job text.
-  - Record the sha256 of `train.csv` / `test.csv` and the download date, in case the dataset
-    changes or disappears.
+  - Pin the dataset revision (`HF_REVISION` in `ml/config.py`) and record the sha256 of
+    `train.csv` / `test.csv`, in case the dataset changes or disappears.
+  - The licence and provenance questions are open on the dataset's discussion page (#2, #3).
+  - It can't be relied on for a commercial product; that would need other texts labelled by the
+    same teacher.
 
 ---
 
@@ -383,7 +416,7 @@ Run a 200-example, 1-epoch smoke test before every new configuration.
 | Student-T 0.5B / 1.5B | teacher labels | yes | yes |
 | Student-D 0.5B / 1.5B | dataset labels | yes (expected poor) | yes |
 | Zero-shot Qwen 0.5B / 1.5B (same prompt as Student-T) | n/a | yes | yes |
-| Zero-shot API model (`gpt-4o-mini`) | n/a | yes | yes |
+| Zero-shot API model (an OpenAI model via the direct key, dated id recorded) | n/a | yes | yes |
 | Embedding cosine (`text-embedding-3-small`, the teacher's model) | n/a | yes | yes |
 | TF-IDF + ridge → teacher aggregate | teacher labels | yes | yes |
 | TF-IDF + logistic regression → label | dataset labels | n/a | yes |
@@ -482,6 +515,7 @@ Any analysis not in the file is reported as exploratory.
 | Resume overlap between train and test | Claim unseen jobs only; resume-prior baseline beside every supervised result |
 | Teacher non-determinism (LLM extraction and judge) | Test-retest ceiling; tagged teacher; recorded models |
 | Teacher drift | `teacher-v1` tag; no scorer edits during labelling |
+| The host's serving setup (quantisation not published by `relace`) | One pinned host for every label; the teacher is defined as the model on that host, recorded in `teacher_meta.json` |
 | Truncated inputs (student) vs. full text (teacher) | Share truncated; length-stratified errors |
 | Domain shift: the app targets German/EU student CVs, the dataset is general-market English resumes | Fidelity results transfer; validity results are about this dataset only |
 | Compressed teacher levels | Continuous metrics primary; levels secondary |
@@ -496,8 +530,12 @@ Any analysis not in the file is reported as exploratory.
   pre-existing app is described as background.
 - **AI assistance:** disclose it according to the course policy. This is separate from the
   JobWriterAI disclosure.
-- **Dataset:** no licence, so research use only and no redistribution of text. Resumes may contain
-  personal data, so no verbatim examples.
+- **Dataset:** no licence, so used under the research exceptions and never redistributed
+  (Section 6). Resumes may contain personal data, so no verbatim examples.
+- **Data handling during labelling:** resume and job texts were sent to DeepSeek's model on the
+  OpenRouter host `relace` and to OpenAI's embedding API. The OpenRouter account excludes providers
+  that train on prompts, which is why DeepSeek's own endpoint was not used. Model terms: DeepSeek's
+  terms allow training other models on its outputs, which is what distillation does.
 - **Reproducibility:**
   - `backend/ml/README.md` with exact commands
   - pinned `requirements-ml.txt`
@@ -527,6 +565,10 @@ Estimates are working days for one person, part-time. **Deadline: 2026-12-10.**
 | Nov 23–29 | Phase 7: report and slides draft; README checked from a clean clone | **Nov 29:** full draft | |
 | Nov 30–Dec 6 | Buffer: reruns if something broke, polish, presentation rehearsal | **Dec 3:** early-submission target | |
 | Dec 7–10 | Only if the buffer was needed | **Dec 10:** deadline | |
+
+**Progress (2026-10-24):** `teacher-v1` was tagged four days late (Oct 24, not Oct 20), but
+labelling took under two hours instead of three days, so the labels were done a day early (Oct 24,
+not Oct 25). The rest of the schedule stands.
 
 The two GPU weeks hold the ~15–20 GPU-h of core runs within Kaggle's ~30 GPU-h per week, with
 room for one repeat. If labelling or a GPU week slips, the buffer week absorbs it before the
@@ -567,11 +609,11 @@ these.
 - **Job search depends on a jobs source.** That's an API, or scraping with its terms-of-service
   and legal questions, so it needs scoping first.
 
-### Phase 0: repo hygiene and teacher freeze (0.5-1 day). Status: in progress
+### Phase 0: repo hygiene and teacher freeze (0.5-1 day). Status: done 2026-10-24
 - [x] Merge the 2026-10-17 fix PRs into `develop` (#62–#68 and #69–#74).
-- [ ] Merge `develop` into `feature/distillation` again (the local merge `05900e3` stops at #68),
+- [x] Merge `develop` into `feature/distillation` again (the local merge `05900e3` stops at #68),
   then push. Use a merge, not a rebase: the branch is already on GitHub.
-- [ ] Restore the parked work (`git stash pop` on `feature/distillation`) and commit it in small
+- [x] Restore the parked work (`git stash pop` on `feature/distillation`) and commit it in small
   commits:
   - the dataset script moved to `backend/ml/dataprep/` (not `datasets/`, which would shadow the
     Hugging Face `datasets` library)
@@ -583,20 +625,20 @@ these.
   #71, and test it against the app's extraction.
 - [x] Compare candidate teacher models: extraction (`compare_extraction_models.py`) and the
   score's judge (`compare_judge_models.py`); results under Decisions needed, 4.
-- [ ] Start `backend/ml/README.md`; run the CPU smoke test (`python -m ml.training.train_lora --smoke`).
-- [ ] Decide the teacher models (Decisions needed, 4) and write them into `teacher_meta.json`.
-- [ ] Tag `teacher-v1` on `develop`.
+- [x] Start `backend/ml/README.md`; run the CPU smoke test (`python -m ml.training.train_lora --smoke`).
+- [x] Decide the teacher models (Decisions needed, 4) and write them into `teacher_meta.json`.
+- [x] Tag `teacher-v1` on `develop`.
 
 **Done when:**
 - the smoke test passes on the updated branch
 - the tag exists
 - `git status --ignored backend/ml` shows no ignored source files
 
-### Phase 1: teacher labels (1.5-2 days, mostly unattended). Status: not started
-- [ ] `caches.py`, retry/backoff, cost from tokens, flags, `teacher_meta.json`.
-- [ ] Re-pilot the 200 rows on `teacher-v1` and compare with v0.
-- [ ] Test-retest on 100 rows with caches off.
-- [ ] Full labelling: train (deduplicated) and test texts.
+### Phase 1: teacher labels (1.5-2 days, mostly unattended). Status: done 2026-10-24
+- [x] `caches.py`, retry/backoff, cost from tokens, flags, `teacher_meta.json` (#84).
+- [x] Re-pilot the 200 rows on `teacher-v1` and compare with v0.
+- [x] Test-retest on 100 rows with caches off (#85, #86).
+- [x] Full labelling: train (deduplicated) and test texts. 100% clean (Appendix A.4).
 
 **Done when:**
 - at least 95% of pairs are clean
@@ -629,7 +671,7 @@ these.
 **Done when:** the `val` fidelity and validity tables include all students.
 
 ### Phase 5: zero-shot baselines and efficiency (1 day). Status: not started
-- [ ] Zero-shot Qwen 0.5B / 1.5B and `gpt-4o-mini` on `val`.
+- [ ] Zero-shot Qwen 0.5B / 1.5B and the OpenAI model on `val`.
 - [ ] `eval_latency_cost.py`: teacher (cold, cache off), API zero-shot, students on GPU, 0.5B on
   CPU.
 
@@ -662,11 +704,27 @@ training. An early submission is realistic once the deadline is known.
    stronger.
 3. Whether the approved proposal words the RQs or the metric split differently from Section 3. If
    it does, Section 3 adopts that wording.
-4. **The teacher's models, before the tag.** Compared on 2026-10-17; raw results in
+4. ~~The teacher's models, before the tag.~~ **Decided 2026-10-24:
+   `deepseek/deepseek-v4.1-flash-1017` for both extraction and judge, on the OpenRouter host
+   `relace`.** This replaces the 2026-10-17 choice of Mistral for extraction. The reasons:
+   - **Terms.** DeepSeek's terms allow training other models on its outputs. Mistral Large 4 is a
+     preview model whose terms let Mistral train on inputs and outputs, and it is limited to
+     professional use.
+   - **Cost.** About $6 for all labels, against about $27 with Mistral.
+   - **Quality is close enough.** In the comparison below it kept slightly less content (0.826
+     against 0.862) and was a bit noisier as a judge. The test-retest (ρ 0.945) shows the noise is
+     small at the score level.
+   - **Host.** DeepSeek's own endpoint is excluded by the account's "no providers that train on
+     prompts" setting, kept on purpose. `relace` was the cheapest host that passed it ($0.07 /
+     $0.50 per million input / output tokens).
+
+   The 2026-10-17 comparison, kept for the record. Raw results are in
    `data/ml/model_comparison/` and `data/ml/judge_comparison/` (git-ignored), scripts committed.
    Only dated or versioned model ids are used, so the teacher can't change under a moving alias.
-   - **Extraction: decided, `mistralai/mistral-large-4-0`.** 12 train resumes, 2 runs each, 7
-     models reachable from China through OpenRouter, plus OpenAI's models through a direct key:
+   These runs may have had broken embeddings (Section 2, item 6), which affects the judge scores
+   but not the extraction comparison.
+   - **Extraction.** 12 train resumes, 2 runs each, 7 models reachable from China through
+     OpenRouter, plus OpenAI's models through a direct key:
 
      | model | failed | content kept | lines reworded | same bullet placement | per 1,000 |
      |---|---|---|---|---|---|
@@ -682,8 +740,8 @@ training. An early submission is realistic once the deadline is known.
      text (`caches.py`) and the labels are generated once. OpenAI's models reword about half the
      lines and drop content (they also only accept temperature 1); `qwen3.8-max-0902` refuses
      requests without reasoning.
-   - **The score's judge (`LLM_MODEL_JUDGE`): open, deepseek or mistral.** 20 train pairs
-     extracted once with Mistral, each scored twice per judge:
+   - **The score's judge (`LLM_MODEL_JUDGE`).** 20 train pairs extracted once with Mistral, each
+     scored twice per judge:
 
      | judge | unjudged | mean / max change of the score between runs | same level | same skill verdict | full labelling |
      |---|---|---|---|---|---|
@@ -691,9 +749,8 @@ training. An early submission is realistic once the deadline is known.
      | deepseek/deepseek-v4.1-flash-1017 | 0% | 0.018 / 0.074 | 95% | 90.5% | $6 |
      | minimax/minimax-m3 | 97% | (its batched call failed) | | | |
 
-     Mistral halves the run-to-run noise of the teacher's score for about $21 more.
-   - **Either way:** the labels depend on this choice, it is recorded in `teacher_meta.json`, and
-     it can't change during labelling.
+     Mistral halved the run-to-run noise of the teacher's score for about $21 more.
+   - The choice is recorded in `teacher_meta.json` and can't change without a new tag.
 
 ### How the plan maps to the grading
 
@@ -708,7 +765,7 @@ training. An early submission is realistic once the deadline is known.
 
 ---
 
-## Appendix A: data findings and pilot v0 (2026-09-17 scorer, outdated teacher)
+## Appendix A: data findings, pilot v0 (outdated teacher) and `teacher-v1` labels
 
 ### A.1 HF dataset (`cnamuangtoun/resume-job-description-fit`, report in `data/ml/hf_eval_cache/dataset_report.json`)
 
@@ -755,6 +812,47 @@ training. An early submission is realistic once the deadline is known.
 - **Majority class:** accuracy 0.45.
 - **Label consistency:** 19% of resumes and 13% of jobs carry a single label across all their
   rows.
+
+### A.4 `teacher-v1` labels (2026-10-24, `data/ml/teacher_labels/`)
+
+Teacher: `teacher-v1` (`ad3a3e5`), `deepseek/deepseek-v4.1-flash-1017` for extraction and judge on
+the OpenRouter host `relace`, `text-embedding-3-small` direct. Every run is marked frozen in its
+`teacher_meta.json`.
+
+| | Re-pilot | Retest A / B | Train | Test |
+|---|---|---|---|---|
+| Rows | 200 (v0's seeded rows) | 100 / 100 (same rows, no cache) | 6,234 | 1,759 |
+| Clean | 200 | 100 / 100 | 6,234 | 1,759 |
+| Rows retried (all succeeded) | 18 | 0 / 0 | 3 | 2 |
+| Levels low / medium / high / excellent | 106 / 88 / 6 / 0 | | 3,455 / 2,532 / 240 / 7 | 958 / 714 / 84 / 3 |
+| Aggregate mean ± sd | 0.444 ± 0.122 | 0.440 / 0.441 | 0.439 ± 0.126 | 0.442 ± 0.124 |
+| ρ with the train labels | 0.241 | 0.232 / 0.235 | 0.295 | sealed |
+| Spend | $0.34 | $0.18 / $0.17 | $4.60 | $1.10 |
+
+- **Train, mean aggregate by label:** No Fit 0.401, Potential Fit 0.475, Good Fit 0.478.
+- **Train, ρ per dimension with the labels:** domain 0.28, hard_skills 0.26, ats_keywords 0.14,
+  eligibility 0.13 (on the 3,627 rows that have it), experience 0.10, seniority 0.00.
+- **Train, dimension means:** hard_skills 0.38, experience 0.82, seniority 0.61, domain 0.29,
+  ats_keywords 0.09, eligibility 0.60.
+- **The experience fallback** ("Could not estimate candidate years") now affects 80 of 6,234 rows,
+  down from 158 of 200 in v0.
+- **Distinct texts extracted:** 922 for train (the re-pilot's 282 reused from the cache) and only
+  72 new ones for test, since its resumes are almost all in train.
+
+**Test-retest** (`teacher_retest.py`, 100 rows, both runs cache-free):
+
+| Score | ρ | ICC(A,1) | mean / max absolute difference |
+|---|---|---|---|
+| Aggregate | 0.945 | 0.937 | 0.027 / 0.193 |
+| hard_skills | 0.918 | 0.906 | 0.054 / 0.360 |
+| experience | 1.000 | 1.000 | 0 / 0 |
+| seniority | 0.986 | 0.988 | 0.008 / 0.200 |
+| domain | 0.967 | 0.970 | 0.011 / 0.377 |
+| ats_keywords | 0.922 | 0.967 | 0.016 / 0.114 |
+
+The level was the same in 93% of rows, and never more than one band apart. Only 27% of resume and
+3% of job extractions came out identical, so the scorer absorbs most extraction differences. The
+noise sits mainly in `hard_skills`, which also depends on the LLM judge.
 
 ## Appendix B: related work pointers
 
