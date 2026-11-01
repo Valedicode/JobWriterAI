@@ -103,3 +103,39 @@ python -m ml.dataprep.audit_sample   # 80 blind val pairs -> audit/audit_sheet.c
 Label the audit pairs in `audit_sheet.csv` following `ml/AUDIT_RUBRIC.md`, reading the texts in
 `audit_pairs.md`. Both files contain resume text, so they stay in the git-ignored `data/ml/audit/`.
 `ml/PREREGISTRATION.md` fixes the hypotheses, metrics and comparisons before any model is trained.
+
+## Training the students
+
+Export the targets locally, after the labels and the split:
+
+```
+python -m ml.training.targets   # -> students/targets.jsonl: row id, split, both targets; no text
+```
+
+`targets.jsonl` holds no resume or job text, so it can go to Kaggle; the training script loads the
+texts from the HF dataset (at the pinned revision) by row id. The training code doesn't import the
+app, so Kaggle needs only `backend/ml/`.
+
+On Kaggle (GPU T4, internet on):
+
+1. Upload `backend/ml/` as a private Kaggle dataset (e.g. `jobwriterai-ml`), and `targets.jsonl`
+   as another (e.g. `jobwriterai-targets`).
+2. In a notebook:
+
+   ```
+   !cp -r /kaggle/input/jobwriterai-ml/ml /kaggle/working/ml
+   !pip install -q transformers==5.17.0 peft==0.21.0 trl==1.13.0 accelerate==1.15.0 datasets==5.0.1 bitsandbytes
+   %cd /kaggle/working
+   %env ML_ARTIFACTS=/kaggle/working/artifacts
+   !python -m ml.training.train_lora --target teacher --model Qwen/Qwen2.5-0.5B-Instruct --seed 42 \
+       --targets /kaggle/input/jobwriterai-targets/targets.jsonl --limit 200 --epochs 1   # smoke first
+   ```
+
+   Keep Kaggle's own torch (don't install `requirements-ml.txt` whole); record the `bitsandbytes`
+   version from `pip freeze` and pin it in `requirements-ml.txt` after the first run.
+3. Then the real runs, dropping `--limit` and `--epochs` (3 epochs; the best `val` epoch is kept):
+   `--target teacher|dataset`, `--model Qwen/Qwen2.5-0.5B-Instruct` with `--seed 42`, `43`, `44`,
+   and `Qwen/Qwen2.5-1.5B-Instruct` with `--seed 42` (and `43` if the GPU quota allows).
+
+Each run writes `checkpoints/student-<t|d>-<model>-seed<seed>/`, with the kept adapter in
+`adapter/`. Download the adapters and the `trainer_state.json` files into `backend/data/ml/checkpoints/`.
