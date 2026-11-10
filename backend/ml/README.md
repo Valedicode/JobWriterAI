@@ -112,24 +112,31 @@ Export the targets locally, after the labels and the split:
 python -m ml.training.targets   # -> students/targets.jsonl: row id, split, both targets; no text
 ```
 
-`targets.jsonl` holds no resume or job text, so it can go to Kaggle; the training script loads the
-texts from the HF dataset (at the pinned revision) by row id. The training code doesn't import the
-app, so Kaggle needs only `backend/ml/`.
+`targets.jsonl` holds no resume or job text; the training script loads the texts from the HF
+dataset (at the pinned revision) by row id. The training code doesn't import the app, and the repo
+is public, so Kaggle clones the code and needs only `targets.jsonl` uploaded.
 
-On Kaggle (GPU T4, internet on):
+On Kaggle:
 
-1. Upload `backend/ml/` as a private Kaggle dataset (e.g. `jobwriterai-ml`), and `targets.jsonl`
-   as another (e.g. `jobwriterai-targets`).
-2. In a notebook:
+1. Create → New Dataset: upload `backend/data/ml/students/targets.jsonl`, name it
+   `jobwriterai-targets`, and keep it **private** (it holds the teacher's outputs and the dataset's
+   labels, which aren't ours to redistribute).
+2. New notebook: Settings → Accelerator **GPU T4**, Internet **on**; Add Input →
+   `jobwriterai-targets`. Then:
 
    ```
-   !cp -r /kaggle/input/jobwriterai-ml/ml /kaggle/working/ml
+   !git clone -q -b develop https://github.com/Valedicode/JobWriterAI.git /kaggle/working/repo
+   %cd /kaggle/working/repo/backend
+   !git rev-parse --short HEAD
    !pip install -q transformers==5.17.0 peft==0.21.0 trl==1.13.0 accelerate==1.15.0 datasets==5.0.1 bitsandbytes
-   %cd /kaggle/working
    %env ML_ARTIFACTS=/kaggle/working/artifacts
    !python -m ml.training.train_lora --target teacher --model Qwen/Qwen2.5-0.5B-Instruct --seed 42 \
        --targets /kaggle/input/jobwriterai-targets/targets.jsonl --limit 200 --epochs 1   # smoke first
    ```
+
+   Record the commit the clone prints and train every run from it (`!git checkout <commit>` after
+   the clone in later sessions), so all students share the same training code. If the targets
+   aren't found, `!find /kaggle/input -name targets.jsonl` shows where Kaggle put them.
 
    Keep Kaggle's own torch (don't install `requirements-ml.txt` whole); record the `bitsandbytes`
    version from `pip freeze` and pin it in `requirements-ml.txt` after the first run.
