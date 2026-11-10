@@ -11,3 +11,4 @@ trl==1.13.0
 accelerate==1.15.0
 datasets==5.0.1
 bitsandbytes>=0.44; platform_system == "Linux"
+scikit-learn==1.9.1  # the CPU baselines (ml.evaluation.baselines)

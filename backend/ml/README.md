@@ -146,3 +146,27 @@ On Kaggle:
 
 Each run writes `checkpoints/student-<t|d>-<model>-seed<seed>/`, with the kept adapter in
 `adapter/`. Download the adapters and the `trainer_state.json` files into `backend/data/ml/checkpoints/`.
+
+## Evaluation
+
+Every system writes a prediction file, `predictions/<system>.json`, with a score per `val` and test
+row. The CPU baselines (teacher, TF-IDF + ridge, TF-IDF + logistic regression, resume prior,
+majority class, and with `--embeddings` the embedding cosine, which calls OpenAI for a few cents):
+
+```
+python -m ml.evaluation.baselines --embeddings
+python -m ml.evaluation.evaluate          # the val table -> results/val.json
+```
+
+The table gives, per system, fidelity (Spearman ρ with the teacher's aggregate) and validity
+(Spearman ρ with the dataset label, then macro-F1, QWK and accuracy after two thresholds fitted on
+`val`), with 95% CIs from a bootstrap that resamples whole jobs. Once the students' and zero-shot
+models' prediction files exist, it adds the pre-registered comparisons C1-C4.
+
+The test labels are read once, at the end (Phase 6), and only after every prediction file is
+recorded in a commit:
+
+```
+python -m ml.evaluation.evaluate --write-hashes   # writes ml/TEST_PREDICTIONS.sha256; commit it
+python -m ml.evaluation.evaluate --split test --open-test-labels
+```
