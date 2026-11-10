@@ -237,8 +237,8 @@ backend/ml/
     run_inference.py               # students and zero-shot models; JSON parsing with failure counts
     baselines.py                   # embedding cosine, TF-IDF + ridge/LR, resume prior, majority
     metrics.py                     # Spearman, MAE, QWK, macro-F1, fitted thresholds, clustered bootstrap
-    eval_fidelity.py
-    eval_external.py
+    predictions.py                 # one prediction file per system; the reference rows of val and test
+    evaluate.py                    # fidelity and validity tables, C1-C4; test labels gated by committed hashes
     eval_latency_cost.py
     failure_analysis.py
   notebooks/
